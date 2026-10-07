@@ -89,10 +89,11 @@ every certificate through a DNS-01 challenge using `CF_API_TOKEN`. On-demand TLS
 Cloudflare records **DNS only** (grey cloud). Turning on the proxy makes every visitor appear as a
 Cloudflare IP until the app reads `CF-Connecting-IP`.
 
-### 2.4 Submit `puppypad.org` to the Public Suffix List
+### 2.4 🟡 Submit `puppypad.org` to the Public Suffix List — your step
 Browsers then treat each `name.puppypad.org` as its own site. This stops cookie-tossing between
-members and isolates browser storage per member. Approval takes weeks, so file the request now.
-The `__Host-` cookie already protects logins in the meantime.
+members and isolates browser storage per member. The `__Host-` cookie already protects logins in
+the meantime. **Ready:** `docs/public-suffix-list.md` has the entry, the `_psl` TXT record and the
+steps. Submit once the site is live with some member sites.
 
 ### 2.5 ✅ Hold released names
 Deleting an account (or admin "delete") frees the name immediately. Someone else can then
@@ -101,37 +102,42 @@ re-register a well-known site's name and impersonate it. **Done:** a
 never-confirmed accounts are freed at once, so squatters can't lock names by signing up and
 walking away.
 
-### 2.6 Backups
-Everything lives in `./data`. Copying the SQLite file while it's in use can corrupt the copy.
-**Fix:** a nightly job that runs `sqlite3 puppypad.db ".backup …"` (or Litestream for continuous
-replication), then `rsync`/`restic` of `data/sites` to off-box storage (Backblaze B2, R2 or S3).
-Test a restore once before launch.
+### 2.6 ✅ Backups
+**Done:** `scripts/backup.sh` uses SQLite's online backup (safe while the app writes), archives it
+with `data/sites`, keeps 14 nightly archives, and syncs them off the server with rclone when
+`BACKUP_REMOTE` is set. **Your step:** add the cron line, set up a remote, and test a restore once
+(steps in the README).
 
-### 2.7 Mail that actually arrives
-Set up a transactional SMTP provider, plus SPF, DKIM and DMARC records for `puppypad.org`.
-Without them, confirmation mail lands in spam and nobody can activate a site.
+### 2.7 🟡 Mail that actually arrives — your step
+Pick a transactional SMTP provider, fill in `SMTP_*`, and add SPF, DKIM and DMARC records at
+Cloudflare. The README's "Email that arrives" section lists them.
 
-### 2.8 Bot and phishing brakes
-- Add Cloudflare Turnstile (or hCaptcha) to `/signup`. The current honeypot alone won't hold
-  once bots find the site.
-- Flag pages on save or upload when they contain `<input type="password">`, card-number fields,
-  or a big brand name in the `<title>`. Flagged sites go into the `/admin` queue (still live)
-  so a moderator looks at them early.
+### 2.8 ✅ Bot and phishing brakes
+**Done:**
+- **Captcha.** Cloudflare Turnstile on `/signup`, turned on by `TURNSTILE_SITE_KEY` and
+  `TURNSTILE_SECRET_KEY`. It fails closed: if Cloudflare can't be reached, signups are refused.
+- **Phishing flags.** Saving or uploading HTML with a password field, a card field or a big
+  brand in the `<title>` adds one "Auto-flag" report per site to `/admin` and emails
+  `ABUSE_EMAIL`. The site stays live until a moderator decides.
 
-### 2.9 Rules and legal
-Edit the rules page in `src/views.js` and add a privacy page. Set a minimum age of 13. Keep
-`abuse@puppypad.org` monitored, and register a DMCA agent if you're in the US.
+### 2.9 ✅ Rules and legal (mostly)
+**Done:** `/privacy` page (linked in the footer and at signup), a 13+ rule, and a 13+ checkbox at
+signup. **Your step:** read both pages and make them match how you run things. Keep
+`abuse@puppypad.org` monitored. Register a DMCA agent if you're in the US.
 
-### 2.10 Tests and CI
-There are no tests yet. Add `node --test` with `supertest` covering the risky paths:
-- name validation and reserved names
-- `safeRel` path traversal
-- the upload quota
-- the CSRF/Origin rejection
-- banned and unverified sites returning 410/404
-- admin-only routes
+### 2.10 ✅ Tests and CI
+**Done:** `npm test` (`node:test` + `supertest`, 11 tests) covers:
+- site names and reserved names
+- path traversal on upload and serving
+- the file-type allowlist and upload quota
+- CSRF and `Origin` checks
+- the 404/410 site states
+- admin access by confirmed email
+- the name hold
+- phishing flags
+- the Turnstile verdict
 
-Run them, plus `npm audit --omit=dev`, in a GitHub Actions workflow on every push.
+`.github/workflows/ci.yml` runs the tests, `npm audit` and `caddy validate` on every push.
 
 ---
 

@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Check the Caddyfile
+        run: |
+          docker build -t puppypad-caddy caddy
+          docker run --rm -e ACME_EMAIL=ci@example.com -e BASE_DOMAIN=example.com \
+            -e CF_API_TOKEN=abcdefghijklmnopqrstuvwxyz0123456789ABCD \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" puppypad-caddy caddy validate --config /etc/caddy/Caddyfile

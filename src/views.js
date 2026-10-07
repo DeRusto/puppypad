@@ -72,7 +72,7 @@ function layout(ctx, title, body, opts = {}) {
 <title>${esc(title)} - ${esc(cfg.SITE_NAME)}</title><style>${CSS}</style>${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
 <header class="box"><h1><a href="/">${esc(cfg.SITE_NAME)}</a></h1><p class="tagline">${esc(cfg.TAGLINE)}</p><nav aria-label="Main">${nav}</nav></header>
 ${body}
-<footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/report">Report a site</a> | Abuse contact: ${esc(cfg.ABUSE_EMAIL)}</footer>
+<footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/privacy">Privacy</a> | <a href="/report">Report a site</a> | Abuse contact: ${esc(cfg.ABUSE_EMAIL)}</footer>
 </div></body></html>`;
 }
 
@@ -146,8 +146,9 @@ const signup = (ctx, m, v = {}) => layout(ctx, 'Sign up', `
 <label for="password">Password (10 characters or more)</label>
 <input type="password" id="password" name="password" minlength="10" required autocomplete="new-password">
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input type="text" id="website" name="website" tabindex="-1" autocomplete="off"></div>
-<label><input type="checkbox" name="agree" value="1" required> I have read the <a href="/rules" target="_blank">rules</a></label>
-<button>Roll out my pad</button></form></section>`);
+<label><input type="checkbox" name="agree" value="1" required> I am 13 or older and have read the <a href="/rules" target="_blank">rules</a> and <a href="/privacy" target="_blank">privacy notice</a></label>
+${ctx.cfg.TURNSTILE_SITE_KEY ? `<div class="cf-turnstile" data-sitekey="${esc(ctx.cfg.TURNSTILE_SITE_KEY)}"></div>` : ''}
+<button>Roll out my pad</button></form></section>`, ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {});
 
 const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `
 <section class="box"><h2>Log in</h2>${msg(m)}
@@ -271,9 +272,27 @@ const rules = (ctx) => layout(ctx, 'Rules', `
 <li>No file dumps. This is for web pages, with ${ctx.cfg.QUOTA_MB} MB per site.</li>
 <li>Only upload things you made or have the right to share.</li>
 <li>Adult content is not allowed.</li>
+<li>You must be 13 or older to have a site.</li>
 </ol>
 <p>Moderators can remove any site. To appeal or report something, write to ${esc(ctx.cfg.ABUSE_EMAIL)} or use the <a href="/report">report form</a>.</p>
 <p class="note">Edit this page in src/views.js before you launch. It is a starting point, not legal advice.</p></section>`);
+
+const privacy = (ctx) => layout(ctx, 'Privacy', `
+<section class="box"><h2>Privacy notice</h2>
+<p>${esc(ctx.cfg.SITE_NAME)} keeps as little about you as it can run on.</p>
+<h3>What we store</h3>
+<ul>
+<li><b>Your account:</b> site name, email address, and a scrambled (hashed) copy of your password. We use your email only for confirmation, password resets and messages about your site.</li>
+<li><b>Your site:</b> the files you upload, your description, your hit count, who you follow, and a screenshot of your front page for the directory.</li>
+<li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse.</li>
+<li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
+</ul>
+<h3>Who else sees it</h3>
+<p>Your site, its files, your site name, description, followers and hit count are public. Guestbook entries are public on the site they were left on. We do not sell or share your data. Our email provider delivers our messages${ctx.cfg.TURNSTILE_SITE_KEY ? ', and Cloudflare Turnstile checks that people signing up are human' : ''}.</p>
+<h3>Deleting it</h3>
+<p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
+<p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
+<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`);
 
 const admin = (ctx, m, { reports, users, stats }) => layout(ctx, 'Admin', `
 <section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
@@ -309,4 +328,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, editor, guestbookAdmin, report, rules, admin, sitePage, guestbook, counterSvg };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, editor, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };
