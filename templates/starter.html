@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NAME}}'s Pad</title>
+<style>
+  /* This is YOUR pad. Change anything. Make a mess. Clean it up, or don't. */
+  body { margin: 0; padding: 16px; background: #4aa9e6; color: #14264f;
+         font: 16px/1.45 "Comic Sans MS", "Chalkboard SE", cursive; }
+  a { color: #0a3fc4; }  a:visited { color: #7a2ea0; }
+  .page { max-width: 720px; margin: 0 auto; }
+  .box { background: #fdfeff repeating-linear-gradient(45deg, transparent 0 21px, #d6eafa 21px 22px);
+         border: 4px ridge #2f8fd0; padding: 12px; margin-bottom: 12px; }
+  h1 { font-size: 44px; line-height: 1.05; text-align: center; margin: 0; color: #0b4f9e;
+       background: radial-gradient(ellipse 46% 60% at 50% 62%, #ffe14d 0 60%, transparent 62%); }
+  h2 { font-size: 24px; color: #0b4f9e; margin: 0 0 6px; }
+  hr { border: 0; height: 6px; background: repeating-linear-gradient(90deg, #ffe14d 0 12px, #2f8fd0 12px 24px); }
+  .wip { background: repeating-linear-gradient(45deg, #ffe14d 0 14px, #14264f 14px 28px); padding: 6px; }
+  .wip div { background: #14264f; color: #ffe14d; text-align: center; font-weight: 700; padding: 6px; }
+  .center { text-align: center; }
+  iframe { border: 2px inset #2f8fd0; width: 100%; height: 420px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="box">
+    <h1>{{NAME}}'s Pad</h1>
+    <marquee>*** welcome to my pad *** wipe your paws *** sign the guestbook before you go!! ***</marquee>
+  </div>
+
+  <div class="box">
+    <h2>About Me</h2>
+    <p>Write something here. Who are you? What is this page for?</p>
+    <div class="wip"><div>!! WET FLOOR !! this pad is under construction</div></div>
+  </div>
+
+  <div class="box">
+    <h2>Kewl Links</h2>
+    <ul>
+      <li><a href="{{HOST_URL}}/browse">The dog park: my neighbors on {{HOST_NAME}}</a></li>
+      <li><a href="{{HOST_URL}}/random">Fetch a random pad</a></li>
+    </ul>
+  </div>
+
+  <div class="box">
+    <h2>Guestbook</h2>
+    <iframe src="/_hw/guestbook" title="Guestbook"></iframe>
+  </div>
+
+  <div class="box center">
+    <p>Paws through the door: <img src="/_hw/counter.svg" alt="hit counter" style="vertical-align: middle"></p>
+    <hr>
+    <p>
+      <a href="{{HOST_URL}}/webring/prev?from={{NAME}}">&lt;&lt; Prev</a> |
+      <a href="{{HOST_URL}}/webring/random">Random</a> |
+      <a href="{{HOST_URL}}/webring/next?from={{NAME}}">Next &gt;&gt;</a>
+    </p>
+    <p><small>hosted free on <a href="{{HOST_URL}}">{{HOST_NAME}}</a></small></p>
+  </div>
+
+</div>
+</body>
+</html>

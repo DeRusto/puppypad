@@ -1,0 +1,1 @@
+{ "name": "puppypad-shots", "version": "0.1.0", "private": true, "main": "worker.js", "dependencies": { "playwright-core": "1.56.1" } }

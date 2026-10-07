@@ -1,0 +1,48 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BASE_URL: https://${BASE_DOMAIN}
+    volumes:
+      - ./data:/data
+    # limits keep one abusive upload burst from taking the box down
+    mem_limit: 512m
+
+  # Takes the screenshots for the explore page. Kept apart from the app: it runs member pages
+  # in a real browser, so it gets no volume and no secrets beyond its own token.
+  shots:
+    build: ./shots
+    restart: unless-stopped
+    environment:
+      APP_URL: http://app:3000
+      SHOT_TOKEN: ${SHOT_TOKEN}
+      # resolve member sites to the caddy container instead of leaving the box and coming back
+      SHOT_HOST_MAP: "MAP *.${BASE_DOMAIN} caddy"
+    mem_limit: 1g
+    shm_size: 512m
+    depends_on:
+      - app
+      - caddy
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

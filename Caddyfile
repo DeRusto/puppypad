@@ -1,0 +1,29 @@
+{
+	email {$ACME_EMAIL}
+	# Certificates for member subdomains are issued the first time someone visits.
+	# Caddy asks the app whether the name is a real, confirmed site before requesting one.
+	on_demand_tls {
+		ask http://app:3000/internal/tls-check
+	}
+}
+
+(common) {
+	encode gzip
+	request_body {
+		max_size 110MB
+	}
+	@internal path /internal/*
+	respond @internal 404
+	reverse_proxy app:3000
+}
+
+{$BASE_DOMAIN}, www.{$BASE_DOMAIN} {
+	import common
+}
+
+*.{$BASE_DOMAIN} {
+	tls {
+		on_demand
+	}
+	import common
+}
