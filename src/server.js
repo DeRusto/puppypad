@@ -19,13 +19,15 @@ const cfg = {
   ABUSE_EMAIL: env.ABUSE_EMAIL || `abuse@${base.hostname}`,
   QUOTA_MB: Number(env.QUOTA_MB || 50),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
-  ADMINS: new Set((env.ADMIN_USERS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean)),
+  // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
+  ADMIN_EMAILS: new Set((env.ADMIN_EMAILS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean)),
   SECURE: base.protocol === 'https:',
   SHOT_TOKEN: env.SHOT_TOKEN || '',
   siteUrl: (name) => `${base.protocol}//${name}.${base.host}`,
 };
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
 const DAY = 86400000;
+const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
 const now = () => Date.now();
 
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
@@ -70,6 +72,7 @@ function useToken(t, kind) {
   db.prepare('DELETE FROM tokens WHERE token_hash = ?').run(row.token_hash);
   return q.userById.get(row.user_id);
 }
+const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
 function startSession(res, userId) {
   const t = U.newToken();
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
@@ -77,6 +80,8 @@ function startSession(res, userId) {
 }
 function deleteAccount(user) {
   db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+  // never-confirmed accounts were never online, so their names are free again at once
+  if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
 }
@@ -98,7 +103,7 @@ const site = express.Router();
 
 app.use((req, res, next) => {
   const host = (req.hostname || '').toLowerCase();
-  // Caddy and the screenshot worker call /internal/* by container name, not by the public hostname.
+  // The screenshot worker calls /internal/* by container name, not by the public hostname.
   // Caddy refuses /internal/* from the outside, so this path is only reachable inside the Docker network.
   if (host === cfg.BASE_HOST || req.path.startsWith('/internal/')) return main(req, res, next);
   if (host === `www.${cfg.BASE_HOST}`) return res.redirect(301, cfg.BASE_URL + req.originalUrl);
@@ -167,15 +172,6 @@ site.use((req, res) => {
 // ================= main site =================
 main.use((req, res, next) => { res.set('X-Frame-Options', 'DENY').set('Referrer-Policy', 'same-origin'); next(); });
 
-// Caddy asks this before issuing a certificate for a hostname
-main.get('/internal/tls-check', (req, res) => {
-  const d = String(req.query.domain || '').toLowerCase();
-  if (d === cfg.BASE_HOST || d === `www.${cfg.BASE_HOST}`) return res.sendStatus(200);
-  const name = d.endsWith(`.${cfg.BASE_HOST}`) ? d.slice(0, -cfg.BASE_HOST.length - 1) : '';
-  const u = name && q.userByName.get(name);
-  res.sendStatus(u && u.verified ? 200 : 404);
-});
-
 // Screenshot worker API. The worker is a separate container; member pages it renders must not be able to call this, hence the token.
 const shotAuth = (req, res, next) => {
   const got = Buffer.from(String(req.headers['x-shot-token'] || ''));
@@ -210,7 +206,7 @@ main.use((req, res, next) => {
     const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
-      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: cfg.ADMINS.has(user.username) }; req.sessionHash = s.token_hash; }
+      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user) }; req.sessionHash = s.token_hash; }
     }
   }
   next();
@@ -303,7 +299,7 @@ main.post('/signup', async (req, res) => {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 200) return fail('That email address does not look right.');
   if (password.length < 10 || password.length > 200) return fail('Use a password with at least 10 characters.');
   if (!req.body.agree) return fail('You need to accept the rules.');
-  if (q.userByName.get(username)) return fail('That site name is taken.');
+  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
   const t = now();
   const id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
@@ -492,7 +488,7 @@ main.post('/admin/report-close', auth, adminOnly, (req, res) => {
 main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
-  if (cfg.ADMINS.has(target.username)) return showAdmin(req, res, { err: 'That is an admin account.' });
+  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
   if (action === 'delete') { deleteAccount(target); return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` }); }
   const ban = action === 'ban' ? 1 : 0;
@@ -512,6 +508,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 setInterval(() => {
   db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
   db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
+  db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
   for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
 }, 3600000).unref();
 

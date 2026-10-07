@@ -15,8 +15,8 @@ it. It covers what the framework is today, what must change before signups open 
 ```
    puppypad.org, *.puppypad.org
               │
-   ┌──────────▼───────────┐   on-demand TLS: asks the app /internal/tls-check
-   │ Caddy (Caddyfile)    │   before issuing a certificate for a subdomain
+   ┌──────────▼───────────┐   one *.puppypad.org certificate via a
+   │ Caddy (Caddyfile)    │   Cloudflare DNS-01 challenge (caddy/Dockerfile)
    └──────────┬───────────┘
               │ reverse_proxy
    ┌──────────▼────────────────────────────────────────────┐
@@ -45,7 +45,13 @@ it. It covers what the framework is today, what must change before signups open 
 | Screenshots | `shots/worker.js` | Separate container, blocks IPs and internal hostnames |
 | Deploy | `docker-compose.yml`, `Caddyfile`, `Dockerfile` | One VPS, everything under `./data` |
 
-**Keep this stack.** Express, SQLite and the local disk are the right size for one VPS and
+**Keep this stack, and keep JavaScript.** A rewrite in another language would cost weeks and
+fix nothing that's broken. Node handles this workload well, and JavaScript is the language
+members write their pages in anyway. If the codebase grows, add type checking in place: `// @ts-check`
+plus JSDoc types, checked by `tsc --noEmit` in CI. That works on the existing `.js` files without
+a build step.
+
+ Express, SQLite and the local disk are the right size for one VPS and
 thousands of members. Several security basics are already right:
 
 - `__Host-sid` session cookie, so member subdomains can't read or overwrite it
@@ -61,39 +67,39 @@ thousands of members. Several security basics are already right:
 
 ## 2. Before signups open (launch blockers)
 
-These are ordered by risk. Each one is small.
+These are ordered by risk. Each one is small. ✅ = done on this branch.
 
-### 2.1 Admin name can be squatted — fix first
+### 2.1 ✅ Admin name can be squatted
 Admin rights come from `ADMIN_USERS`, a list of site *names*. The README says to "sign up with
 this name first". Until you do, anyone can register that name and get `/admin`. The same thing
 happens if your unconfirmed admin account is purged after 3 days.
-**Fix:** add `role` to `users` and promote admins with a one-off CLI command
-(`node src/admin.js promote <name>`). Or keep the env var but match on a confirmed *email*
-(`ADMIN_EMAILS`), not on a name.
+**Done:** `ADMIN_USERS` is replaced by `ADMIN_EMAILS`. An account is admin only when its email
+is in that list *and* has been confirmed.
 
-### 2.2 Upgrade `multer` 1.x → 2.x
-`multer@1.4.5-lts.1` has published denial-of-service advisories, fixed in 2.x. The upload code
-uses only `memoryStorage()` and `.array()`, so the upgrade should be a version bump plus a
-re-test of uploads.
+### 2.2 ✅ Upgrade `multer` 1.x → 2.x (and `nodemailer`)
+**Done:** `multer` 2.x and `nodemailer` 10.x. `nodemailer` 6.x had high-severity advisories, and it
+receives user-supplied email addresses. `npm audit --omit=dev` is clean.
 
-### 2.3 Use one wildcard certificate instead of one certificate per subdomain
+### 2.3 ✅ Use one wildcard certificate instead of one certificate per subdomain
 Caddy currently issues a certificate for each member subdomain on first visit (`on_demand`).
 Let's Encrypt caps new certificates per registered domain per week, so a signup rush stalls new
-sites. **Fix:** use one `*.puppypad.org` certificate through a DNS-01 challenge:
-- build Caddy with the DNS plugin for wherever `puppypad.org`'s DNS lives (for example
-  `caddy-dns/cloudflare`), using `xcaddy` in a small `caddy/Dockerfile`;
-- replace `tls { on_demand }` with `tls { dns cloudflare {env.CF_API_TOKEN} }`;
-- keep `/internal/tls-check` only if custom domains are added later (§3).
+sites. **Done:** `caddy/Dockerfile` builds Caddy with `caddy-dns/cloudflare`, and the Caddyfile gets
+every certificate through a DNS-01 challenge using `CF_API_TOKEN`. On-demand TLS and the app's
+`/internal/tls-check` endpoint are removed; custom domains (§3) would bring them back. Keep the
+Cloudflare records **DNS only** (grey cloud). Turning on the proxy makes every visitor appear as a
+Cloudflare IP until the app reads `CF-Connecting-IP`.
 
 ### 2.4 Submit `puppypad.org` to the Public Suffix List
 Browsers then treat each `name.puppypad.org` as its own site. This stops cookie-tossing between
 members and isolates browser storage per member. Approval takes weeks, so file the request now.
 The `__Host-` cookie already protects logins in the meantime.
 
-### 2.5 Hold released names
+### 2.5 ✅ Hold released names
 Deleting an account (or admin "delete") frees the name immediately. Someone else can then
-re-register a well-known site's name and impersonate it. **Fix:** a `released_names` table
-(`name`, `released_at`). Signup rejects a name released in the last 90 days.
+re-register a well-known site's name and impersonate it. **Done:** a
+`released_names` table. Signup rejects a name released in the last 90 days. Names from
+never-confirmed accounts are freed at once, so squatters can't lock names by signing up and
+walking away.
 
 ### 2.6 Backups
 Everything lives in `./data`. Copying the SQLite file while it's in use can corrupt the copy.
@@ -169,12 +175,14 @@ says to:
 
 ## 5. Domain setup for puppypad.org
 
-1. DNS: `A puppypad.org → VPS`, `A *.puppypad.org → VPS` (plus `AAAA` if the VPS has IPv6).
-2. `.env`: `BASE_DOMAIN=puppypad.org`, `ACME_EMAIL`, `ABUSE_EMAIL=abuse@puppypad.org`, a strong
+1. Cloudflare DNS: `A puppypad.org → VPS`, `A *.puppypad.org → VPS` (plus `AAAA` if the VPS has
+   IPv6), both **DNS only**. Create an API token from the "Edit zone DNS" template, scoped to the
+   `puppypad.org` zone.
+2. `.env`: `BASE_DOMAIN=puppypad.org`, `ACME_EMAIL`, `CF_API_TOKEN`, `ADMIN_EMAILS`, `ABUSE_EMAIL=abuse@puppypad.org`, a strong
    `SHOT_TOKEN` (`openssl rand -hex 32`), and the SMTP settings.
 3. Firewall the `shots` container from the private network and `169.254.169.254`, as the README
    says.
-4. `docker compose up -d --build`, sign up, promote yourself to admin (§2.1), open `/admin`.
+4. `docker compose up -d --build`, sign up with your `ADMIN_EMAILS` address, confirm it, open `/admin`.
 5. Monitoring: an uptime check on `puppypad.org` and on one member site, and a disk-usage alert
    at 80%.
 
@@ -188,6 +196,5 @@ worker comfortably.
 1. **Old PuppyPad content:** were there member sites, accounts or pages on the old host to bring
    back? If so, add an import script (`data/sites/{name}/` + `users` rows with `verified=1` and a
    forced password reset) before launch.
-2. **Where is `puppypad.org`'s DNS hosted?** That picks the Caddy DNS plugin for §2.3.
-3. **Member JavaScript:** allowed today, as on classic hosts. Keep it?
-4. **Quota:** 50 MB per member and 5 MB per file today. Keep these for launch?
+2. **Member JavaScript:** allowed today, as on classic hosts. Keep it?
+3. **Quota:** 50 MB per member and 5 MB per file today. Keep these for launch?

@@ -27,7 +27,7 @@ services:
       - caddy
 
   caddy:
-    image: caddy:2
+    build: ./caddy
     restart: unless-stopped
     ports:
       - "80:80"
@@ -36,6 +36,7 @@ services:
     environment:
       BASE_DOMAIN: ${BASE_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL}
+      CF_API_TOKEN: ${CF_API_TOKEN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

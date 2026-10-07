@@ -1,10 +1,8 @@
 {
 	email {$ACME_EMAIL}
-	# Certificates for member subdomains are issued the first time someone visits.
-	# Caddy asks the app whether the name is a real, confirmed site before requesting one.
-	on_demand_tls {
-		ask http://app:3000/internal/tls-check
-	}
+	# All certificates come from a DNS-01 challenge at Cloudflare. That is the only way to get a
+	# wildcard, and one *.domain certificate covers every member site without per-site rate limits.
+	acme_dns cloudflare {$CF_API_TOKEN}
 }
 
 (common) {
@@ -22,8 +20,5 @@
 }
 
 *.{$BASE_DOMAIN} {
-	tls {
-		on_demand
-	}
 	import common
 }
