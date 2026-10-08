@@ -162,7 +162,100 @@ signup. **Your step:** read both pages and make them match how you run things. K
 - Custom domains: the member adds a CNAME, the app verifies a TXT record, and the existing
   `/internal/tls-check` + on-demand TLS path issues the certificate.
 - CLI/WebDAV or Git push for members who prefer local editors.
-- Optional supporter tier with a bigger quota.
+- Optional supporter tier: see §3.2.
+
+### 3.1 Widgets and site tools (planned)
+
+Members add these without writing code, but every one of them still produces plain files or a
+`/_hw/` URL, the same way the hit counter and guestbook work today. Sites stay static, nothing
+gets injected into member pages behind their back, and anything a widget writes passes the same
+name, type, quota and phishing checks as an upload.
+
+**How a widget gets onto a page.** A new dashboard page, `/dashboard/widgets`, lists each widget
+with a preview and a copy-paste snippet, plus an "Add to a page" button that opens the editor
+with the snippet inserted at the cursor. No auto-editing of member HTML.
+
+**Style editor** (first to build)
+- A form on `/dashboard/style`: page and text colours, link colours, font (a short list of web-safe
+  and retro fonts), box border style, page width, cursor.
+- Live preview in the existing sandboxed preview iframe.
+- Saving writes `puppypad.css` in the member's root and, once, offers to add
+  `<link rel="stylesheet" href="/puppypad.css">` after the existing `<style>` in `index.html`.
+  The member can still hand-edit the file; the form reads its settings back from a
+  `/* puppypad-style: {...} */` comment at the top and leaves everything below it alone.
+- Ship a handful of presets (the starter's sky blue, Geocities black-and-lime, notebook paper,
+  pastel, night mode) as one-click starting points.
+
+**Background image selector**
+- A gallery of tiling backgrounds (stars, clouds, paw prints, checkerboards, notebook lines),
+  served from `puppypad.org/assets/bg/` with long cache headers. Picking one writes the
+  `background` rule into `puppypad.css`; tile vs. fixed vs. cover is a radio button.
+- "Use my own" lists the member's uploaded images instead.
+- Gallery images must be ones we may redistribute (made for PuppyPad, or CC0); keep the source
+  and licence for each in `assets/bg/CREDITS.md`.
+
+**Smaller widgets, in rough order**
+- Stamp and 88×31 button gallery, same model as backgrounds: pick one, get an `<img>` snippet.
+- "Last updated" badge: `/_hw/updated.svg`, drawn from the newest file's mtime.
+- Status/mood line: one short line the member sets on the dashboard, served as
+  `/_hw/status.svg` (SVG, so no script runs on the member's page).
+- Webring bar snippet (prev / random / next) using the existing `/webring/*` routes.
+- Guestbook themes: the `/_hw/guestbook` iframe takes `?theme=` from a short fixed list.
+- Sparkle cursor and falling-snow effects as small `.js` files the member copies into their site
+  (they already may run their own JavaScript; these are just ready-made).
+
+**Code shape.** One `src/widgets.js` with the `/_hw/` handlers and the gallery lists, so
+`server.js` doesn't grow further. Each new `/_hw/` route gets a test alongside the counter's.
+
+### 3.2 Optional supporter tier (planned)
+
+PuppyPad stays free. Supporters pay to cover the server and get extras that cost us something,
+never features taken away from free members.
+
+**Perks (draft)**
+- Bigger quota and file limit (for example 500 MB and 25 MB, versus 50 MB and 5 MB free).
+- Custom domain (Phase C) is supporter-only, since each one is a certificate and support load.
+- Longer file version history once that exists (Phase C).
+- A supporter badge on the profile and `/browse`, and an optional "supported by" counter on the
+  home page.
+- First look at new widgets and presets. Widgets themselves stay free once released.
+
+**Stripe vs. Patreon**
+
+| | Stripe | Patreon |
+|---|---|---|
+| Fees | About 2.9% + 30¢ per card charge in the US, plus about 0.7% for Stripe Billing subscriptions | Patreon's platform fee (about 10% for new creators) plus payment processing on top |
+| Linking a payment to a PuppyPad account | Direct: Checkout is opened from the dashboard with the user id attached, and webhooks say exactly when a subscription starts, renews or lapses | Indirect: the member connects their Patreon account through OAuth, then we read their pledge through Patreon's API and webhooks |
+| What we build | Checkout session route, webhook route, Customer Portal link; no card data touches our server | OAuth login flow, pledge-to-tier mapping, re-checking pledges that change outside our site |
+| Sales tax and VAT | Ours to handle (Stripe Tax can calculate it, for an extra fee) | Patreon collects and remits it in most places |
+| Discovery and community | None | Patreon page, posts and its own audience |
+| Payouts and refunds | Fully in our control | Monthly payouts on Patreon's schedule |
+
+**Recommendation: Stripe**, with a Patreon page as an optional extra later. Stripe takes far less
+per payment, and the perk has to switch on and off with the payment, which Stripe's webhooks do
+directly while Patreon needs an account-linking step and polling for pledge changes. Patreon is
+worth adding only if a following there would bring in supporters who wouldn't find the site
+otherwise; its tiers could then map onto the same `supporter_until` field. If handling sales tax
+ourselves becomes a burden, a merchant-of-record service (Paddle, Lemon Squeezy) is the swap,
+not Patreon.
+
+**How it fits the code**
+- Schema: `users.supporter_until` (date or null) and `users.stripe_customer_id`. Quota and
+  file-size checks read a `limitsFor(user)` helper instead of `cfg.QUOTA_MB` and
+  `cfg.MAX_FILE_MB` directly (the upload, editor and zip import paths all call it).
+- Routes: `POST /dashboard/support` creates a Stripe Checkout session; `POST /stripe/webhook`
+  (raw body, signature checked with `STRIPE_WEBHOOK_SECRET`, exempt from the CSRF/Origin check)
+  sets or clears `supporter_until`; `/dashboard/support` links to the Stripe Customer Portal for
+  cancelling and card changes.
+- `.env`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`. With none set, the
+  support page is hidden and everyone gets free limits, so self-hosters are unaffected.
+- When a subscription lapses: nothing is deleted. Files over the free quota stay online, new
+  uploads are refused until the site is back under it, and a custom domain keeps working for a
+  30-day grace period with an email reminder.
+- Admin: `/admin` shows supporter status and can grant it by hand (for donations made some
+  other way).
+- Before taking money: a short "Supporter terms" section on the rules page (what's included,
+  refunds, what happens on cancel), and the privacy page updated to name Stripe as a processor.
 
 ---
 
