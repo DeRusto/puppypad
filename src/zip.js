@@ -14,12 +14,14 @@ async function readEntry(zip, entry) {
 // to the zip root (one wrapping folder removed). File names still need U.safeRel before they touch the disk.
 // yauzl rejects absolute and ../ names and checks every entry's real size against the size it declares,
 // so a zip bomb can't push more than maxFileBytes per file or maxTotalBytes overall into memory.
-async function readZip(buffer, { maxFileBytes, maxTotalBytes }) {
+// allowed(name) drops entries that would be refused anyway before they are unpacked or count toward maxTotalBytes.
+async function readZip(buffer, { maxFileBytes, maxTotalBytes, allowed = () => true }) {
   const zip = await yauzl.fromBufferPromise(buffer, { lazyEntries: true, autoClose: false, strictFileNames: false });
   try {
     const entries = [];
+    let seen = 0;
     for await (const e of zip.eachEntry()) {
-      if (entries.length >= MAX_ENTRIES) throw new Error(`more than ${MAX_ENTRIES} files`);
+      if (++seen > MAX_ENTRIES) throw new Error(`more than ${MAX_ENTRIES} files`);
       if (!e.fileName.endsWith('/') && !JUNK(e.fileName)) entries.push(e);
     }
     // a zip of "mysite/" holds mysite/index.html and so on: put those at the top of the target folder
@@ -33,6 +35,7 @@ async function readZip(buffer, { maxFileBytes, maxTotalBytes }) {
       const name = e.fileName.slice(strip);
       if (e.isEncrypted()) { skipped.push(`${name} (password protected)`); continue; }
       if (((e.externalFileAttributes >>> 16) & 0o170000) === 0o120000) { skipped.push(`${name} (link)`); continue; }
+      if (!allowed(name)) { skipped.push(`${name} (name or file type not allowed)`); continue; }
       if (e.uncompressedSize > maxFileBytes) { skipped.push(`${name} (too big)`); continue; }
       if (total + e.uncompressedSize > maxTotalBytes) { skipped.push(`${name} (over your space limit)`); continue; }
       const data = await readEntry(zip, e);

@@ -406,20 +406,27 @@ function showDashboard(req, res, m, status = 200) {
 }
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok ? { ok: String(req.query.ok) } : null));
 
+// The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
+const uploadRel = (dir, name) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'));
+
 // Write uploaded or unzipped files into a member's folder through the same checks: safe name, allowed type, quota.
 function saveFiles(user, dir, files, skipped) {
   let used = U.dirSize(siteDir(user.username)).total;
   const saved = [];
   for (const f of files) {
-    const rel = U.safeRel((dir ? dir + '/' : '') + f.name.replace(/\\/g, '/').replace(/\s+/g, '_'));
+    const rel = uploadRel(dir, f.name);
     const full = rel && resolveIn(user, rel);
     if (!full) { skipped.push(`${f.name} (name or file type not allowed)`); continue; }
     const old = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
     if (used - old + f.data.length > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.name} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
+    // write beside the target and rename over it, so a failed write never leaves a replaced file half-written
+    const tmp = `${full}.${crypto.randomBytes(6).toString('hex')}.tmp`;
     try {
       fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, f.data);
+      fs.writeFileSync(tmp, f.data);
+      fs.renameSync(tmp, full);
     } catch {
+      fs.rmSync(tmp, { force: true });
       skipped.push(`${f.name} (a file or folder with that name is in the way)`);
       continue;
     }
@@ -458,7 +465,7 @@ async function importZip(req, res, err) {
   if (!U.limit(`import:${req.ctx.user.id}`, 10, 3600000)) return showDashboard(req, res, { err: 'That is a lot of imports. Try again in an hour.' }, 429);
   let zip;
   try {
-    zip = await readZip(req.file.buffer, { maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: cfg.QUOTA_MB * 1048576 });
+    zip = await readZip(req.file.buffer, { maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: cfg.QUOTA_MB * 1048576, allowed: (name) => !!uploadRel(dir, name) });
   } catch (e) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }

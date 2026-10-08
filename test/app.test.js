@@ -203,4 +203,16 @@ test('zip import refuses traversal, links, oversized files and non-zips', async 
   assert.match(res.text, /bomb\.txt \(too big\)/);
 
   assert.match((await importZip(m, Buffer.from('not a zip at all'))).text, /could not be read/);
+
+  // a refused file must not use up the unpacked-size budget meant for the files that get saved
+  const fair = await importZip(m, await makeZip([['big.php', Buffer.alloc(1048576)], ['fair.html', 'still here']]));
+  assert.match(fair.text, /Imported 1 file\b/);
+  assert.match(fair.text, /big\.php \(name or file type not allowed\)/);
+
+  // folders and junk count toward the entry limit too
+  const z = new yazl.ZipFile();
+  for (let i = 0; i <= 2000; i++) z.addEmptyDirectory(`d${i}/`);
+  z.end();
+  const many = await new Promise((resolve) => { const parts = []; z.outputStream.on('data', (c) => parts.push(c)).on('end', () => resolve(Buffer.concat(parts))); });
+  assert.match((await importZip(m, many)).text, /more than 2000 files/);
 });
