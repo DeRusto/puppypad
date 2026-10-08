@@ -59,6 +59,12 @@ test('phishing signals', () => {
   assert.deepEqual(U.phishSignals('<input type="password">'), ['password field']);
   assert.deepEqual(U.phishSignals('<input autocomplete="cc-number">'), ['card field']);
   assert.deepEqual(U.phishSignals('<title>PayPal - Log in</title>'), ['"PayPal" in title']);
+  // forms and titles built by script
+  assert.deepEqual(U.phishSignals("const i = document.createElement('input'); i.type = 'password';"), ['password field']);
+  assert.deepEqual(U.phishSignals('i.setAttribute("type", "password")'), ['password field']);
+  assert.deepEqual(U.phishSignals("document.title = 'Netflix sign in'"), ['"Netflix" in title']);
+  assert.deepEqual(U.phishSignals('<script src="https://coinhive.com/lib/coinhive.min.js"></script>'), ['crypto-miner script']);
+  assert.deepEqual(U.phishSignals("const pw = 'type your password here';"), []);
 });
 
 test('admin comes from a confirmed email in ADMIN_EMAILS, not from a site name', async () => {
@@ -133,6 +139,14 @@ test('pages that look like phishing are flagged once for review', async () => {
   assert.equal(rows[0].reason, 'Auto-flag');
   assert.match(rows[0].details, /login\.html: password field, "PayPal" in title/);
   assert.equal((await req('get', '/login.html', 'fishy.pad.test')).status, 200); // flagged, not taken down
+});
+
+test('scripts are scanned too', async () => {
+  const m = await member('sneaky');
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'app.js', content: "f.innerHTML = '<input type=\"password\">';" });
+  const rows = db.prepare("SELECT * FROM reports WHERE site = 'sneaky'").all();
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].details, /app\.js: password field/);
 });
 
 test('signup captcha: Turnstile verdict decides, and an unreachable Cloudflare refuses', async () => {

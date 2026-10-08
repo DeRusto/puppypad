@@ -78,9 +78,9 @@ function markUpdated(userId) {
   db.prepare("INSERT INTO events (user_id, kind, created_at) VALUES (?, 'update', ?)").run(userId, t);
   db.prepare('UPDATE users SET updates = updates + 1 WHERE id = ?').run(userId);
 }
-// queue a saved HTML page for review if it looks like phishing; one open flag per site at a time
+// queue a saved page or script for review if it looks like phishing or mining; one open flag per site at a time
 function autoFlag(user, rel, content) {
-  if (!/\.html?$/i.test(rel)) return;
+  if (!/\.(html?|js|svg)$/i.test(rel)) return;
   const signals = U.phishSignals(content);
   if (!signals.length || db.prepare("SELECT 1 FROM reports WHERE site = ? AND reason = 'Auto-flag' AND status = 'open'").get(user.username)) return;
   const details = `${rel}: ${signals.join(', ')}`;

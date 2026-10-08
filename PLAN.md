@@ -300,10 +300,11 @@ worker comfortably.
 
 ---
 
-## 6. Open questions
+## 6. Decisions (2026-10-08)
 
-1. **Old PuppyPad content:** were there member sites, accounts or pages on the old host to bring
-   back? If so, add an import script (`data/sites/{name}/` + `users` rows with `verified=1` and a
-   forced password reset) before launch.
-2. **Member JavaScript:** allowed today, as on classic hosts. Keep it?
-3. **Quota:** 50 MB per member and 5 MB per file today. Keep these for launch?
+1. **Old PuppyPad content:** launch fresh. No import script; old members sign up again.
+2. **Member JavaScript:** keep it, with guardrails. The auto-flag (§2.8) also scans `.js` and
+   `.svg` saves and uploads, catches password fields and titles built by script, and flags known
+   crypto-miner scripts. Submit the Public Suffix List entry (§2.4) soon after launch.
+3. **Quota:** keep 50 MB per member and 5 MB per file for launch. Raise later with `QUOTA_MB` /
+   `MAX_FILE_MB` if disk use allows.
