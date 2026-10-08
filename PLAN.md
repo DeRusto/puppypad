@@ -220,8 +220,8 @@ never features taken away from free members.
   - A special border around their screenshot on the dog park (`/browse`), the home page's
     "Fresh accidents" list and the follow feed: a `supporter` class on the card in `cards()` in
     `src/views.js`, styled as a gold or animated rainbow frame.
-  - A small icon next to their name everywhere it appears (cards, profile page, site lists,
-    guestbook entries they sign while logged in), with an `alt`/`title` of "PuppyPad supporter".
+  - A small icon next to their name everywhere it appears (cards, profile page, site lists),
+    with an `alt`/`title` of "PuppyPad supporter".
     One `nameTag(user)` helper in `src/views.js` renders the name plus icon so every spot stays
     the same.
   - Both stop showing as soon as `supporter_until` passes. Admins who grant supporter by hand
