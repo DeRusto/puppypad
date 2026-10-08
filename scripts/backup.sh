@@ -3,9 +3,14 @@
 # Run from the host, next to docker-compose.yml. Example crontab line (03:15 every night):
 #   15 3 * * * /srv/puppypad/scripts/backup.sh >> /var/log/puppypad-backup.log 2>&1
 # Keeps the last 14 archives in ./backups. To also copy them off this server, install rclone,
-# configure a remote (Backblaze B2, Cloudflare R2, S3, ...) and set BACKUP_REMOTE, e.g. "b2:my-bucket/puppypad".
+# configure a remote (Backblaze B2, Cloudflare R2, S3, ...) and set BACKUP_REMOTE (in .env or the environment),
+# e.g. "b2:my-bucket/puppypad".
 set -eu
 cd "$(dirname "$0")/.."
+# cron doesn't load .env, so read BACKUP_REMOTE from it unless it was set by the caller
+if [ -z "${BACKUP_REMOTE:-}" ] && [ -f .env ]; then
+  BACKUP_REMOTE=$(sed -n 's/^BACKUP_REMOTE=//p' .env | tail -n 1 | tr -d "\"'\r")
+fi
 stamp=$(date -u +%Y%m%d-%H%M)
 mkdir -p backups
 
