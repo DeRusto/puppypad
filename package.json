@@ -3,12 +3,18 @@
   "version": "0.1.0",
   "description": "Old-web style free homepage host: every member gets name.yourdomain",
   "main": "src/server.js",
-  "scripts": { "start": "node src/server.js" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
   "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "express": "^4.21.0",
-    "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.15"
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.16"
+  },
+  "devDependencies": {
+    "supertest": "^7.3.1"
   }
 }

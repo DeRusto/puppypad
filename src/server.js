@@ -19,13 +19,16 @@ const cfg = {
   ABUSE_EMAIL: env.ABUSE_EMAIL || `abuse@${base.hostname}`,
   QUOTA_MB: Number(env.QUOTA_MB || 50),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
-  ADMINS: new Set((env.ADMIN_USERS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean)),
+  // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
+  ADMIN_EMAILS: new Set((env.ADMIN_EMAILS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean)),
   SECURE: base.protocol === 'https:',
   SHOT_TOKEN: env.SHOT_TOKEN || '',
+  TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || '', // signup captcha; off when unset
   siteUrl: (name) => `${base.protocol}//${name}.${base.host}`,
 };
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
 const DAY = 86400000;
+const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
 const now = () => Date.now();
 
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
@@ -36,6 +39,22 @@ async function sendMail(to, subject, text) {
   if (!mailer) { console.log(`[mail not configured] to=${to} subject="${subject}"\n${text}\n`); return; }
   try { await mailer.sendMail({ from: env.MAIL_FROM || `${cfg.SITE_NAME} <noreply@${cfg.BASE_HOST}>`, to, subject, text }); }
   catch (e) { console.error('mail failed:', e.message); }
+}
+
+// Cloudflare Turnstile. Fails closed: if Cloudflare cannot be reached, nobody signs up until it can.
+async function humanCheck(req) {
+  if (!env.TURNSTILE_SECRET_KEY) return true;
+  try {
+    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: String(req.body['cf-turnstile-response'] || ''), remoteip: req.ip }),
+      signal: AbortSignal.timeout(5000),
+    });
+    return (await r.json()).success === true;
+  } catch (e) {
+    console.error('turnstile check failed:', e.message);
+    return false;
+  }
 }
 
 // ---------- helpers ----------
@@ -52,6 +71,15 @@ function markUpdated(userId) {
   if (last && t - last.created_at < 3600000) return;
   db.prepare("INSERT INTO events (user_id, kind, created_at) VALUES (?, 'update', ?)").run(userId, t);
   db.prepare('UPDATE users SET updates = updates + 1 WHERE id = ?').run(userId);
+}
+// queue a saved HTML page for review if it looks like phishing; one open flag per site at a time
+function autoFlag(user, rel, content) {
+  if (!/\.html?$/i.test(rel)) return;
+  const signals = U.phishSignals(content);
+  if (!signals.length || db.prepare("SELECT 1 FROM reports WHERE site = ? AND reason = 'Auto-flag' AND status = 'open'").get(user.username)) return;
+  const details = `${rel}: ${signals.join(', ')}`;
+  db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES (?, 'Auto-flag', ?, ?)").run(user.username, details, now());
+  sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] auto-flag: ${user.username}`, `${details}\n\nReview: ${cfg.BASE_URL}/admin`);
 }
 const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
 const LIVE = 'verified = 1 AND banned = 0';
@@ -70,6 +98,7 @@ function useToken(t, kind) {
   db.prepare('DELETE FROM tokens WHERE token_hash = ?').run(row.token_hash);
   return q.userById.get(row.user_id);
 }
+const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
 function startSession(res, userId) {
   const t = U.newToken();
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
@@ -77,6 +106,8 @@ function startSession(res, userId) {
 }
 function deleteAccount(user) {
   db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+  // never-confirmed accounts were never online, so their names are free again at once
+  if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
 }
@@ -98,7 +129,7 @@ const site = express.Router();
 
 app.use((req, res, next) => {
   const host = (req.hostname || '').toLowerCase();
-  // Caddy and the screenshot worker call /internal/* by container name, not by the public hostname.
+  // The screenshot worker calls /internal/* by container name, not by the public hostname.
   // Caddy refuses /internal/* from the outside, so this path is only reachable inside the Docker network.
   if (host === cfg.BASE_HOST || req.path.startsWith('/internal/')) return main(req, res, next);
   if (host === `www.${cfg.BASE_HOST}`) return res.redirect(301, cfg.BASE_URL + req.originalUrl);
@@ -167,15 +198,6 @@ site.use((req, res) => {
 // ================= main site =================
 main.use((req, res, next) => { res.set('X-Frame-Options', 'DENY').set('Referrer-Policy', 'same-origin'); next(); });
 
-// Caddy asks this before issuing a certificate for a hostname
-main.get('/internal/tls-check', (req, res) => {
-  const d = String(req.query.domain || '').toLowerCase();
-  if (d === cfg.BASE_HOST || d === `www.${cfg.BASE_HOST}`) return res.sendStatus(200);
-  const name = d.endsWith(`.${cfg.BASE_HOST}`) ? d.slice(0, -cfg.BASE_HOST.length - 1) : '';
-  const u = name && q.userByName.get(name);
-  res.sendStatus(u && u.verified ? 200 : 404);
-});
-
 // Screenshot worker API. The worker is a separate container; member pages it renders must not be able to call this, hence the token.
 const shotAuth = (req, res, next) => {
   const got = Buffer.from(String(req.headers['x-shot-token'] || ''));
@@ -210,7 +232,7 @@ main.use((req, res, next) => {
     const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
-      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: cfg.ADMINS.has(user.username) }; req.sessionHash = s.token_hash; }
+      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user) }; req.sessionHash = s.token_hash; }
     }
   }
   next();
@@ -289,6 +311,7 @@ main.get('/webring/:dir(next|prev)', (req, res) => {
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 });
 main.get('/rules', (req, res) => res.send(V.rules(req.ctx)));
+main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));
 
 // ----- signup / login -----
 main.get('/signup', (req, res) => res.send(V.signup(req.ctx)));
@@ -302,9 +325,10 @@ main.post('/signup', async (req, res) => {
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 200) return fail('That email address does not look right.');
   if (password.length < 10 || password.length > 200) return fail('Use a password with at least 10 characters.');
-  if (!req.body.agree) return fail('You need to accept the rules.');
-  if (q.userByName.get(username)) return fail('That site name is taken.');
+  if (!req.body.agree) return fail('You need to be 13 or older and accept the rules.');
+  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
+  if (!(await humanCheck(req))) return fail('The "are you human" check did not pass. Try again.');
   const t = now();
   const id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
     .run(username, email, U.hashPw(password), req.ip, t, t).lastInsertRowid;
@@ -398,6 +422,7 @@ main.post('/dashboard/upload', auth, canEdit, (req, res) => upload(req, res, (er
     if (used - old + f.size > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.originalname} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, f.buffer);
+    autoFlag(user, rel, f.buffer.toString('utf8'));
     used += f.size - old;
     saved.push(rel);
   }
@@ -429,6 +454,7 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   } catch {
     return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
   }
+  autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
 });
@@ -492,7 +518,7 @@ main.post('/admin/report-close', auth, adminOnly, (req, res) => {
 main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
-  if (cfg.ADMINS.has(target.username)) return showAdmin(req, res, { err: 'That is an admin account.' });
+  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
   if (action === 'delete') { deleteAccount(target); return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` }); }
   const ban = action === 'ban' ? 1 : 0;
@@ -512,8 +538,13 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 setInterval(() => {
   db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
   db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
+  db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
   for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
 }, 3600000).unref();
 
-const port = Number(env.PORT || 3000);
-app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
+module.exports = app; // tests import the app without starting a server
+
+if (require.main === module) {
+  const port = Number(env.PORT || 3000);
+  app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
+}

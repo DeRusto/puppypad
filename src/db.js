@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS events (
   kind TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS released_names (
+  name TEXT PRIMARY KEY,
+  released_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id);
 CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at);
