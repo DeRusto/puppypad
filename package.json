@@ -12,9 +12,11 @@
     "better-sqlite3": "^11.3.0",
     "express": "^4.21.0",
     "multer": "^2.4.0",
-    "nodemailer": "^10.0.16"
+    "nodemailer": "^10.0.16",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
-    "supertest": "^7.3.1"
+    "supertest": "^7.3.1",
+    "yazl": "^3.3.1"
   }
 }

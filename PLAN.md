@@ -144,7 +144,8 @@ signup. **Your step:** read both pages and make them match how you run things. K
 ## 3. After launch (feature roadmap)
 
 **Phase A — small wins (weeks 1–3 after launch)**
-- Zip upload (extract server-side through `safeRel` and the quota check) and folder rename/move.
+- ✅ Zip import: `/dashboard/import` unpacks a `.zip` (up to `ZIP_MAX_MB`) through the same name, type, quota and phishing checks as uploads; drops a wrapping folder and OS junk; refuses `../` names, links, encrypted entries and oversized files.
+- Folder rename/move.
 - Template gallery at signup: a few retro starters next to `starter.html`.
 - Log in with site name *or* email.
 - Admin audit log table: who banned, restored or deleted what, and when.

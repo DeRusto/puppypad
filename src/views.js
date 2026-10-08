@@ -197,6 +197,10 @@ ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ba
 <form class="stack" method="post" action="/dashboard/upload" enctype="multipart/form-data">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
 <label for="files">Up to 20 files, ${cfg.MAX_FILE_MB} MB each. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required><button>Upload</button></form>
+<h3>Import a zip</h3>
+<form class="stack" method="post" action="/dashboard/import" enctype="multipart/form-data">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
+<label for="zip">Moving in from another host? Zip up your site folder (up to ${cfg.ZIP_MAX_MB} MB) and it unpacks here, folders and all. Files with the same name are replaced.</label>
+<input type="file" id="zip" name="zip" accept=".zip,application/zip" required><button>Import zip</button></form>
 <h3>New file or folder</h3>
 <form class="stack" method="get" action="/dashboard/edit"><label for="newpath">File path, for example <code>about.html</code> or <code>pics/index.html</code>. Folders are created for you.</label>
 <input type="text" id="newpath" name="path" value="${esc(d.dir ? d.dir + '/' : '')}" required><button>Create and edit</button></form></section>
