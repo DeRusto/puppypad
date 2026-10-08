@@ -216,8 +216,17 @@ never features taken away from free members.
 - Bigger quota and file limit (for example 500 MB and 25 MB, versus 50 MB and 5 MB free).
 - Custom domain (Phase C) is supporter-only, since each one is a certificate and support load.
 - Longer file version history once that exists (Phase C).
-- A supporter badge on the profile and `/browse`, and an optional "supported by" counter on the
-  home page.
+- Cosmetic flair wherever their site is listed:
+  - A special border around their screenshot on the dog park (`/browse`), the home page's
+    "Fresh accidents" list and the follow feed: a `supporter` class on the card in `cards()` in
+    `src/views.js`, styled as a gold or animated rainbow frame.
+  - A small icon next to their name everywhere it appears (cards, profile page, site lists,
+    guestbook entries they sign while logged in), with an `alt`/`title` of "PuppyPad supporter".
+    One `nameTag(user)` helper in `src/views.js` renders the name plus icon so every spot stays
+    the same.
+  - Both stop showing as soon as `supporter_until` passes. Admins who grant supporter by hand
+    get the same flair.
+- An optional "supported by" counter on the home page.
 - First look at new widgets and presets. Widgets themselves stay free once released.
 
 **Stripe vs. Patreon**
