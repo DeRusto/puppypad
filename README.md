@@ -35,13 +35,16 @@ every member's files into `./backups`, and keeps the last 14. Set `BACKUP_REMOTE
 [rclone](https://rclone.org) remote to copy the archives off the server too. Run it nightly from cron
 (see the top of the script).
 
-To restore: stop the app, unpack an archive into `./data`, rename `backup.db` to `puppypad.db`,
-and start the app again.
+To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/puppypad.db-shm`
+(left over, they would be replayed onto the restored database and corrupt it), unpack an archive
+into `./data`, rename `backup.db` to `puppypad.db`, and `docker compose start app`.
+`docs/launch-checklist.md` has a restore test that doesn't touch the live data.
 
 ## Email that arrives
 
-Confirmation mail lands in spam unless the domain vouches for your mail provider. In Cloudflare DNS
-for the domain, add the records your provider gives you:
+Confirmation mail lands in spam unless the domain vouches for your mail provider. `docs/launch-checklist.md`
+has the exact records for puppypad.org. In general, in Cloudflare DNS for the domain, add the
+records your provider gives you:
 
 - **SPF**: one TXT record on the domain itself, e.g. `v=spf1 include:<provider's domain> ~all`.
   Merge providers into one record if you already have one.

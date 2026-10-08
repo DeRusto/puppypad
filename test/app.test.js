@@ -46,7 +46,7 @@ const upload = (m, name, content) => req('post', '/dashboard/upload').set('Cooki
 
 test('site names: DNS-safe, not reserved', () => {
   for (const ok of ['bob', 'my-pad', 'a1b']) assert.ok(U.validUsername(ok), ok);
-  for (const bad of ['ab', '-bob', 'bob-', 'b--b', 'Bob', 'admin', 'www', 'a'.repeat(31), 'bob.x']) assert.ok(!U.validUsername(bad), bad);
+  for (const bad of ['ab', '-bob', 'bob-', 'b--b', 'Bob', 'admin', 'www', 'mail', 'send', 'a'.repeat(31), 'bob.x']) assert.ok(!U.validUsername(bad), bad);
 });
 
 test('member paths cannot escape the site folder', () => {

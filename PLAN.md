@@ -106,11 +106,12 @@ walking away.
 **Done:** `scripts/backup.sh` uses SQLite's online backup (safe while the app writes), archives it
 with `data/sites`, keeps 14 nightly archives, and syncs them off the server with rclone when
 `BACKUP_REMOTE` is set. **Your step:** add the cron line, set up a remote, and test a restore once
-(steps in the README).
+(steps in `docs/launch-checklist.md` §2).
 
 ### 2.7 🟡 Mail that actually arrives — your step
 Pick a transactional SMTP provider, fill in `SMTP_*`, and add SPF, DKIM and DMARC records at
-Cloudflare. The README's "Email that arrives" section lists them.
+Cloudflare. `docs/launch-checklist.md` §1 has the exact records (Resend sending from
+`mail.puppypad.org`, Cloudflare Email Routing for `abuse@`).
 
 ### 2.8 ✅ Bot and phishing brakes
 **Done:**
@@ -122,7 +123,8 @@ Cloudflare. The README's "Email that arrives" section lists them.
 
 ### 2.9 ✅ Rules and legal (mostly)
 **Done:** `/privacy` page (linked in the footer and at signup), a 13+ rule, and a 13+ checkbox at
-signup. **Your step:** read both pages and make them match how you run things. Keep
+signup. **Your step:** read both pages and make them match how you run things
+(`docs/launch-checklist.md` §3 lists what the current text gets wrong or leaves out). Keep
 `abuse@puppypad.org` monitored. Register a DMCA agent if you're in the US.
 
 ### 2.10 ✅ Tests and CI

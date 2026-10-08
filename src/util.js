@@ -23,7 +23,9 @@ function checkPw(pw, stored) {
 const USERNAME_RE = /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/;
 const RESERVED = new Set(('www admin administrator root api app mail email smtp imap pop ftp ns ns1 ns2 dns static assets cdn img images ' +
   'help support abuse security report postmaster hostmaster webmaster login signup register account dashboard browse random webring ' +
-  'rules terms privacy status blog news about contact internal test dev staging official staff mod moderator').split(' '));
+  'rules terms privacy status blog news about contact internal test dev staging official staff mod moderator ' +
+  // hostnames mail providers put DNS records on (bounce and feedback addresses)
+  'send bounce bounces pm-bounces em mta mx').split(' '));
 const validUsername = (u) => USERNAME_RE.test(u) && !u.includes('--') && !RESERVED.has(u);
 
 const TEXT_EXT = new Set(['html', 'htm', 'css', 'js', 'txt', 'md', 'json', 'xml', 'svg']);
