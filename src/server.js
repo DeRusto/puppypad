@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { db, SITES_DIR, SHOTS_DIR } = require('./db');
 const U = require('./util');
 const V = require('./views');
+const { readZip } = require('./zip');
 
 // ---------- config ----------
 const env = process.env;
@@ -19,6 +20,7 @@ const cfg = {
   ABUSE_EMAIL: env.ABUSE_EMAIL || `abuse@${base.hostname}`,
   QUOTA_MB: Number(env.QUOTA_MB || 50),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
+  ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
   ADMIN_EMAILS: new Set((env.ADMIN_EMAILS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean)),
   SECURE: base.protocol === 'https:',
@@ -404,31 +406,72 @@ function showDashboard(req, res, m, status = 200) {
 }
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok ? { ok: String(req.query.ok) } : null));
 
+// The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
+const uploadRel = (dir, name) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'));
+
+// Write uploaded or unzipped files into a member's folder through the same checks: safe name, allowed type, quota.
+function saveFiles(user, dir, files, skipped) {
+  let used = U.dirSize(siteDir(user.username)).total;
+  const saved = [];
+  for (const f of files) {
+    const rel = uploadRel(dir, f.name);
+    const full = rel && resolveIn(user, rel);
+    if (!full) { skipped.push(`${f.name} (name or file type not allowed)`); continue; }
+    const old = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
+    if (used - old + f.data.length > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.name} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
+    // write beside the target and rename over it, so a failed write never leaves a replaced file half-written
+    const tmp = `${full}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(tmp, f.data);
+      fs.renameSync(tmp, full);
+    } catch {
+      fs.rmSync(tmp, { force: true });
+      skipped.push(`${f.name} (a file or folder with that name is in the way)`);
+      continue;
+    }
+    autoFlag(user, rel, f.data.toString('utf8'));
+    used += f.data.length - old;
+    saved.push(rel);
+  }
+  if (saved.length) markUpdated(user.id);
+  return saved;
+}
+const savedMsg = (saved, skipped, verb) => ({
+  ok: saved.length ? `${verb} ${saved.length} file${saved.length === 1 ? '' : 's'}.` : '',
+  err: skipped.length ? `Skipped: ${skipped.slice(0, 20).join(', ')}${skipped.length > 20 ? ` and ${skipped.length - 20} more` : ''}. Allowed types: ${[...U.ALLOWED_EXT].join(', ')}.` : '',
+});
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
 main.post('/dashboard/upload', auth, canEdit, (req, res) => upload(req, res, (err) => {
   if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time.' }, 400);
-  const user = req.ctx.user;
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return showDashboard(req, res, { err: 'That folder name is not allowed.' }, 400);
-  let used = U.dirSize(siteDir(user.username)).total;
-  const saved = [];
   const skipped = [];
-  for (const f of req.files || []) {
-    const rel = U.safeRel((dir ? dir + '/' : '') + path.basename(f.originalname.replace(/\\/g, '/')).replace(/\s+/g, '_'));
-    const full = rel && resolveIn(user, rel);
-    if (!full) { skipped.push(`${f.originalname} (name or file type not allowed)`); continue; }
-    const old = fs.existsSync(full) ? fs.statSync(full).size : 0;
-    if (used - old + f.size > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.originalname} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, f.buffer);
-    autoFlag(user, rel, f.buffer.toString('utf8'));
-    used += f.size - old;
-    saved.push(rel);
-  }
-  if (saved.length) markUpdated(user.id);
-  showDashboard(req, res, { ok: saved.length ? `Uploaded ${saved.length} file${saved.length === 1 ? '' : 's'}.` : '', err: skipped.length ? `Skipped: ${skipped.join(', ')}. Allowed types: ${[...U.ALLOWED_EXT].join(', ')}.` : '' });
+  const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), data: f.buffer }));
+  showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, files, skipped), skipped, 'Uploaded'));
 }));
+
+// Import a whole site from one .zip, unpacked into the current folder
+const zipUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
+main.post('/dashboard/import', auth, canEdit, (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next)));
+async function importZip(req, res, err) {
+  if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
+  if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
+  if (!req.file) return showDashboard(req, res, { err: 'Choose a .zip file to import.' }, 400);
+  const dir = U.safeRel(req.body.dir || '', { file: false });
+  if (dir === null) return showDashboard(req, res, { err: 'That folder name is not allowed.' }, 400);
+  if (!U.limit(`import:${req.ctx.user.id}`, 10, 3600000)) return showDashboard(req, res, { err: 'That is a lot of imports. Try again in an hour.' }, 429);
+  let zip;
+  try {
+    zip = await readZip(req.file.buffer, { maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: cfg.QUOTA_MB * 1048576, allowed: (name) => !!uploadRel(dir, name) });
+  } catch (e) {
+    return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
+  }
+  const skipped = zip.skipped;
+  showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, zip.files, skipped), skipped, 'Imported'));
+}
 
 main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.query.path);

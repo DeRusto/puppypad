@@ -156,3 +156,63 @@ test('signup captcha: Turnstile verdict decides, and an unreachable Cloudflare r
     delete process.env.TURNSTILE_SECRET_KEY;
   }
 });
+
+const yazl = require('yazl');
+function makeZip(entries) {
+  const z = new yazl.ZipFile();
+  for (const [name, content, opts] of entries) z.addBuffer(Buffer.from(content), name, opts);
+  z.end();
+  return new Promise((resolve) => { const parts = []; z.outputStream.on('data', (c) => parts.push(c)).on('end', () => resolve(Buffer.concat(parts))); });
+}
+const importZip = (m, buf, dir = '') => req('post', '/dashboard/import').set('Cookie', m.cookie)
+  .field('_csrf', m.csrf).field('dir', dir).attach('zip', buf, 'site.zip');
+
+test('zip import unpacks a site, dropping its wrapping folder and OS junk', async () => {
+  const m = await member('zipper');
+  const res = await importZip(m, await makeZip([
+    ['mysite/index.html', '<h1>moved in</h1>'],
+    ['mysite/pics/dog.gif', 'GIF89a'],
+    ['mysite/.DS_Store', 'junk'],
+    ['__MACOSX/mysite/._index.html', 'junk'],
+    ['mysite/shell.php', '<?php'],
+  ]));
+  assert.match(res.text, /Imported 2 files/);
+  assert.match(res.text, /Skipped: shell\.php \(name or file type not allowed\)/);
+  assert.doesNotMatch(res.text, /DS_Store|MACOSX/);
+  assert.equal((await req('get', '/', 'zipper.pad.test')).text, '<h1>moved in</h1>');
+  assert.equal((await req('get', '/pics/dog.gif', 'zipper.pad.test')).status, 200);
+
+  await importZip(m, await makeZip([['about.html', 'old about']]), 'old');
+  assert.equal((await req('get', '/old/about.html', 'zipper.pad.test')).text, 'old about');
+});
+
+test('zip import refuses traversal, links, oversized files and non-zips', async () => {
+  const m = await member('zip-attack');
+  // yazl won't write a ../ name, so write a same-length name and patch both copies of it in the archive
+  const evil = Buffer.from((await makeZip([['xx/evil.html', 'pwned']])).toString('latin1').replaceAll('xx/evil.html', '../evil.html'), 'latin1');
+  assert.match((await importZip(m, evil)).text, /could not be read.*Nothing was imported/);
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'evil.html')), false);
+
+  const res = await importZip(m, await makeZip([
+    ['ok.html', 'fine'],
+    ['link.html', '/etc/passwd', { mode: 0o120777 }],
+    ['bomb.txt', Buffer.alloc(2 * 1048576)], // 2 MB of zeros squeezes to a few KB; the per-file limit here is 1 MB
+  ]));
+  assert.match(res.text, /Imported 1 file\b/);
+  assert.match(res.text, /link\.html \(link\)/);
+  assert.match(res.text, /bomb\.txt \(too big\)/);
+
+  assert.match((await importZip(m, Buffer.from('not a zip at all'))).text, /could not be read/);
+
+  // a refused file must not use up the unpacked-size budget meant for the files that get saved
+  const fair = await importZip(m, await makeZip([['big.php', Buffer.alloc(1048576)], ['fair.html', 'still here']]));
+  assert.match(fair.text, /Imported 1 file\b/);
+  assert.match(fair.text, /big\.php \(name or file type not allowed\)/);
+
+  // folders and junk count toward the entry limit too
+  const z = new yazl.ZipFile();
+  for (let i = 0; i <= 2000; i++) z.addEmptyDirectory(`d${i}/`);
+  z.end();
+  const many = await new Promise((resolve) => { const parts = []; z.outputStream.on('data', (c) => parts.push(c)).on('end', () => resolve(Buffer.concat(parts))); });
+  assert.match((await importZip(m, many)).text, /more than 2000 files/);
+});
