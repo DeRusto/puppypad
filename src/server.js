@@ -18,6 +18,10 @@ const cfg = {
   BASE_URL: base.origin,
   BASE_HOST: base.hostname,
   ABUSE_EMAIL: env.ABUSE_EMAIL || `abuse@${base.hostname}`,
+  // shown on /rules when set
+  OPERATOR: env.OPERATOR || '',
+  GOVERNING_LAW: env.GOVERNING_LAW || '',
+  DMCA_AGENT: env.DMCA_AGENT || '',
   QUOTA_MB: Number(env.QUOTA_MB || 50),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
@@ -313,6 +317,7 @@ main.get('/webring/:dir(next|prev)', (req, res) => {
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 });
 main.get('/rules', (req, res) => res.send(V.rules(req.ctx)));
+main.get('/terms', (req, res) => res.redirect(301, '/rules'));
 main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));
 
 // ----- signup / login -----

@@ -265,21 +265,81 @@ const report = (ctx, m, v = {}) => layout(ctx, 'Report a site', `
 <div class="hp" aria-hidden="true"><input type="text" name="website" tabindex="-1" autocomplete="off"></div>
 <button>Send report</button></form></section>`);
 
-const rules = (ctx) => layout(ctx, 'Rules', `
-<section class="box"><h2>House rules</h2>
-<p>This is a free hobby host. Accidents are welcome. These are not, and breaking them gets your pad rolled up.</p>
+const rules = (ctx) => {
+  const c = ctx.cfg, name = esc(c.SITE_NAME), mail = esc(c.ABUSE_EMAIL);
+  return layout(ctx, 'Rules', `
+<section class="box"><h2>Rules and terms</h2>
+<p>${c.OPERATOR ? `${name} is run by ${esc(c.OPERATOR)}. ` : ''}By signing up for or using ${name} you agree to these terms.
+If you don't agree, please don't use it. "We" and "us" below means the people who run ${name}.</p>
+
+<h3>A hobby host, run on a best-effort basis</h3>
+<p>${name} is a free host for static homepages. It is run by a small team that does its best to keep it up, but we
+can't promise any level of uptime or service.</p>
+<p>You are responsible for keeping your own copy of your site. We take backups, but if a server fails badly your
+files may not be recoverable.</p>
+
+<h3>Who can sign up</h3>
+<p>You must be a person, not a bot, and at least 13 years old, or older if the age of digital consent where you live
+is higher than 13. If we learn an account holder doesn't meet this, we may suspend or delete the account.</p>
+
+<h3>Your content is yours, and your responsibility</h3>
+<p>You keep the rights to what you upload. You are responsible for everything you publish here, and you confirm
+that you have the right to publish it and that it breaks no law. We don't pre-screen sites, but we do look at
+reports and at sites our automatic checks flag.</p>
+<p>To show your site in the dog park and on your profile, we take a screenshot of your front page.
+Deleting your account removes it.</p>
+
+<h3>House rules</h3>
+<p>Accidents are welcome. These are not, and breaking them gets your pad rolled up:</p>
 <ol>
-<li>Nothing illegal. No content that sexualizes minors, ever.</li>
-<li>No malware, phishing, scams, or pages that pretend to be another company or person.</li>
-<li>No harassment, threats, or posting other people's private information.</li>
-<li>No spam, link farms, or sites that exist only for SEO.</li>
-<li>No file dumps. This is for web pages, with ${ctx.cfg.QUOTA_MB} MB per site.</li>
-<li>Only upload things you made or have the right to share.</li>
-<li>Adult content is not allowed.</li>
-<li>You must be 13 or older to have a site.</li>
+<li>Nothing illegal where you live or in the United States.</li>
+<li>No content that sexualizes minors, ever, drawn or not.</li>
+<li>No adult or pornographic content, and no real gore or shock content.</li>
+<li>No malware, phishing, scams, crypto miners, or pages built to collect people's information under false pretenses.</li>
+<li>No pretending to be another person, company or website.</li>
+<li>No harassment, threats or bullying. No sites made to "expose", dox or pile on another person.</li>
+<li>No spam, link farms, or sites that exist only for search engine tricks.</li>
+<li>No pirated or cracked software, and no "unblocked games" or other copies of things you don't own.</li>
+<li>No file dumps. Your ${c.QUOTA_MB} MB is for the files your website uses.</li>
+<li>No attacks on ${name} or other members: no break-in attempts, no flooding, nothing meant to knock the site over.</li>
+<li>One account per person for one site. Don't create accounts in bulk or to hold names.</li>
 </ol>
-<p>Moderators can remove any site. To appeal or report something, write to ${esc(ctx.cfg.ABUSE_EMAIL)} or use the <a href="/report">report form</a>.</p>
-<p class="note">Edit this page in src/views.js before you launch. It is a starting point, not legal advice.</p></section>`);
+
+<h3>When we remove a site</h3>
+<p>Moderators can take down or delete any site that breaks these rules. We may also contact you, and act if you
+don't respond, when a site's traffic is causing problems for everyone else, or remove sites that have been
+empty and untouched for a year so names aren't held forever. Removed names stay reserved for 90 days.</p>
+<p>To appeal a decision, write to ${mail}. You can delete your own account at any time from your dashboard.</p>
+
+<h3>Reporting a site</h3>
+<p>Use the <a href="/report">report form</a> or write to ${mail} with the site's address and what's wrong.</p>
+
+<h3>Copyright complaints</h3>
+<p>If something on ${name} uses your work without permission, send a notice to ${c.DMCA_AGENT ? esc(c.DMCA_AGENT) : mail} with:</p>
+<ul>
+<li>what work you own, and the exact address of the page or file that copies it;</li>
+<li>your name, postal address, phone number and email;</li>
+<li>a statement that you believe in good faith the use isn't authorized by you, your agent or the law;</li>
+<li>a statement, under penalty of perjury, that your notice is accurate and that you own the work or may act for its owner;</li>
+<li>your physical or electronic signature.</li>
+</ul>
+<p>We remove material that a valid notice covers, tell the member who posted it, and close the accounts of
+repeat infringers. We may pass your notice, including your email address, to that member so they can respond.</p>
+<h3>No warranty, limited liability</h3>
+<p>${name} is provided as is, without any warranty. As far as the law allows, we are not liable for any loss or
+damage from using or being unable to use it, including lost files, downtime, or anything another member
+publishes. Member sites are made by members, not by us, and some may contain things you find offensive.
+You visit them at your own risk.</p>
+${c.GOVERNING_LAW ? `
+<h3>Governing law</h3>
+<p>These terms are governed by the laws of ${esc(c.GOVERNING_LAW)}.</p>` : ''}
+<h3>Changes</h3>
+<p>We may update these terms. The current version is always on this page, and using ${name} after a change means
+you accept it.</p>
+
+<h3>Contact</h3>
+<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`);
+};
 
 const privacy = (ctx) => layout(ctx, 'Privacy', `
 <section class="box"><h2>Privacy notice</h2>

@@ -216,3 +216,13 @@ test('zip import refuses traversal, links, oversized files and non-zips', async 
   const many = await new Promise((resolve) => { const parts = []; z.outputStream.on('data', (c) => parts.push(c)).on('end', () => resolve(Buffer.concat(parts))); });
   assert.match((await importZip(m, many)).text, /more than 2000 files/);
 });
+
+test('rules page carries the terms; /terms points at it', async () => {
+  const res = await req('get', '/rules');
+  assert.equal(res.status, 200);
+  for (const s of ['Rules and terms', 'Copyright complaints', 'penalty of perjury', 'abuse@pad.test']) assert.ok(res.text.includes(s), s);
+  assert.ok(!res.text.includes('Edit this page in src/views.js'));
+  const t = await req('get', '/terms');
+  assert.equal(t.status, 301);
+  assert.equal(t.headers.location, '/rules');
+});
