@@ -71,15 +71,19 @@ setInterval(() => {
   for (const [k, v] of buckets) if (!v.length || now - v[v.length - 1] > 86400000) buckets.delete(k);
 }, 600000).unref();
 
-// Signs that a member page is phishing. A match only puts the site in the admin queue; it stays online.
+// Signs that a member page or script is phishing or mining. A match only puts the site in the admin queue; it stays online.
 const BRANDS = /\b(paypal|apple ?id|icloud|microsoft|office ?365|outlook|hotmail|google|gmail|facebook|instagram|whatsapp|netflix|amazon|ebay|coinbase|binance|metamask|steam|roblox|discord|wells ?fargo|chase|bank of america|citibank|hsbc|barclays|dhl|fedex|usps)\b/i;
+const MINERS = /\b(coin-?hive|crypto-?loot|cryptonight|coinimp|webminepool|jsecoin|minero\.cc|deepminer|monerominer|webmine\.(cz|pro))\b/i;
 function phishSignals(html) {
   const s = String(html);
   const found = [];
-  if (/<input\b[^>]*\btype\s*=\s*["']?password/i.test(s)) found.push('password field');
+  // the second pattern catches forms built by script, e.g. el.type = 'password' or setAttribute('type', "password")
+  if (/<input\b[^>]*\btype\s*=\s*["']?password/i.test(s) || /\btype\b["']?\s*[=:,]\s*["'`]password["'`]/i.test(s)) found.push('password field');
   if (/<input\b[^>]*\b(autocomplete\s*=\s*["']?cc-|name\s*=\s*["']?[^"'\s>]*(card.?num|cvv|cvc))/i.test(s)) found.push('card field');
-  const brand = ((s.match(/<title\b[^>]*>([^<]*)/i) || [])[1] || '').match(BRANDS);
+  const title = (s.match(/<title\b[^>]*>([^<]*)/i) || s.match(/document\.title\s*=\s*["'`]([^"'`]*)/) || [])[1] || '';
+  const brand = title.match(BRANDS);
   if (brand) found.push(`"${brand[0]}" in title`);
+  if (MINERS.test(s)) found.push('crypto-miner script');
   return found;
 }
 
