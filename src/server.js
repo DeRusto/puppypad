@@ -275,18 +275,19 @@ main.get('/browse', (req, res) => {
   const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${LIVE} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET ?`).all((page - 1) * 24).map(hasShot);
   res.send(V.browse(req.ctx, { rows, page, pages, sort }));
 });
-main.get('/site/:name', (req, res) => {
-  const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+function showProfile(req, res, name, m, status = 200) {
+  const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
   if (!p) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
   const me = req.ctx.user;
-  res.send(V.profile(req.ctx, {
+  res.status(status).send(V.profile(req.ctx, m, {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
     events: db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id),
     followers: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followed_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
     follows: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.followed_id WHERE f.follower_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
   }));
-});
+}
+main.get('/site/:name', (req, res) => showProfile(req, res, req.params.name, req.query.ok ? { ok: String(req.query.ok) } : null));
 main.post('/follow', (req, res) => {
   const me = req.ctx.user;
   if (!me) return res.redirect('/login');
@@ -526,6 +527,19 @@ main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(r
 main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
   res.redirect('/dashboard/guestbook');
+});
+main.post('/account/password', auth, (req, res) => {
+  const user = req.ctx.user;
+  const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
+  const password = String(req.body.new_password || '');
+  if (!U.limit(`pwchange:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
+  if (!U.checkPw(String(req.body.password || ''), user.pw_hash)) return fail('Your current password is wrong. Nothing was changed.');
+  if (password.length < 10 || password.length > 200) return fail('Use a new password with at least 10 characters.');
+  if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
+  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(U.hashPw(password), user.id);
+  // log out everywhere else, in case the old password leaked
+  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
+  res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 main.post('/dashboard/delete-account', auth, (req, res) => {
   if (!U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash)) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);

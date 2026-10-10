@@ -127,6 +127,25 @@ test('a deleted site name is held, a reserved one is refused', async () => {
   assert.match((await signup('admin', 'admin-wannabe@example.com')).text, /not available/);
 });
 
+test('members change their password from their profile page', async () => {
+  const m = await member('pwdog');
+  const other = { cookie: (await req('post', '/login').type('form').send({ username: 'pwdog', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0] };
+  const page = await req('get', '/site/pwdog').set('Cookie', m.cookie);
+  assert.match(page.text, /action="\/account\/password"/);
+  assert.doesNotMatch((await req('get', '/site/pwdog')).text, /Change password/);
+  const change = (body) => req('post', '/account/password').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  assert.match((await change({ password: 'wrongpassword', new_password: 'newpassword22', confirm_password: 'newpassword22' })).text, /current password is wrong/);
+  assert.match((await change({ password: 'longpassword1', new_password: 'newpassword22', confirm_password: 'newpassword23' })).text, /do not match/);
+  assert.match((await change({ password: 'longpassword1', new_password: 'short', confirm_password: 'short' })).text, /at least 10 characters/);
+  const ok = await change({ password: 'longpassword1', new_password: 'newpassword22', confirm_password: 'newpassword22' });
+  assert.equal(ok.status, 302);
+  assert.match((await req('get', ok.headers.location).set('Cookie', m.cookie)).text, /Password changed/);
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 200); // this session stays
+  assert.equal((await req('get', '/dashboard').set('Cookie', other.cookie)).status, 302); // the other one is logged out
+  assert.equal((await req('post', '/login').type('form').send({ username: 'pwdog', password: 'longpassword1' })).status, 401);
+  assert.equal((await req('post', '/login').type('form').send({ username: 'pwdog', password: 'newpassword22' })).status, 302);
+});
+
 test('pages that look like phishing are flagged once for review', async () => {
   const m = await member('fishy');
   const save = (content) => req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'login.html', content });

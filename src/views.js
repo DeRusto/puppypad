@@ -114,11 +114,11 @@ ${cards(ctx, rows)}
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
-const profile = (ctx, { p, following, events, followers, follows }) => {
+const profile = (ctx, m, { p, following, events, followers, follows }) => {
   const url = ctx.cfg.siteUrl(p.username);
   const mine = ctx.user && ctx.user.id === p.id;
   return layout(ctx, p.username, `
-<section class="box"><h2>${esc(p.username)}</h2><div class="prof">
+<section class="box"><h2>${esc(p.username)}</h2>${msg(m)}<div class="prof">
 <div class="pic">${shotImg(ctx, p, url)}</div>
 <div class="info"><p><a href="${esc(url)}">${esc(url.replace(/^https?:\/\//, ''))}</a></p>
 ${p.tagline ? `<p>${esc(p.tagline)}</p>` : ''}
@@ -127,7 +127,14 @@ ${mine ? '<p><a href="/dashboard">Edit my site</a></p>' : `<form class="inline" 
 <button name="action" value="${following ? 'unfollow' : 'follow'}">${following ? 'Unfollow' : ctx.user ? 'Follow' : 'Log in to follow'}</button></form>
 <p style="margin-top:10px"><a href="/report?site=${esc(p.username)}">Report this site</a></p>`}</div></div></section>
 <section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${EVENT_TEXT[e.kind] || esc(e.kind)} ${ago(e.created_at)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}</section>
-<section class="box"><h2>Followers</h2>${nameLinks(followers)}<h3>Following</h3>${nameLinks(follows)}</section>`);
+<section class="box"><h2>Followers</h2>${nameLinks(followers)}<h3>Following</h3>${nameLinks(follows)}</section>
+${mine ? `<section class="box"><h2>Change password</h2>
+<form class="stack" method="post" action="/account/password">${csrfField(ctx)}<label for="curpw">Current password</label>
+<input type="password" id="curpw" name="password" required autocomplete="current-password">
+<label for="newpw">New password (10 characters or more)</label>
+<input type="password" id="newpw" name="new_password" minlength="10" maxlength="200" required autocomplete="new-password">
+<label for="newpw2">New password again</label>
+<input type="password" id="newpw2" name="confirm_password" minlength="10" maxlength="200" required autocomplete="new-password"><button>Change password</button></form></section>` : ''}`);
 };
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
