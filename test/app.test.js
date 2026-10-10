@@ -261,3 +261,31 @@ test('rules page carries the terms; /terms points at it', async () => {
   assert.equal(t.status, 301);
   assert.equal(t.headers.location, '/rules');
 });
+
+test('signup offers starter layouts and writes the one picked', async () => {
+  const form = await req('get', '/signup');
+  for (const id of ['sky', 'shrine', 'notebook', 'arcade']) assert.match(form.text, new RegExp(`name="starter" value="${id}"`));
+  assert.match(form.text, /value="sky" checked/);
+
+  await req('post', '/signup').type('form').send({ username: 'diarist', email: 'diarist@example.com', password: 'longpassword1', agree: '1', starter: 'notebook' });
+  const page = fs.readFileSync(path.join(process.env.DATA_DIR, 'sites', 'diarist', 'index.html'), 'utf8');
+  assert.match(page, /diarist's Notebook/);
+  assert.match(page, /webring\/next\?from=diarist/);
+  assert.doesNotMatch(page, /\{\{/);
+
+  // anything unknown falls back to the classic
+  await req('post', '/signup').type('form').send({ username: 'oddball', email: 'oddball@example.com', password: 'longpassword1', agree: '1', starter: '../../etc/passwd' });
+  assert.match(fs.readFileSync(path.join(process.env.DATA_DIR, 'sites', 'oddball', 'index.html'), 'utf8'), /oddball's Pad/);
+});
+
+test('starter previews render with stand-ins for the counter and guestbook', async () => {
+  for (const id of ['sky', 'shrine', 'notebook', 'arcade']) {
+    const res = await req('get', `/starters/${id}`);
+    assert.equal(res.status, 200, id);
+    assert.match(res.text, /yourname/);
+    assert.doesNotMatch(res.text, /\/_hw\//);
+    assert.doesNotMatch(res.text, /\{\{/);
+  }
+  assert.equal((await req('get', '/starters/nope')).status, 404);
+  assert.equal((await req('get', '/starters/hasOwnProperty')).status, 404);
+});

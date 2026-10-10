@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NAME}}'s Pad</title>
+<style>
+  /* This is YOUR pad. Change anything. Make a mess. Clean it up, or don't.
+     Easy knobs: change these colours and fonts and the whole page follows. */
+  :root {
+    --page: #4aa9e6;      /* background behind the boxes */
+    --box: #fdfeff;       /* inside the boxes */
+    --stripe: #d6eafa;    /* faint lines on the boxes */
+    --border: #2f8fd0;    /* box borders */
+    --text: #14264f;
+    --heading: #0b4f9e;
+    --accent: #ffe14d;    /* the yellow splash behind the title */
+    --link: #0a3fc4;
+    --visited: #7a2ea0;
+    --font: "Comic Sans MS", "Chalkboard SE", cursive;
+    --width: 720px;       /* how wide the page gets */
+  }
+  body { margin: 0; padding: 16px; background: var(--page); color: var(--text); font: 16px/1.45 var(--font); }
+  a { color: var(--link); }  a:visited { color: var(--visited); }
+  .page { max-width: var(--width); margin: 0 auto; }
+  .box { background: var(--box) repeating-linear-gradient(45deg, transparent 0 21px, var(--stripe) 21px 22px);
+         border: 4px ridge var(--border); padding: 12px; margin-bottom: 12px; }
+  h1 { font-size: 44px; line-height: 1.05; text-align: center; margin: 0; color: var(--heading);
+       background: radial-gradient(ellipse 46% 60% at 50% 62%, var(--accent) 0 60%, transparent 62%); }
+  h2 { font-size: 24px; color: var(--heading); margin: 0 0 6px; }
+  hr { border: 0; height: 6px; background: repeating-linear-gradient(90deg, var(--accent) 0 12px, var(--border) 12px 24px); }
+  .wip { background: repeating-linear-gradient(45deg, var(--accent) 0 14px, var(--text) 14px 28px); padding: 6px; }
+  .wip div { background: var(--text); color: var(--accent); text-align: center; font-weight: 700; padding: 6px; }
+  .center { text-align: center; }
+  iframe { border: 2px inset var(--border); width: 100%; height: 420px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="box">
+    <h1>{{NAME}}'s Pad</h1>
+    <marquee>*** welcome to my pad *** wipe your paws *** sign the guestbook before you go!! ***</marquee>
+  </div>
+
+  <div class="box">
+    <h2>About Me</h2>
+    <p>Write something here. Who are you? What is this page for?</p>
+    <div class="wip"><div>!! WET FLOOR !! this pad is under construction</div></div>
+  </div>
+
+  <div class="box">
+    <h2>Kewl Links</h2>
+    <ul>
+      <li><a href="{{HOST_URL}}/browse">The dog park: my neighbors on {{HOST_NAME}}</a></li>
+      <li><a href="{{HOST_URL}}/random">Fetch a random pad</a></li>
+    </ul>
+  </div>
+
+  <div class="box">
+    <h2>Guestbook</h2>
+    <iframe src="/_hw/guestbook" title="Guestbook"></iframe>
+  </div>
+
+  <div class="box center">
+    <p>Paws through the door: <img src="/_hw/counter.svg" alt="hit counter" style="vertical-align: middle"></p>
+    <hr>
+    <p>
+      <a href="{{HOST_URL}}/webring/prev?from={{NAME}}">&lt;&lt; Prev</a> |
+      <a href="{{HOST_URL}}/webring/random">Random</a> |
+      <a href="{{HOST_URL}}/webring/next?from={{NAME}}">Next &gt;&gt;</a>
+    </p>
+    <p><small>hosted free on <a href="{{HOST_URL}}">{{HOST_NAME}}</a></small></p>
+  </div>
+
+</div>
+</body>
+</html>

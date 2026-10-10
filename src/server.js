@@ -8,6 +8,7 @@ const { db, SITES_DIR, SHOTS_DIR } = require('./db');
 const U = require('./util');
 const V = require('./views');
 const { readZip } = require('./zip');
+const starters = require('./starters');
 
 // ---------- config ----------
 const env = process.env;
@@ -90,7 +91,6 @@ function autoFlag(user, rel, content) {
 const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
 const LIVE = 'verified = 1 AND banned = 0';
 const siteDir = (name) => path.join(SITES_DIR, name);
-const starter = fs.readFileSync(path.join(__dirname, '..', 'templates', 'starter.html'), 'utf8');
 
 function makeToken(userId, kind, ttl) {
   const t = U.newToken();
@@ -325,11 +325,17 @@ main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));
 
 // ----- signup / login -----
 main.get('/signup', (req, res) => res.send(V.signup(req.ctx)));
+// full-page look at a starter layout, opened from the signup form
+main.get('/starters/:id', (req, res) => {
+  if (!starters.valid(req.params.id)) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>No such starter. <a href="/signup">Back to signup.</a></p>'));
+  res.send(starters.preview(req.params.id, cfg));
+});
 main.post('/signup', async (req, res) => {
   const username = String(req.body.username || '').trim().toLowerCase();
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
-  const fail = (err, code = 400) => res.status(code).send(V.signup(req.ctx, { err }, { username, email }));
+  const starter = starters.valid(req.body.starter) ? req.body.starter : starters.DEFAULT;
+  const fail = (err, code = 400) => res.status(code).send(V.signup(req.ctx, { err }, { username, email, starter }));
   if (req.body.website) return res.send(V.notice(req.ctx, 'Check your email', '<p>We sent you a confirmation link.</p>')); // bot
   if (!U.limit(`signup:${req.ip}`, 5, 3600000)) return fail('Too many signups from your connection. Try again in an hour.', 429);
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
@@ -343,8 +349,7 @@ main.post('/signup', async (req, res) => {
   const id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
     .run(username, email, U.hashPw(password), req.ip, t, t).lastInsertRowid;
   fs.mkdirSync(siteDir(username), { recursive: true });
-  fs.writeFileSync(path.join(siteDir(username), 'index.html'),
-    starter.replaceAll('{{NAME}}', username).replaceAll('{{HOST_NAME}}', U.esc(cfg.SITE_NAME)).replaceAll('{{HOST_URL}}', cfg.BASE_URL));
+  fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
     `Welcome! Confirm your email to put ${username}.${cfg.BASE_HOST} online:\n\n${cfg.BASE_URL}/verify?token=${makeToken(id, 'verify', 2 * DAY)}\n\nIf you did not sign up, ignore this message.`);
   res.send(V.notice(req.ctx, 'Check your email', `<p>We sent a confirmation link to <b>${U.esc(email)}</b>. Your site goes live when you click it. The link works for 48 hours.</p>`));

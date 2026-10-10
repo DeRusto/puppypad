@@ -5,6 +5,7 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 ## What's in the box
 
 - Signup with email confirmation, login, password reset, account deletion (a deleted site's name is held for 90 days)
+- Four starter layouts to pick from at signup (`templates/`), each restyled from one block of colour and font variables
 - Per-member folder with uploads, zip import (unpacks a whole site, with the same name, type and quota checks), folders, text editor, quota (50 MB) and file-type allowlist
 - Member sites served on their own subdomain, with custom `not_found.html`
 - Widgets: `/_hw/counter.svg`, `/_hw/guestbook` (owner can delete entries), webring prev/next/random
