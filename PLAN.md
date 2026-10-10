@@ -152,12 +152,36 @@ signup. **Your step:** read both pages and make them match how you run things
 - Log in with site name *or* email.
 - Admin audit log table: who banned, restored or deleted what, and when.
 - Visible "Report this site" link on default 404/410 pages and profile pages.
+- ✅ Clean URLs: `/about` serves `about.html` when there's no file or folder called `about`.
+- ✅ Download my site: `/dashboard/download` hands the member their whole folder as one `.zip`.
+- ✅ Change email address: confirmed by a link sent to the new address; the old address is told.
+- ✅ New-site cooldown: a site stays off the home page, the dog park, the webring and `/random`
+  until it has been edited at least once and is `NEW_SITE_HOURS` old (24 by default). Its address
+  and profile page work from the start.
+- ✅ Drag-and-drop upload of many files at once, sent 20 at a time, with a progress bar.
+- `/healthz` for the uptime monitor (§5): checks the database answers and the disk isn't nearly full.
 
 **Phase B — community (weeks 4–8)**
 - Webring membership as opt-in (today every live site is in the ring).
 - Tags or categories on profiles, and a search on `/browse`.
 - Guestbook moderation: hold entries containing links for owner approval.
 - RSS/Atom feed per site and for the global "recently updated" list.
+- Rename my site: once every N days; the old name goes into the 90-day hold and redirects to the new one.
+- Hide from browse: a per-site switch that keeps it off `/browse`, the feed and the webring and sends
+  `X-Robots-Tag: noindex`.
+- Broken link checker: the dashboard lists links and `src` attributes in the member's HTML that point
+  at their own files that don't exist.
+- Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
+  with no cookies.
+- Bandwidth guard: a daily byte cap per site, and throttling of media hotlinked from other domains.
+- "New page" starts from the member's starter layout, already linked to `puppypad.css`.
+- Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
+  `<img>` with width and height.
+- Guestbook notifications: email the owner on new entries (instant, daily digest or off).
+- Weekly digest email of updates from followed sites (opt-in).
+- Staff picks and a "site of the week" on the home page (admin flag on `users`).
+- Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
+- Admin search and stats: find a member by name, email or IP; signups per day; disk and bandwidth per site.
 
 **Phase C — growth (later)**
 - File version history (keep the last N versions per file under `data/history`).
@@ -165,6 +189,15 @@ signup. **Your step:** read both pages and make them match how you run things
   `/internal/tls-check` + on-demand TLS path issues the certificate.
 - CLI/WebDAV or Git push for members who prefer local editors.
 - Optional supporter tier: see §3.2.
+- "Log out everywhere" button on the profile page (password change and reset already do this).
+- Optional two-factor login (TOTP), mainly for admins and supporters with custom domains.
+- Favicon and link-preview defaults: a PuppyPad favicon and an `og:image` from the dog-park
+  screenshot when the member has none.
+- Editor extras: tag autocomplete (Emmet) and find-and-replace, from CodeMirror addons.
+- Member-run webrings: any member can start a named ring that others join, with a ring page and snippet.
+- Monthly theme challenges using tags, with a gallery.
+- Inactive sites: email members whose site is still the untouched starter after 60 days, and archive
+  (not delete) sites never edited. Needs a line on the rules page first.
 
 ### 3.1 Widgets and site tools (planned)
 
