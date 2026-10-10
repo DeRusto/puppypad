@@ -188,9 +188,8 @@ points. The ones in **bold** are things the current text gets wrong or leaves ou
 
 - [ ] **Say who runs it.** The page names no operator. Add your name (or the name you run it
       under) and country. Privacy laws such as the GDPR expect this.
-- [ ] **Say how long IP addresses are kept.** Signup IPs, guestbook IPs and report IPs are kept
-      forever today, and the page doesn't say. Either state that, or have the app clear them
-      after a set time (90 days is common) and say so.
+- [x] IP addresses: guestbook and report IPs are now erased after 90 days, and the page says so.
+      Signup IPs stay until the account is deleted.
 - [ ] **Name the services that see data.** It mentions "our email provider" and Turnstile. Also
       true: Resend sends mail, Cloudflare runs DNS, forwards abuse mail and stores the backups
       (R2), and the editor loads CodeMirror from cdnjs (Cloudflare), which sees the member's IP.

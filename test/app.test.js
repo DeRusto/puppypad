@@ -240,3 +240,15 @@ test('rules page carries the terms; /terms points at it', async () => {
   assert.equal(t.status, 301);
   assert.equal(t.headers.location, '/rules');
 });
+
+test('guestbook and report IPs are erased after 90 days', () => {
+  const old = Date.now() - 91 * 86400000;
+  const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
+  const gbOld = db.prepare("INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?, 'a', 'hi', '10.0.0.1', ?)").run(owner, old).lastInsertRowid;
+  const gbNew = db.prepare("INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?, 'b', 'hi', '10.0.0.2', ?)").run(owner, Date.now()).lastInsertRowid;
+  const rpOld = db.prepare("INSERT INTO reports (site, reason, details, ip, created_at) VALUES ('iptest', 'Spam', 'x', '10.0.0.3', ?)").run(old).lastInsertRowid;
+  app.housekeeping();
+  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbOld).ip, null);
+  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbNew).ip, '10.0.0.2');
+  assert.equal(db.prepare('SELECT ip FROM reports WHERE id = ?').get(rpOld).ip, null);
+});
