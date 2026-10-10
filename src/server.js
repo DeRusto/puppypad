@@ -35,6 +35,7 @@ const cfg = {
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
 const DAY = 86400000;
 const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
+const IP_KEEP = 90 * DAY; // guestbook and report IPs are erased after this; the privacy page promises it
 const now = () => Date.now();
 
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
@@ -582,15 +583,19 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   res.status(500).type('text').send('Something broke on our side. Try again.');
 });
 
-// housekeeping: expired sessions/tokens, and accounts never confirmed after 3 days
-setInterval(() => {
+// housekeeping: expired sessions/tokens, old guestbook and report IPs, and accounts never confirmed after 3 days
+const housekeeping = () => {
   db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
   db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
   db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
+  db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+  db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
   for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
-}, 3600000).unref();
+};
+setInterval(housekeeping, 3600000).unref();
 
 module.exports = app; // tests import the app without starting a server
+app.housekeeping = housekeeping;
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);

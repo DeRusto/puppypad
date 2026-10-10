@@ -348,7 +348,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <ul>
 <li><b>Your account:</b> site name, email address, and a scrambled (hashed) copy of your password. We use your email only for confirmation, password resets and messages about your site.</li>
 <li><b>Your site:</b> the files you upload, your description, your hit count, who you follow, and a screenshot of your front page for the directory.</li>
-<li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse.</li>
+<li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse. Guestbook and report addresses are erased after 90 days; your signup address is kept until you delete your account.</li>
 <li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
 </ul>
 <h3>Who else sees it</h3>
