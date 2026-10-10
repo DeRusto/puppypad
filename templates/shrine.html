@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NAME}}'s Shrine</title>
+<style>
+  /* A sidebar layout: menu on the left, your stuff on the right.
+     Easy knobs: change these colours and fonts and the whole page follows. */
+  :root {
+    --page: #fde4f2;      /* background behind everything */
+    --dots: #f7c3e0;      /* polka dots on the background */
+    --panel: #fffafd;     /* inside the boxes */
+    --border: #c48bd8;
+    --text: #4b2a5a;
+    --heading: #b0398a;
+    --accent: #ffd6ec;    /* box title bars */
+    --link: #7a3fd1;
+    --visited: #b0398a;
+    --font: Verdana, Geneva, sans-serif;
+    --title-font: Georgia, "Times New Roman", serif;
+    --sidebar: 200px;     /* how wide the menu is */
+    --width: 900px;       /* how wide the whole page gets */
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; color: var(--text); font: 14px/1.5 var(--font);
+         background: var(--page) radial-gradient(var(--dots) 3px, transparent 4px) 0 0 / 24px 24px; }
+  a { color: var(--link); }  a:visited { color: var(--visited); }
+  .page { max-width: var(--width); margin: 0 auto; display: grid; grid-template-columns: var(--sidebar) 1fr; gap: 14px; }
+  header { grid-column: 1 / -1; text-align: center; }
+  h1 { font: italic 700 42px/1.1 var(--title-font); color: var(--heading); margin: 8px 0 2px; text-shadow: 2px 2px 0 var(--panel); }
+  .tag { margin: 0; font-style: italic; }
+  .box { background: var(--panel); border: 2px dashed var(--border); border-radius: 10px; padding: 0 12px 12px; margin-bottom: 14px; }
+  .box h2 { font: 700 15px var(--font); color: var(--heading); background: var(--accent); margin: 0 -12px 10px;
+            padding: 6px 12px; border-radius: 8px 8px 0 0; letter-spacing: 1px; text-transform: lowercase; }
+  nav ul { list-style: none; margin: 0; padding: 0; }
+  nav li::before { content: "\2661  "; color: var(--heading); }
+  .center { text-align: center; }
+  .fav { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .fav div { border: 1px solid var(--border); border-radius: 6px; padding: 8px; text-align: center; background: var(--page); }
+  iframe { border: 1px solid var(--border); border-radius: 6px; width: 100%; height: 380px; background: #fff; }
+  @media (max-width: 640px) { .page { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>{{NAME}}'s Shrine</h1>
+    <p class="tag">~ a little corner of the web, dedicated to my favourite things ~</p>
+  </header>
+
+  <aside>
+    <nav class="box">
+      <h2>menu</h2>
+      <ul>
+        <li><a href="#about">about me</a></li>
+        <li><a href="#shrine">the shrine</a></li>
+        <li><a href="#updates">updates</a></li>
+        <li><a href="#guestbook">guestbook</a></li>
+      </ul>
+    </nav>
+    <div class="box">
+      <h2>now</h2>
+      <p>listening to: ???<br>reading: ???<br>mood: :)</p>
+    </div>
+    <div class="box center">
+      <h2>visitors</h2>
+      <img src="/_hw/counter.svg" alt="hit counter">
+    </div>
+    <div class="box">
+      <h2>elsewhere</h2>
+      <p><a href="{{HOST_URL}}/browse">the dog park</a><br><a href="{{HOST_URL}}/random">a random pad</a></p>
+    </div>
+  </aside>
+
+  <main>
+    <section class="box" id="about">
+      <h2>about me</h2>
+      <p>Hi, I'm {{NAME}}! Tell visitors who you are and why you made this shrine.</p>
+    </section>
+
+    <section class="box" id="shrine">
+      <h2>the shrine</h2>
+      <p>What is this shrine for? A show, a band, a game, a pet, a character? Gush about it here.</p>
+      <div class="fav">
+        <div>favourite #1</div>
+        <div>favourite #2</div>
+        <div>favourite #3</div>
+        <div>favourite #4</div>
+      </div>
+    </section>
+
+    <section class="box" id="updates">
+      <h2>updates</h2>
+      <ul>
+        <li><b>today</b>: opened the shrine!</li>
+      </ul>
+    </section>
+
+    <section class="box" id="guestbook">
+      <h2>guestbook</h2>
+      <iframe src="/_hw/guestbook" title="Guestbook"></iframe>
+    </section>
+  </main>
+
+  <footer class="box center" style="grid-column: 1 / -1; padding-top: 12px">
+    <a href="{{HOST_URL}}/webring/prev?from={{NAME}}">&lt;&lt; prev</a> |
+    <a href="{{HOST_URL}}/webring/random">random</a> |
+    <a href="{{HOST_URL}}/webring/next?from={{NAME}}">next &gt;&gt;</a>
+    <br><small>hosted free on <a href="{{HOST_URL}}">{{HOST_NAME}}</a></small>
+  </footer>
+
+</div>
+</body>
+</html>

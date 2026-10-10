@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NAME}}'s Notebook</title>
+<style>
+  /* A diary on notebook paper: one column of dated entries, newest on top.
+     Easy knobs: change these colours and fonts and the whole page follows. */
+  :root {
+    --desk: #c9a77c;      /* the desk the notebook sits on */
+    --paper: #fffef6;
+    --lines: #b9d3ee;     /* the blue ruled lines */
+    --margin: #ef8a8a;    /* the red margin line */
+    --text: #26324a;
+    --heading: #1d3f8f;
+    --tape: rgba(255, 236, 140, .75);
+    --link: #1d56c9;
+    --visited: #7a2ea0;
+    --font: "Courier New", Courier, monospace;
+    --hand: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
+    --width: 680px;       /* how wide the notebook is */
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 12px; background: var(--desk); color: var(--text); font: 16px/28px var(--font); }
+  a { color: var(--link); }  a:visited { color: var(--visited); }
+  .paper { max-width: var(--width); margin: 0 auto; padding: 28px 24px 28px 64px; position: relative;
+           background: linear-gradient(90deg, transparent 47px, var(--margin) 47px 49px, transparent 49px),
+                       repeating-linear-gradient(var(--paper) 0 27px, var(--lines) 27px 28px);
+           box-shadow: 3px 4px 0 rgba(0, 0, 0, .25); }
+  .paper::before { content: ""; position: absolute; top: -12px; left: 50%; width: 120px; height: 28px;
+                   margin-left: -60px; background: var(--tape); transform: rotate(-3deg); }
+  h1 { font: 700 38px/56px var(--hand); color: var(--heading); margin: 0; }
+  h2 { font: 700 22px/28px var(--hand); color: var(--heading); margin: 28px 0 0; }
+  .date { color: var(--margin); font-size: 14px; margin: 0; }
+  p, ul { margin: 0 0 28px; }
+  nav { margin-bottom: 28px; }
+  .doodle { float: right; font: 28px/28px var(--hand); transform: rotate(8deg); color: var(--margin); }
+  iframe { border: 1px solid var(--lines); width: 100%; height: 392px; background: #fff; display: block; margin-bottom: 28px; }
+  footer { text-align: center; font-size: 14px; }
+  @media (max-width: 520px) { .paper { padding-left: 24px; background: repeating-linear-gradient(var(--paper) 0 27px, var(--lines) 27px 28px); } }
+</style>
+</head>
+<body>
+<div class="paper">
+
+  <span class="doodle">&#9733;</span>
+  <h1>{{NAME}}'s Notebook</h1>
+  <nav>
+    <a href="#entries">entries</a> &middot;
+    <a href="#about">about</a> &middot;
+    <a href="#guestbook">guestbook</a>
+  </nav>
+
+  <section id="entries">
+    <!-- Copy an <article> to start a new entry. Put the newest one on top. -->
+    <article>
+      <h2>Day one</h2>
+      <p class="date">today</p>
+      <p>Dear diary, I got a homepage. Write your first entry here: what you did, what you're
+      thinking about, what you had for lunch.</p>
+    </article>
+  </section>
+
+  <section id="about">
+    <h2>About this notebook</h2>
+    <p>Who's writing? What's this notebook for?</p>
+  </section>
+
+  <section id="guestbook">
+    <h2>Leave a note in the margin</h2>
+    <iframe src="/_hw/guestbook" title="Guestbook"></iframe>
+  </section>
+
+  <footer>
+    <p>page views: <img src="/_hw/counter.svg" alt="hit counter" style="vertical-align: middle"><br>
+    <a href="{{HOST_URL}}/webring/prev?from={{NAME}}">&lt;&lt; prev</a> |
+    <a href="{{HOST_URL}}/webring/random">random</a> |
+    <a href="{{HOST_URL}}/webring/next?from={{NAME}}">next &gt;&gt;</a><br>
+    hosted free on <a href="{{HOST_URL}}">{{HOST_NAME}}</a></p>
+  </footer>
+
+</div>
+</body>
+</html>

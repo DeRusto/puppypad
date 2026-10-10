@@ -1,4 +1,5 @@
 const { esc, fmtBytes, TEXT_EXT, extOf } = require('./util');
+const starters = require('./starters');
 
 const CSS = `
 /* look: a puppy pad. blue plastic backing with paw prints, white quilted boxes, and one yellow accent for the accidents */
@@ -31,6 +32,7 @@ button.danger{background:#c0392b;color:#fff;border-color:#e9a59d}
 .err{background:#ffdcdc;color:#7a0000;border:2px solid #c00;padding:6px 10px}
 .ok{background:#dff7df;color:#0b4d0b;border:2px solid #1a8f1a;padding:6px 10px}
 .hp{position:absolute;left:-9999px}
+fieldset.starters{border:2px inset var(--edge);display:flex;flex-direction:column;gap:6px;padding:8px 10px}fieldset.starters legend{font-size:14px;color:var(--blue)}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;background:var(--pad)}
 th,td{border:2px inset var(--edge);padding:4px 8px;text-align:left;vertical-align:top}
@@ -152,6 +154,9 @@ const signup = (ctx, m, v = {}) => layout(ctx, 'Sign up', `
 <input type="email" id="email" name="email" value="${esc(v.email)}" required autocomplete="email">
 <label for="password">Password (10 characters or more)</label>
 <input type="password" id="password" name="password" minlength="10" required autocomplete="new-password">
+<fieldset class="starters"><legend>Pick a starter layout. It is only a beginning: every colour, font and box is yours to change.</legend>
+${starters.LIST.map((s) => `<label><input type="radio" name="starter" value="${s.id}"${(v.starter || starters.DEFAULT) === s.id ? ' checked' : ''}> <b>${esc(s.name)}</b>: ${esc(s.blurb)} <a href="/starters/${s.id}" target="_blank">Peek</a></label>`).join('\n')}
+</fieldset>
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input type="text" id="website" name="website" tabindex="-1" autocomplete="off"></div>
 <label><input type="checkbox" name="agree" value="1" required> I am 13 or older and have read the <a href="/rules" target="_blank">rules</a> and <a href="/privacy" target="_blank">privacy notice</a></label>
 ${ctx.cfg.TURNSTILE_SITE_KEY ? `<div class="cf-turnstile" data-sitekey="${esc(ctx.cfg.TURNSTILE_SITE_KEY)}"></div>` : ''}
