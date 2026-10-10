@@ -137,6 +137,8 @@ test('members change their password from their profile page', async () => {
   assert.match((await change({ password: 'wrongpassword', new_password: 'newpassword22', confirm_password: 'newpassword22' })).text, /current password is wrong/);
   assert.match((await change({ password: 'longpassword1', new_password: 'newpassword22', confirm_password: 'newpassword23' })).text, /do not match/);
   assert.match((await change({ password: 'longpassword1', new_password: 'short', confirm_password: 'short' })).text, /at least 10 characters/);
+  assert.match((await change({ password: 'longpassword1', new_password: 'longpassword1', confirm_password: 'longpassword1' })).text, /has to be different/);
+  assert.doesNotMatch((await req('get', '/site/pwdog?ok=Password%20changed.')).text, /Password changed/);
   const ok = await change({ password: 'longpassword1', new_password: 'newpassword22', confirm_password: 'newpassword22' });
   assert.equal(ok.status, 302);
   assert.match((await req('get', ok.headers.location).set('Cookie', m.cookie)).text, /Password changed/);

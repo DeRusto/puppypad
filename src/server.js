@@ -287,7 +287,9 @@ function showProfile(req, res, name, m, status = 200) {
     follows: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.followed_id WHERE f.follower_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
   }));
 }
-main.get('/site/:name', (req, res) => showProfile(req, res, req.params.name, req.query.ok ? { ok: String(req.query.ok) } : null));
+// only the owner sees ?ok= notices, so a crafted link cannot show visitors a fake one
+main.get('/site/:name', (req, res) => showProfile(req, res, req.params.name,
+  req.query.ok && req.ctx.user && req.ctx.user.username === String(req.params.name).toLowerCase() ? { ok: String(req.query.ok) } : null));
 main.post('/follow', (req, res) => {
   const me = req.ctx.user;
   if (!me) return res.redirect('/login');
@@ -536,6 +538,7 @@ main.post('/account/password', auth, (req, res) => {
   if (!U.checkPw(String(req.body.password || ''), user.pw_hash)) return fail('Your current password is wrong. Nothing was changed.');
   if (password.length < 10 || password.length > 200) return fail('Use a new password with at least 10 characters.');
   if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
+  if (U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(U.hashPw(password), user.id);
   // log out everywhere else, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
