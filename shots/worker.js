@@ -1,13 +1,11 @@
 // Screenshot worker. Runs in its own container with no access to member data.
 // It asks the app which site needs a picture, renders it in headless Chromium, and posts the JPEG back.
-const { chromium } = require('playwright-core');
 const net = require('net');
 const dns = require('dns').promises;
 
 const APP = process.env.APP_URL || 'http://app:3000';
 const TOKEN = process.env.SHOT_TOKEN;
 const HOST_MAP = process.env.SHOT_HOST_MAP; // optional Chromium --host-resolver-rules, e.g. "MAP *.example.com caddy"
-if (!TOKEN) { console.error('SHOT_TOKEN is required'); process.exit(1); }
 const headers = { 'x-shot-token': TOKEN };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -74,7 +72,9 @@ async function shoot(browser, url) {
   }
 }
 
-(async () => {
+async function main() {
+  if (!TOKEN) { console.error('SHOT_TOKEN is required'); process.exit(1); }
+  const { chromium } = require('playwright-core'); // loaded here so tests can check the URL rules without a browser installed
   const launch = () => chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--mute-audio', ...(HOST_MAP ? [`--host-resolver-rules=${HOST_MAP}`] : [])] });
   let browser = await launch();
   console.log('screenshot worker ready');
@@ -92,4 +92,7 @@ async function shoot(browser, url) {
     if (process.env.SHOT_ONCE) break;
   }
   await browser.close();
-})();
+}
+
+module.exports = { allowed, isPublicIp };
+if (require.main === module) main();

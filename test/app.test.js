@@ -586,6 +586,77 @@ test('site file cap: new files stop at the cap, replacements still work, deletes
   assert.ok(fs.existsSync(path.join(dir, 'one-more.txt')));
 });
 
+test('a visitor reports a site: it lands in the queue, and bad reports are refused', async () => {
+  await member('naughty');
+  const sent = await req('post', '/report').type('form').send({ site: 'https://naughty.pad.test/page.html', reason: 'Spam', details: 'sells pills', email: 'me@example.com' });
+  assert.match(sent.text, /Report sent/);
+  const row = db.prepare("SELECT * FROM reports WHERE site = 'naughty' AND reason = 'Spam'").get();
+  assert.equal(row.details, 'sells pills');
+  assert.equal(row.status, 'open');
+  assert.match(mail.at(-1), /report: naughty/); // the abuse inbox hears about it
+  assert.equal((await req('post', '/report').type('form').send({ site: 'nobody-here', details: 'x' })).status, 400);
+  assert.equal((await req('post', '/report').type('form').send({ site: 'naughty', details: '' })).status, 400);
+  const before = db.prepare('SELECT COUNT(*) n FROM reports').get().n;
+  await req('post', '/report').type('form').send({ site: 'naughty', details: 'bot', website: 'http://spam' }); // honeypot
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM reports').get().n, before);
+});
+
+test('report submissions are rate limited per connection', async () => {
+  await member('reportlimited');
+  const send = () => request(app).post('/report').set('Host', 'pad.test').set('X-Forwarded-For', '10.9.9.9').type('form').send({ site: 'reportlimited', details: 'again' });
+  for (let i = 0; i < 5; i++) assert.equal((await send()).status, 200);
+  assert.equal((await send()).status, 429);
+});
+
+test('password reset: the emailed link sets a new password once, and logs out other sessions', async () => {
+  const m = await member('forgetful');
+  await req('post', '/forgot').type('form').send({ email: 'forgetful@example.com' });
+  const token = lastLink('reset');
+  assert.equal((await req('post', '/reset').type('form').send({ token, password: 'short' })).status, 400); // too short: token not spent
+  const done = await req('post', '/reset').type('form').send({ token, password: 'brandnewpassword' });
+  assert.equal(done.status, 302);
+  assert.equal(done.headers.location, '/dashboard');
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 302); // the old session is gone
+  assert.equal((await req('post', '/reset').type('form').send({ token, password: 'anotherpassword' })).status, 400); // single use
+  assert.equal((await req('post', '/login').type('form').send({ username: 'forgetful', password: 'longpassword1' })).status, 401);
+  assert.equal((await req('post', '/login').type('form').send({ username: 'forgetful', password: 'brandnewpassword' })).status, 302);
+  const unknown = await req('post', '/forgot').type('form').send({ email: 'nobody@example.com' }); // same answer, so it can't probe for accounts
+  assert.match(unknown.text, /If that address has a site here/);
+});
+
+test('logging out ends the session on the server, not just in the browser', async () => {
+  const m = await member('leaver');
+  const before = db.prepare("SELECT COUNT(*) n FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.username = 'leaver'").get().n;
+  const out = await req('post', '/logout').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(out.status, 302);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.username = 'leaver'").get().n, before - 1);
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 302); // a copied cookie no longer works
+});
+
+test('deleting a file removes it, tidies emptied folders, and stays inside the site', async () => {
+  const m = await member('tidy');
+  const site = path.join(process.env.DATA_DIR, 'sites', 'tidy');
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'a/b/page.html', content: 'x' });
+  assert.ok(fs.existsSync(path.join(site, 'a/b/page.html')));
+  const del = await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'a/b/page.html' });
+  assert.equal(del.status, 302);
+  assert.equal(fs.existsSync(path.join(site, 'a')), false); // both emptied folders went with it
+  assert.equal((await req('get', '/a/b/page.html', 'tidy.pad.test')).status, 404);
+  await member('neighbour');
+  await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: '../neighbour/index.html' });
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'neighbour', 'index.html')));
+  assert.ok(fs.existsSync(path.join(site, 'index.html')));
+});
+
+test("a member's own not_found.html is their 404 page", async () => {
+  const m = await member('custom404');
+  assert.doesNotMatch((await req('get', '/nope', 'custom404.pad.test')).text, /lost puppy/);
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'not_found.html', content: '<h1>lost puppy</h1>' });
+  const res = await req('get', '/nope', 'custom404.pad.test');
+  assert.equal(res.status, 404);
+  assert.equal(res.text, '<h1>lost puppy</h1>');
+});
+
 test('the main site sends a Content-Security-Policy; member sites and the editor do not', async () => {
   const m = await member('cspdog');
   const home = await req('get', '/');
