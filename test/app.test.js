@@ -590,23 +590,65 @@ test('the space-used line stays right through uploads, edits, replacements and d
   const m = await member('tally');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'tally');
   const shown = async () => (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/Space used: (.*?) of .*? in (\d+) file/).slice(1).join(' / ');
-  const truth = () => { const s = U.dirSize(dir); return `${U.fmtBytes(s.total)} / ${s.count}`; };
+  const realWalk = U.dirSize;
+  let walks = 0;
+  U.dirSize = (...a) => { walks++; return realWalk(...a); };
+  const truth = () => { const s = realWalk(dir); return `${U.fmtBytes(s.total)} / ${s.count}`; };
   await shown(); // fills the cache
+  walks = 0;
   await upload(m, 'a.txt', 'x'.repeat(3000));
   assert.equal(await shown(), truth());
   await upload(m, 'a.txt', 'x'.repeat(10)); // replacing shrinks it
   assert.equal(await shown(), truth());
   await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'b.html', content: 'y'.repeat(5000) });
   assert.equal(await shown(), truth());
+  assert.equal(walks, 0); // all of that without walking the folder again
   await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'b.html' });
   assert.equal(await shown(), truth());
+  U.dirSize = realWalk;
 });
 
 test('password hashing does not block: hashes are made and checked asynchronously', async () => {
-  const pending = U.hashPw('longpassword1');
-  assert.ok(pending instanceof Promise);
-  const hash = await pending;
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  const hash = await U.hashPw('longpassword1');
+  assert.ok(yielded, 'other work ran while the hash was computed'); // scryptSync wrapped in an async function would not let it
+  yielded = false;
+  setImmediate(() => { yielded = true; });
+  await U.checkPw('longpassword1', hash);
+  assert.ok(yielded);
   assert.equal(await U.checkPw('longpassword1', hash), true);
   assert.equal(await U.checkPw('wrongpassword', hash), false);
   assert.equal(await U.checkPw('anything', 'not-a-hash'), false);
+});
+
+test('a reset link that does not work is refused before any hashing', async () => {
+  const real = U.hashPw;
+  let hashed = 0;
+  U.hashPw = (...a) => { hashed++; return real(...a); };
+  try {
+    const res = await req('post', '/reset').type('form').send({ token: 'made-up', password: 'longpassword1' });
+    assert.equal(res.status, 400);
+    assert.equal(hashed, 0);
+  } finally { U.hashPw = real; }
+});
+
+test('a password change that finishes after a reset logged everyone out changes nothing', async () => {
+  const m = await member('raced');
+  const realHash = U.hashPw;
+  // the reset lands while the change is hashing its new password
+  U.hashPw = async (pw) => {
+    const h = await realHash(pw);
+    if (pw === 'changedpassword') {
+      db.prepare("UPDATE users SET pw_hash = ? WHERE username = 'raced'").run(await realHash('resetpassword1'));
+      db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'raced')").run();
+    }
+    return h;
+  };
+  try {
+    const res = await req('post', '/account/password').set('Cookie', m.cookie).type('form')
+      .send({ _csrf: m.csrf, password: 'longpassword1', new_password: 'changedpassword', confirm_password: 'changedpassword' });
+    assert.equal(res.headers.location, '/login');
+  } finally { U.hashPw = realHash; }
+  assert.equal((await req('post', '/login').type('form').send({ username: 'raced', password: 'resetpassword1' })).status, 302); // the reset's password stands
 });

@@ -112,6 +112,15 @@ function useToken(t, kind) {
   db.prepare('DELETE FROM tokens WHERE token_hash = ?').run(row.token_hash);
   return q.userById.get(row.user_id);
 }
+// is this token live? without spending it, so a costly step can be skipped for links that would fail anyway
+const tokenLive = (t, kind) => {
+  const row = db.prepare('SELECT expires FROM tokens WHERE token_hash = ? AND kind = ?').get(U.sha(String(t || '')), kind);
+  return !!row && row.expires >= now();
+};
+// Password hashing yields to other requests, so by the time it finishes a reset may have replaced the password
+// and logged every session out. Signed-in actions check that nothing like that happened before they act.
+const stillCurrent = (req, user) => q.userById.get(user.id)?.pw_hash === user.pw_hash &&
+  (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
 function startSession(res, userId) {
@@ -428,7 +437,7 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash))) {
+  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash)) || !stillCurrent(req, user)) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
   }
   if (!user.verified) {
@@ -457,9 +466,12 @@ main.get('/reset', (req, res) => res.send(V.reset(req.ctx, null, String(req.quer
 main.post('/reset', wrap(async (req, res) => {
   const password = String(req.body.password || '');
   if (password.length < 10 || password.length > 200) return res.status(400).send(V.reset(req.ctx, { err: 'Use a password with at least 10 characters.' }, String(req.body.token || '')));
+  const expired = () => res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That reset link is no longer valid. <a href="/forgot">Request a new one.</a></p>'));
+  if (!U.limit(`reset:${req.ip}`, 10, 3600000)) return res.status(429).send(V.notice(req.ctx, 'Slow down', '<p>Too many reset attempts from your connection. Try again in an hour.</p>'));
+  if (!tokenLive(req.body.token, 'reset')) return expired(); // hashing costs real time, so only for a link that works
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
-  if (!user) return res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That reset link is no longer valid. <a href="/forgot">Request a new one.</a></p>'));
+  if (!user) return expired();
   db.prepare('UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?').run(pwHash, user.id);
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
   startSession(res, user.id);
@@ -517,12 +529,14 @@ function saveFiles(user, dir, files, skipped) {
       skipped.push(`${f.name} (a file or folder with that name is in the way)`);
       continue;
     }
-    autoFlag(user, rel, f.data.toString('utf8'));
     used += f.data.length - old;
     if (!exists) count++;
+    // record each write as it lands, so a later failure in the batch can't leave the totals short;
+    // `at` stays the time of the last real walk, so the expiry still catches changes made outside the app
+    usageCache.set(user.username, { total: used, count, at: size.at });
+    autoFlag(user, rel, f.data.toString('utf8'));
     saved.push(rel);
   }
-  usageCache.set(user.username, { total: used, count, at: now() });
   if (saved.length) markUpdated(user.id);
   return saved;
 }
@@ -606,7 +620,7 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   } catch {
     return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
   }
-  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1), at: now() });
+  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1), at: dirSize.at });
   autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
@@ -683,7 +697,9 @@ main.post('/account/password', auth, wrap(async (req, res) => {
   if (password.length < 10 || password.length > 200) return fail('Use a new password with at least 10 characters.');
   if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
-  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(await U.hashPw(password), user.id);
+  const pwHash = await U.hashPw(password);
+  if (!stillCurrent(req, user)) return res.redirect('/login');
+  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
   // log out everywhere else, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
@@ -695,6 +711,7 @@ main.post('/account/email', auth, async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
   if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Nothing was changed.');
+  if (!stillCurrent(req, user)) return res.redirect('/login');
   if (!validEmail(email)) return fail('That email address does not look right.');
   if (email === user.email) return fail('That is already your email address.');
   if (q.userByEmail.get(email)) return fail('That email already has a site.');
@@ -718,6 +735,7 @@ main.get('/account/email/confirm', (req, res) => {
 main.post('/dashboard/delete-account', auth, wrap(async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
   if (!(await U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
+  if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
