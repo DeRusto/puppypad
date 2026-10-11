@@ -220,6 +220,27 @@ site.use((req, res) => {
 
 // ================= main site =================
 main.use((req, res, next) => { res.set('X-Frame-Options', 'DENY').set('Referrer-Policy', 'same-origin'); next(); });
+// Content-Security-Policy for the main site only: member sites run whatever their owners write, and get none.
+// The editor is left out too. Its live preview is an about:srcdoc frame, which inherits the page's policy, so any
+// policy there would also block the member's own scripts, images and <base> in the preview.
+const EDITOR_PATHS = new Set(['/dashboard/edit', '/dashboard/save']);
+const csp = (nonce) => [
+  "default-src 'self'",
+  `script-src 'self' 'nonce-${nonce}' https://challenges.cloudflare.com`, // Turnstile on the signup form
+  "style-src 'self' 'unsafe-inline'", // the pages' own <style> and style attributes; scripts are what the policy is for
+  "img-src 'self' data:",
+  "frame-src https://challenges.cloudflare.com",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+main.use((req, res, next) => {
+  res.locals.nonce = crypto.randomBytes(16).toString('base64');
+  if (!EDITOR_PATHS.has(req.path)) res.set('Content-Security-Policy', csp(res.locals.nonce));
+  next();
+});
 
 // Screenshot worker API. The worker is a separate container; member pages it renders must not be able to call this, hence the token.
 const shotAuth = (req, res, next) => {
@@ -259,12 +280,12 @@ main.get('/healthz', (req, res) => {
 // session
 main.use((req, res, next) => {
   const m = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === COOKIE);
-  req.ctx = { cfg, user: null, csrf: '', isAdmin: false };
+  req.ctx = { cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce };
   if (m && m[1]) {
     const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
-      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user) }; req.sessionHash = s.token_hash; }
+      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce }; req.sessionHash = s.token_hash; }
     }
   }
   next();

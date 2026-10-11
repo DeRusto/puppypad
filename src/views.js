@@ -191,7 +191,7 @@ const notice = (ctx, title, html) => layout(ctx, title, `<section class="box"><h
 
 // Drag-and-drop and many-file uploads: sends the files 20 at a time with a progress bar, then reloads the folder with the totals.
 // Without JavaScript the form above still posts normally (20 files at most).
-const UPLOADER = `<script>(function(){
+const UPLOADER = (ctx) => `<script nonce="${esc(ctx.nonce || '')}">(function(){
 var form=document.getElementById('upform'),drop=document.getElementById('drop'),input=document.getElementById('files'),bar=document.getElementById('upbar'),note=document.getElementById('upnote');
 if(!form||!window.FormData||!window.XMLHttpRequest)return;
 var max=Number(form.dataset.max),busy=false;
@@ -269,7 +269,7 @@ ${d.listed || user.banned ? '' : `<p class="note">Your site is online, but it sh
 <div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
-${UPLOADER}
+${UPLOADER(ctx)}
 <h3>Import a zip</h3>
 <form class="stack" method="post" action="/dashboard/import" enctype="multipart/form-data">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
 <label for="zip">Moving in from another host? Zip up your site folder (up to ${cfg.ZIP_MAX_MB} MB) and it unpacks here, folders and all. Files with the same name are replaced.</label>
