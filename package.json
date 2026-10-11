@@ -7,7 +7,7 @@
     "start": "node src/server.js",
     "test": "node --test"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "express": "^4.21.0",
