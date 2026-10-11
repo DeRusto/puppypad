@@ -150,8 +150,6 @@ function usage(name) {
   usageCache.set(name, fresh);
   return fresh;
 }
-// Express 4 drops a rejected promise from an async handler, and Node then exits; this hands it to the error handler instead
-const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 // resolve a member path inside their folder, or null
 function resolveIn(user, rel) {
   const root = siteDir(user.username);
@@ -160,6 +158,8 @@ function resolveIn(user, rel) {
 }
 
 // ---------- app ----------
+// Express 5 leaves req.body undefined when no parser ran (a GET, or a POST that is not a form); handlers read fields off it freely
+const bodyDefault = (req, res, next) => { req.body ??= {}; next(); };
 const app = express();
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -204,7 +204,7 @@ site.get('/_hw/counter.svg', (req, res) => {
 
 const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
 site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id))));
-site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), (req, res) => {
+site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 40);
   const message = String(req.body.message || '').trim().slice(0, 500);
   if (req.body.website) return res.redirect('/_hw/guestbook'); // bot filled the hidden field
@@ -293,6 +293,7 @@ main.use((req, res, next) => {
   next();
 });
 main.use(express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 })); // the editor posts whole files, and percent-escaping can triple a byte, so the cap tracks MAX_FILE_MB with room for that
+main.use(bodyDefault);
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
 const csrfOk = (req) => !req.ctx.user || (req.body && req.body._csrf === req.ctx.csrf);
@@ -362,15 +363,17 @@ const randomSite = (req, res) => {
 };
 main.get('/random', randomSite);
 main.get('/webring/random', randomSite);
-main.get('/webring/:dir(next|prev)', (req, res) => {
+const webring = (next) => (req, res) => {
   const from = q.userByName.get(String(req.query.from || '').toLowerCase());
   const id = from ? from.id : 0;
   const ring = listed();
-  const r = req.params.dir === 'next'
+  const r = next
     ? db.prepare(`SELECT username FROM users WHERE ${ring} AND id > ? ORDER BY id LIMIT 1`).get(id) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id LIMIT 1`).get()
     : db.prepare(`SELECT username FROM users WHERE ${ring} AND id < ? ORDER BY id DESC LIMIT 1`).get(id || 1e15) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id DESC LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
-});
+};
+main.get('/webring/next', webring(true));
+main.get('/webring/prev', webring(false));
 main.get('/rules', (req, res) => res.send(V.rules(req.ctx)));
 main.get('/terms', (req, res) => res.redirect(301, '/rules'));
 main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));
@@ -463,7 +466,7 @@ main.post('/forgot', async (req, res) => {
   res.send(V.notice(req.ctx, 'Check your email', '<p>If that address has a site here, a reset link is on its way.</p>'));
 });
 main.get('/reset', (req, res) => res.send(V.reset(req.ctx, null, String(req.query.token || ''))));
-main.post('/reset', wrap(async (req, res) => {
+main.post('/reset', async (req, res) => {
   const password = String(req.body.password || '');
   if (password.length < 10 || password.length > 200) return res.status(400).send(V.reset(req.ctx, { err: 'Use a password with at least 10 characters.' }, String(req.body.token || '')));
   const expired = () => res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That reset link is no longer valid. <a href="/forgot">Request a new one.</a></p>'));
@@ -476,7 +479,7 @@ main.post('/reset', wrap(async (req, res) => {
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
   startSession(res, user.id);
   res.redirect('/dashboard');
-}));
+});
 
 // ----- dashboard -----
 function showDashboard(req, res, m, status = 200) {
@@ -595,7 +598,7 @@ main.get('/dashboard/download', auth, (req, res) => {
 main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.query.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
-  if (!full) { req.query.dir = ''; return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400); }
+  if (!full) return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : '', isNew: !exists }));
 });
@@ -688,7 +691,7 @@ main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
   res.redirect('/dashboard/guestbook');
 });
-main.post('/account/password', auth, wrap(async (req, res) => {
+main.post('/account/password', auth, async (req, res) => {
   const user = req.ctx.user;
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const password = String(req.body.new_password || '');
@@ -703,7 +706,7 @@ main.post('/account/password', auth, wrap(async (req, res) => {
   // log out everywhere else, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
-}));
+});
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
 main.post('/account/email', auth, async (req, res) => {
   const user = req.ctx.user;
@@ -732,14 +735,14 @@ main.get('/account/email/confirm', (req, res) => {
     `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
   done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
 });
-main.post('/dashboard/delete-account', auth, wrap(async (req, res) => {
+main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
   if (!(await U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
   if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
-}));
+});
 
 // ----- reports + admin -----
 main.get('/report', (req, res) => res.send(V.report(req.ctx, null, { site: String(req.query.site || '') })));
