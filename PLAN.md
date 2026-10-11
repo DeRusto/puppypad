@@ -147,11 +147,11 @@ signup. **Your step:** read both pages and make them match how you run things
 
 **Phase A — small wins (weeks 1–3 after launch)**
 - ✅ Zip import: `/dashboard/import` unpacks a `.zip` (up to `ZIP_MAX_MB`) through the same name, type, quota and phishing checks as uploads; drops a wrapping folder and OS junk; refuses `../` names, links, encrypted entries and oversized files.
-- Folder rename/move.
+- ✅ Rename or move any file or folder from the dashboard ("rename/move" on each row). Nothing is overwritten, a folder can't go inside itself, and a file renamed into a page (`.txt` → `.html`) gets the phishing check.
 - ✅ Starter layouts at signup: Sky Blue (the original), Shrine (sidebar), Notebook (diary) and Arcade (neon tiles), each with a "Peek" preview at `/starters/:id`. Every template opens with a `:root` block of colour, font and width variables so members can restyle it in one place; the style editor (§3.1) can build on those.
-- Log in with site name *or* email.
-- Admin audit log table: who banned, restored or deleted what, and when.
-- Visible "Report this site" link on default 404/410 pages and profile pages.
+- ✅ Log in with site name *or* email.
+- ✅ Admin audit log: `admin_log` records every take-down, restore, delete and closed report with the moderator's name; `/admin` shows the latest 100.
+- ✅ "Report this site" link on the default 404 and 410 pages (profile pages already had one).
 - ✅ Clean URLs: `/about` serves `about.html` when there's no file or folder called `about`.
 - ✅ Download my site: `/dashboard/download` hands the member their whole folder as one `.zip`.
 - ✅ Change email address: confirmed by a link sent to the new address; the old address is told.
@@ -159,7 +159,7 @@ signup. **Your step:** read both pages and make them match how you run things
   until it has been edited at least once and is `NEW_SITE_HOURS` old (24 by default). Its address
   and profile page work from the start.
 - ✅ Drag-and-drop upload of many files at once, sent 20 at a time, with a progress bar.
-- `/healthz` for the uptime monitor (§5): checks the database answers and the disk isn't nearly full.
+- ✅ `/healthz` for the uptime monitor (§5): 200 when the database answers and at least 5% of the disk is free, 503 otherwise.
 
 **Phase B — community (weeks 4–8)**
 - Webring membership as opt-in (today every live site is in the ring).
@@ -327,8 +327,8 @@ says to:
 3. Firewall the `shots` container from the private network and `169.254.169.254`, as the README
    says.
 4. `docker compose up -d --build`, sign up with your `ADMIN_EMAILS` address, confirm it, open `/admin`.
-5. Monitoring: an uptime check on `puppypad.org` and on one member site, and a disk-usage alert
-   at 80%.
+5. Monitoring: an uptime check on `https://puppypad.org/healthz` (it returns 503 when the database
+   fails or the disk is under 5% free) and on one member site, and a disk-usage alert at 80%.
 
 A 2 vCPU / 4 GB / 80 GB VPS (about $10–25 a month) fits the app, Caddy and the Chromium screenshot
 worker comfortably.

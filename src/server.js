@@ -38,6 +38,7 @@ const cfg = {
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
 const DAY = 86400000;
 const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
+const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
 const IP_KEEP = 90 * DAY; // guestbook and report IPs are erased after this; the privacy page promises it
 const now = () => Date.now();
 
@@ -118,10 +119,13 @@ function startSession(res, userId) {
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
   res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
 }
-function deleteAccount(user) {
+function deleteAccountRows(user) {
   db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
   // never-confirmed accounts were never online, so their names are free again at once
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
+}
+function deleteAccount(user, rows = deleteAccountRows) {
+  rows(user);
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
 }
@@ -155,12 +159,13 @@ app.use((req, res, next) => {
 });
 
 // ================= member sites (name.BASE_HOST) =================
+const reportLink = (name) => `<p><small><a href="${cfg.BASE_URL}/report?site=${encodeURIComponent(name)}">Report this site</a></small></p>`;
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
   if (!owner || !owner.verified) {
     return res.status(404).send(V.sitePage(cfg, 'This pad is empty', `<p>The name <b>${U.esc(req.siteName)}</b> is not a site on ${U.esc(cfg.SITE_NAME)}. <a href="${cfg.BASE_URL}/signup">Roll out a pad of your own.</a></p>`));
   }
-  if (owner.banned) return res.status(410).send(V.sitePage(cfg, 'This pad got rolled up', '<p>A moderator removed this site for breaking the house rules.</p>'));
+  if (owner.banned) return res.status(410).send(V.sitePage(cfg, 'This pad got rolled up', `<p>A moderator removed this site for breaking the house rules.</p>${reportLink(owner.username)}`));
   req.owner = owner;
   next();
 });
@@ -192,7 +197,7 @@ site.use((req, res) => {
   const notFound = () => {
     const custom = path.join(root, 'not_found.html');
     if (fs.existsSync(custom)) return res.status(404).sendFile(custom);
-    res.status(404).send(V.sitePage(cfg, '404 - Page not found', `<p>That page does not exist on this site. <a href="/">Go to the front page.</a></p>`));
+    res.status(404).send(V.sitePage(cfg, '404 - Page not found', `<p>That page does not exist on this site. <a href="/">Go to the front page.</a></p>${reportLink(req.owner.username)}`));
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
@@ -240,6 +245,15 @@ main.get('/shots/:name.jpg', (req, res) => {
   const u = q.userByName.get(req.params.name);
   if (!u || !u.verified || u.banned || !fs.existsSync(shotPath(u.username))) return res.sendStatus(404);
   res.set('Cache-Control', 'public, max-age=300').type('image/jpeg').sendFile(shotPath(u.username));
+});
+
+// uptime monitor: 200 when the database answers and the disk has room, 503 otherwise
+main.get('/healthz', (req, res) => {
+  let dbOk = false;
+  let diskOk = false;
+  try { dbOk = db.prepare('SELECT 1 AS one').get().one === 1; } catch { /* reported below */ }
+  try { const s = fs.statfsSync(SITES_DIR); diskOk = s.bavail / s.blocks >= HEALTH_MIN_FREE; } catch { /* reported below */ }
+  res.set('Cache-Control', 'no-store').status(dbOk && diskOk ? 200 : 503).json({ ok: dbOk && diskOk, db: dbOk, disk: diskOk });
 });
 
 // session
@@ -393,12 +407,14 @@ main.get('/verify', (req, res) => {
 main.get('/login', (req, res) => res.send(V.login(req.ctx)));
 main.post('/login', async (req, res) => {
   const username = String(req.body.username || '').trim().toLowerCase();
-  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login:${username}`, 10, 900000)) {
+  // site names can't contain @, so anything with one is an email
+  const user = username.includes('@') ? q.userByEmail.get(username) : q.userByName.get(username);
+  // count attempts per account, not per spelling, so switching between name and email doesn't double the guesses
+  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  const user = q.userByName.get(username);
   if (!user || !U.checkPw(String(req.body.password || ''), user.pw_hash)) {
-    return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name or password.' }, { username }));
+    return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
   }
   if (!user.verified) {
     if (U.limit(`reverify:${user.id}`, 3, 3600000)) {
@@ -588,6 +604,47 @@ main.post('/dashboard/delete', auth, canEdit, (req, res) => {
   }
   res.redirect(`/dashboard?ok=${encodeURIComponent('File deleted.')}`);
 });
+// rename or move a file or folder; folders keep their contents, and nothing is ever overwritten
+const isDirAt = (full) => !!full && fs.existsSync(full) && fs.statSync(full).isDirectory();
+const depthBelow = (full) => Math.max(0, ...fs.readdirSync(full, { withFileTypes: true }).map((e) => (e.isDirectory() ? 1 + depthBelow(path.join(full, e.name)) : 1)));
+const SCANNED = /\.(html?|js|svg)$/i;
+main.get('/dashboard/move', auth, canEdit, (req, res) => {
+  const from = U.safeRel(req.query.path, { file: false });
+  const full = from && resolveIn(req.ctx.user, from);
+  if (!full || !fs.existsSync(full)) return res.redirect(`/dashboard?err=${encodeURIComponent('That file or folder is not there any more.')}`);
+  res.send(V.move(req.ctx, null, { from, to: from, dir: isDirAt(full) }));
+});
+main.post('/dashboard/move', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const from = U.safeRel(req.body.from, { file: false });
+  const src = from && resolveIn(user, from);
+  if (!src || !fs.existsSync(src)) return res.redirect(`/dashboard?err=${encodeURIComponent('That file or folder is not there any more.')}`);
+  const dir = isDirAt(src);
+  const want = String(req.body.to || '').trim().replace(/^\/+|\/+$/g, '');
+  const fail = (err) => res.status(400).send(V.move(req.ctx, { err }, { from, to: want, dir }));
+  const to = U.safeRel(want, { file: !dir });
+  const dst = to && resolveIn(user, to);
+  if (!dst) return fail(dir
+    ? 'Use a folder path like pics or old/pics, made of letters, numbers, dots, hyphens and underscores.'
+    : 'Use a path like about.html or pics/cat.png, made of letters, numbers, dots, hyphens and underscores, ending in an allowed file type.');
+  if (to === from) return fail('That is where it already is.');
+  if (dir && (to + '/').startsWith(from + '/')) return fail('A folder cannot go inside itself.');
+  if (fs.existsSync(dst)) return fail(`Something called ${to} is already there. Pick another name.`);
+  if (dir && to.split('/').length + depthBelow(src) > 6) return fail('That would nest files more than 6 folders deep.');
+  try {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.renameSync(src, dst);
+  } catch {
+    return fail('Not moved: a file is in the way of that path.');
+  }
+  const root = siteDir(user.username);
+  for (let d = path.dirname(src); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
+  // a .txt renamed to .html becomes a page, so it gets the same phishing check a saved page does
+  if (!dir && SCANNED.test(to) && !SCANNED.test(from)) autoFlag(user, to, fs.readFileSync(dst, 'utf8'));
+  markUpdated(user.id);
+  const parent = to.split('/').slice(0, -1).join('/');
+  res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
+});
 main.post('/dashboard/tagline', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET tagline = ? WHERE id = ?').run(String(req.body.tagline || '').trim().slice(0, 100), req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('Description saved.')}`);
@@ -662,8 +719,12 @@ main.post('/report', async (req, res) => {
   res.send(V.notice(req.ctx, 'Report sent', '<p>Thanks. A moderator will look at it.</p>'));
 });
 
+// who did what in /admin; names are stored as text so the log outlives deleted accounts
+const adminLog = (req, action, site, detail = '') => db.prepare('INSERT INTO admin_log (admin, action, site, detail, created_at) VALUES (?,?,?,?,?)')
+  .run(req.ctx.user.username, action, site, detail, now());
 const showAdmin = (req, res, m) => res.send(V.admin(req.ctx, m, {
   reports: db.prepare("SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all(),
+  log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
   users: db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all(),
   stats: {
     users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
@@ -673,7 +734,13 @@ const showAdmin = (req, res, m) => res.send(V.admin(req.ctx, m, {
 }));
 main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res));
 main.post('/admin/report-close', auth, adminOnly, (req, res) => {
-  db.prepare("UPDATE reports SET status = 'closed' WHERE id = ?").run(Number(req.body.id) || 0);
+  const r = db.prepare("SELECT * FROM reports WHERE id = ? AND status = 'open'").get(Number(req.body.id) || 0);
+  if (r) {
+    db.transaction(() => {
+      db.prepare("UPDATE reports SET status = 'closed' WHERE id = ?").run(r.id);
+      adminLog(req, 'close report', r.site, `${r.reason}: ${r.details}`.slice(0, 200));
+    })();
+  }
   res.redirect('/admin');
 });
 main.post('/admin/ban', auth, adminOnly, (req, res) => {
@@ -681,11 +748,21 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
   if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
-  if (action === 'delete') { deleteAccount(target); return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` }); }
+  const reason = String(req.body.reason || '').slice(0, 200);
+  if (action === 'delete') {
+    // the rows and the log entry commit together; the files go only after both have
+    deleteAccount(target, db.transaction((u) => { deleteAccountRows(u); adminLog(req, 'delete', u.username, reason); }));
+    return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
+  }
   const ban = action === 'ban' ? 1 : 0;
-  db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? String(req.body.reason || '').slice(0, 200) : null, target.id);
-  if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id); fs.rmSync(shotPath(target.username), { force: true }); }
-  else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
+  // the state change and its log entry commit together, so no take-down or restore goes unrecorded
+  db.transaction(() => {
+    db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, target.id);
+    adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
+    if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id); }
+    else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
+  })();
+  if (ban) fs.rmSync(shotPath(target.username), { force: true });
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
 });
 

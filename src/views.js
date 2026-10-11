@@ -172,7 +172,7 @@ ${ctx.cfg.TURNSTILE_SITE_KEY ? `<div class="cf-turnstile" data-sitekey="${esc(ct
 const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `
 <section class="box"><h2>Log in</h2>${msg(m)}
 <form class="stack" method="post" action="/login">
-<label for="username">Site name</label><input type="text" id="username" name="username" value="${esc(v.username)}" required autocapitalize="none" autocomplete="username">
+<label for="username">Site name or email</label><input type="text" id="username" name="username" value="${esc(v.username)}" required autocapitalize="none" autocomplete="username">
 <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
 <button>Log in</button></form><p style="margin-top:10px"><a href="/forgot">Forgot your password?</a></p></section>`);
 
@@ -247,9 +247,10 @@ function dashboard(ctx, m, d) {
     ...(up !== null ? [`<tr><td><a href="/dashboard?dir=${encodeURIComponent(up)}">[ up one folder ]</a></td><td></td><td></td></tr>`] : []),
     ...d.entries.map((e) => {
       const rel = d.dir ? `${d.dir}/${e.name}` : e.name;
-      if (e.dir) return `<tr><td><a href="/dashboard?dir=${encodeURIComponent(rel)}">[${esc(e.name)}]</a></td><td class="num">folder</td><td></td></tr>`;
+      const mv = user.banned ? '' : `<a href="/dashboard/move?path=${encodeURIComponent(rel)}">rename/move</a>`;
+      if (e.dir) return `<tr><td><a href="/dashboard?dir=${encodeURIComponent(rel)}">[${esc(e.name)}]</a></td><td class="num">folder</td><td>${mv}</td></tr>`;
       return `<tr><td><a href="${esc(url)}/${esc(rel)}" target="_blank">${esc(e.name)}</a></td><td class="num">${fmtBytes(e.size)}</td><td>
-${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURIComponent(rel)}">edit</a> | ` : ''}
+${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURIComponent(rel)}">edit</a> | ` : ''}${mv ? `${mv} | ` : ''}
 <form class="inline" method="post" action="/dashboard/delete">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}"><button class="link">delete</button></form></td></tr>`;
     }),
   ].join('');
@@ -333,6 +334,17 @@ if(window.CodeMirror){
 }else{var t2;ta.addEventListener('input',function(){clearTimeout(t2);t2=setTimeout(draw,400)})}
 draw();
 })();</script>`, { wide: true, head });
+};
+
+const move = (ctx, m, { from, to, dir }) => {
+  const back = from.split('/').slice(0, -1).join('/');
+  return layout(ctx, `Move ${from}`, `
+<section class="box"><h2>Rename or move ${dir ? 'folder' : 'file'}: ${esc(from)}</h2>${msg(m)}
+<form class="stack" method="post" action="/dashboard/move">${csrfField(ctx)}<input type="hidden" name="from" value="${esc(from)}">
+<label for="to">New path, for example <code>${dir ? 'old/pics' : 'pages/about.html'}</code>. Missing folders are created for you.${dir ? ' Everything inside moves too.' : ''}</label>
+<input type="text" id="to" name="to" value="${esc(to)}" required autocapitalize="none"><button>Move</button></form>
+<p class="note">Links to the old address stop working, so update any pages that point here.</p>
+<p><a href="/dashboard?dir=${encodeURIComponent(back)}">Back to files</a></p></section>`);
 };
 
 const guestbookAdmin = (ctx, m, rows) => layout(ctx, 'Guestbook entries', `
@@ -444,7 +456,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
 <p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`);
 
-const admin = (ctx, m, { reports, users, stats }) => layout(ctx, 'Admin', `
+const admin = (ctx, m, { reports, users, stats, log }) => layout(ctx, 'Admin', `
 <section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
 <h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
 ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
@@ -454,7 +466,9 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
 <div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
 <h3>Newest members</h3><div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th></tr>
-${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}</td><td>${esc(u.signup_ip)}</td></tr>`).join('')}</table></div></section>`);
+${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}</td><td>${esc(u.signup_ip)}</td></tr>`).join('')}</table></div>
+<h3>Moderation log</h3><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
+${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div></section>`);
 
 // ---- pages served on member subdomains ----
 const bare = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
@@ -478,4 +492,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, editor, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, editor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };

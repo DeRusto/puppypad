@@ -406,6 +406,113 @@ test('the drag-and-drop uploader gets JSON back', async () => {
   assert.match(dash.text, /Skipped: b\.php\./);
 });
 
+test('log in with the site name or the email address', async () => {
+  await member('twoways', 'TwoWays@Example.com');
+  const login = (username, password = 'longpassword1') => req('post', '/login').type('form').send({ username, password });
+  assert.equal((await login('twoways')).status, 302);
+  assert.equal((await login('twoways@example.com')).status, 302);
+  assert.equal((await login(' TWOWAYS@example.com ')).status, 302);
+  const wrong = await login('twoways@example.com', 'wrongpassword');
+  assert.equal(wrong.status, 401);
+  assert.match(wrong.text, /Wrong site name, email or password/);
+  assert.equal((await login('nobody@example.com')).status, 401);
+});
+
+test('wrong passwords count against the account whether typed as site name or email', async () => {
+  await member('guessme');
+  // each request comes from a new IP, so only the per-account limit can stop the eleventh
+  const login = (username) => req('post', '/login').type('form').send({ username, password: 'wrongpassword' });
+  for (let i = 0; i < 10; i++) assert.equal((await login(i % 2 ? 'guessme' : 'guessme@example.com')).status, 401);
+  assert.equal((await login('guessme')).status, 429);
+  assert.equal((await login('guessme@example.com')).status, 429);
+});
+
+test('default 404 and 410 pages link to the report form', async () => {
+  await member('reportme');
+  const nf = await req('get', '/missing.html', 'reportme.pad.test');
+  assert.equal(nf.status, 404);
+  assert.match(nf.text, /href="http:\/\/pad\.test\/report\?site=reportme"/);
+  db.prepare("UPDATE users SET banned = 1 WHERE username = 'reportme'").run();
+  const gone = await req('get', '/', 'reportme.pad.test');
+  assert.equal(gone.status, 410);
+  assert.match(gone.text, /report\?site=reportme/);
+});
+
+test('/healthz checks the database and fails under 5% free disk', async () => {
+  const realStatfs = fs.statfsSync;
+  const disk = (bavail) => { fs.statfsSync = () => ({ bavail, blocks: 1000 }); };
+  try {
+    disk(50); // exactly 5% free
+    let res = await req('get', '/healthz');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { ok: true, db: true, disk: true });
+    disk(49);
+    res = await req('get', '/healthz');
+    assert.equal(res.status, 503);
+    assert.deepEqual(res.body, { ok: false, db: true, disk: false });
+    fs.statfsSync = () => { throw new Error('EIO'); };
+    assert.equal((await req('get', '/healthz')).body.disk, false);
+  } finally {
+    fs.statfsSync = realStatfs;
+  }
+});
+
+test('admin actions land in the moderation log', async () => {
+  // boss@example.com already has a site from the admin test above; log in as it
+  const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
+  const cookie = login.headers['set-cookie'][0].split(';')[0];
+  const csrf = (await req('get', '/admin').set('Cookie', cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  await member('logged');
+  db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES ('logged', 'Spam', 'buy pills', ?)").run(Date.now());
+  const rid = db.prepare("SELECT id FROM reports WHERE site = 'logged'").get().id;
+  const post = (url, body) => req('post', url).set('Cookie', cookie).type('form').send({ _csrf: csrf, ...body });
+  await post('/admin/report-close', { id: rid });
+  await post('/admin/ban', { site: 'logged', action: 'ban', reason: 'spam pages' });
+  await post('/admin/ban', { site: 'logged', action: 'unban' });
+  await post('/admin/ban', { site: 'logged', action: 'delete', reason: 'repeat spam' });
+  const rows = db.prepare("SELECT admin, action, detail FROM admin_log WHERE site = 'logged' ORDER BY id").all();
+  assert.deepEqual(rows.map((r) => [r.admin, r.action]), [['boss', 'close report'], ['boss', 'take down'], ['boss', 'restore'], ['boss', 'delete']]);
+  assert.equal(rows[0].detail, 'Spam: buy pills');
+  assert.equal(rows[1].detail, 'spam pages');
+  const page = await req('get', '/admin').set('Cookie', cookie);
+  assert.match(page.text, /Moderation log/);
+  assert.match(page.text, /repeat spam/);
+});
+
+test('rename and move files and folders', async () => {
+  const m = await member('shuffler');
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'shuffler');
+  const move = (from, to) => req('post', '/dashboard/move').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, from, to });
+  fs.mkdirSync(path.join(dir, 'pics', 'old'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'pics', 'cat.png'), 'png');
+  fs.writeFileSync(path.join(dir, 'pics', 'old', 'dog.png'), 'png');
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'hello');
+
+  assert.equal((await req('get', '/dashboard/move?path=pics').set('Cookie', m.cookie)).status, 200);
+  // rename a file
+  let res = await move('notes.txt', 'about/notes.md');
+  assert.equal(res.status, 302);
+  assert.equal(fs.readFileSync(path.join(dir, 'about', 'notes.md'), 'utf8'), 'hello');
+  assert.ok(!fs.existsSync(path.join(dir, 'notes.txt')));
+  // move a folder with everything in it
+  res = await move('pics', 'media/pics');
+  assert.equal(res.status, 302);
+  assert.ok(fs.existsSync(path.join(dir, 'media', 'pics', 'old', 'dog.png')));
+  assert.ok(!fs.existsSync(path.join(dir, 'pics')));
+  // refusals
+  assert.match((await move('media/pics', 'media/pics/inner')).text, /cannot go inside itself/);
+  assert.match((await move('about/notes.md', 'index.html')).text, /already there/);
+  assert.match((await move('about/notes.md', '../escape.md')).text, /Use a path like/);
+  assert.match((await move('about/notes.md', 'notes.php')).text, /Use a path like/);
+  assert.match((await move('media', 'a/b/c/d')).text, /more than 6 folders deep/);
+  assert.equal((await move('', 'whole-site')).status, 302); // the site root itself never moves
+  assert.ok(fs.existsSync(path.join(dir, 'index.html')));
+  // a text file renamed into a page gets the phishing check
+  fs.writeFileSync(path.join(dir, 'login.txt'), '<form><input type="password"></form>');
+  await move('login.txt', 'login.html');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM reports WHERE site = 'shuffler' AND reason = 'Auto-flag'").get().n, 1);
+});
+
 test('screenshot worker API needs its token, stores only JPEGs, and clears the dirty flag', async () => {
   await member('shotdog');
   // make shotdog the oldest dirty site so /internal/shots/next picks it
