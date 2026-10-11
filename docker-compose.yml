@@ -1,7 +1,14 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   app:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       BASE_URL: https://${BASE_DOMAIN}
@@ -15,6 +22,7 @@ services:
   shots:
     build: ./shots
     restart: unless-stopped
+    logging: *default-logging
     environment:
       APP_URL: http://app:3000
       SHOT_TOKEN: ${SHOT_TOKEN}
@@ -29,14 +37,17 @@ services:
   caddy:
     build: ./caddy
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    # the Cloudflare token lives in its own file so the app container never sees it;
+    # Caddy reads {$CF_API_TOKEN} from its own environment
+    env_file: .env.caddy
     environment:
       BASE_DOMAIN: ${BASE_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL}
-      CF_API_TOKEN: ${CF_API_TOKEN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

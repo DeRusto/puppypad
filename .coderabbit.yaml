@@ -1,0 +1,5 @@
+# CodeRabbit settings for this repo. Everything else stays at the defaults.
+reviews:
+  pre_merge_checks:
+    docstrings:
+      mode: 'off' # this codebase documents with short why-comments, not docstrings - the coverage check was noise on every PR

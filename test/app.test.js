@@ -9,6 +9,7 @@ const request = require('supertest');
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-test-'));
 process.env.BASE_URL = 'http://pad.test';
 process.env.ADMIN_EMAILS = 'boss@example.com';
+process.env.SHOT_TOKEN = 'test-shot-token';
 process.env.QUOTA_MB = '1';
 process.env.MAX_FILE_MB = '1';
 delete process.env.SMTP_HOST;
@@ -403,4 +404,76 @@ test('the drag-and-drop uploader gets JSON back', async () => {
   const dash = await req('get', '/dashboard?dir=pics&ok=Uploaded%201%20file.&err=Skipped%3A%20b.php.').set('Cookie', m.cookie);
   assert.match(dash.text, /Uploaded 1 file\./);
   assert.match(dash.text, /Skipped: b\.php\./);
+});
+
+test('screenshot worker API needs its token, stores only JPEGs, and clears the dirty flag', async () => {
+  await member('shotdog');
+  // make shotdog the oldest dirty site so /internal/shots/next picks it
+  db.prepare('UPDATE users SET shot_dirty = 1, updated_at = 1000 WHERE username = ?').run('shotdog');
+  assert.equal((await req('get', '/internal/shots/next')).status, 403);
+  assert.equal((await req('get', '/internal/shots/next').set('x-shot-token', 'wrong')).status, 403);
+  const next = await req('get', '/internal/shots/next').set('x-shot-token', 'test-shot-token');
+  assert.deepEqual(next.body, { name: 'shotdog', url: 'http://shotdog.pad.test/' });
+  // a non-JPEG body clears the flag without storing a file
+  const bad = await req('post', '/internal/shots/shotdog').set('x-shot-token', 'test-shot-token').set('Content-Type', 'application/octet-stream').send(Buffer.alloc(200, 1));
+  assert.equal(bad.status, 204);
+  assert.equal(db.prepare('SELECT shot_dirty FROM users WHERE username = ?').get('shotdog').shot_dirty, 0);
+  assert.equal((await req('get', '/shots/shotdog.jpg')).status, 404);
+  // a real JPEG (magic bytes) is stored and served
+  db.prepare('UPDATE users SET shot_dirty = 1, updated_at = 1000 WHERE username = ?').run('shotdog');
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7)]);
+  assert.equal((await req('post', '/internal/shots/shotdog').set('x-shot-token', 'test-shot-token').set('Content-Type', 'application/octet-stream').send(jpg)).status, 204);
+  assert.equal((await req('get', '/shots/shotdog.jpg')).status, 200);
+});
+
+test('two signups racing for one name: one wins, the other is told it is taken, and the app survives', async () => {
+  const realFetch = globalThis.fetch;
+  process.env.TURNSTILE_SECRET_KEY = 'test-secret';
+  // a slow verdict, like the real Cloudflare call, is what opens the race window
+  globalThis.fetch = async () => { await new Promise((r) => setTimeout(r, 150)); return { json: async () => ({ success: true }) }; };
+  try {
+    const form = (email) => req('post', '/signup').type('form').send({ username: 'racer', email, password: 'longpassword1', agree: '1', 'cf-turnstile-response': 'tok' });
+    const [a, b] = await Promise.all([form('racer-a@example.com'), form('racer-b@example.com')]);
+    assert.equal([a.text, b.text].filter((t) => t.includes('Check your email')).length, 1);
+    assert.equal([a.text, b.text].filter((t) => t.includes('That site name is taken')).length, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username = 'racer'").get().n, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.TURNSTILE_SECRET_KEY;
+  }
+});
+
+test('account deletion password guesses are rate limited', async () => {
+  const m = await member('careful');
+  const del = () => req('post', '/dashboard/delete-account').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'wrongpassword' });
+  for (let i = 0; i < 5; i++) assert.match((await del()).text, /Wrong password/);
+  const sixth = await del();
+  assert.equal(sixth.status, 429);
+  assert.match(sixth.text, /Too many attempts/);
+  assert.ok(db.prepare("SELECT 1 FROM users WHERE username = 'careful'").get()); // still there
+});
+
+test('visitors can sign a guestbook and the entry shows', async () => {
+  await member('hostdog');
+  const post = await req('post', '/_hw/guestbook', 'hostdog.pad.test').type('form').send({ name: 'Visitor', message: 'nice pad!' });
+  assert.equal(post.status, 302);
+  const page = await req('get', '/_hw/guestbook', 'hostdog.pad.test');
+  assert.match(page.text, /Visitor/);
+  assert.match(page.text, /nice pad!/);
+});
+
+test('site file cap: new files stop at the cap, replacements still work, deletes free slots', async () => {
+  const m = await member('filecap');
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'filecap');
+  for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x'); // seed to the cap on disk; 2,000 real uploads would take all day
+  const res = await upload(m, 'one-more.txt', 'x');
+  assert.match(res.text, /too many files: 2000 max/);
+  const rep = await upload(m, 'f0.txt', 'y'); // overwriting a file that is already there is not a new file
+  assert.doesNotMatch(rep.text, /too many files/);
+  assert.equal(fs.readFileSync(path.join(dir, 'f0.txt'), 'utf8'), 'y');
+  for (const f of ['f1.txt', 'f2.txt']) // the folder also holds the starter page, so free two slots
+    await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: f });
+  const again = await upload(m, 'one-more.txt', 'x');
+  assert.doesNotMatch(again.text, /too many files/);
+  assert.ok(fs.existsSync(path.join(dir, 'one-more.txt')));
 });

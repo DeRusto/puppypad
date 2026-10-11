@@ -293,21 +293,33 @@ ${UPLOADER}
 }
 
 const CM = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
+// sha384 of each pinned file CM points at; if the version in CM ever changes, recompute these or the editor will not load
+const CM_SRI = {
+  'codemirror.min.css': 'sha384-zaeBlB/vwYsDRSlFajnDd7OydJ0cWk+c2OWybl3eSUf6hW2EbhlCsQPqKr3gkznT',
+  'theme/material-darker.min.css': 'sha384-eZTPTN0EvJdn23s24UDYJmUM2T7C2ZFa3qFLypeBruJv8mZeTusKUAO/j5zPAQ6l',
+  'codemirror.min.js': 'sha384-ZYmwuq4n2gOcNxMSiJ6jyTj+BbIrilr7p6dlq6q5nmSWKmsH9UU4K1qqjycMkfmR',
+  'mode/xml/xml.min.js': 'sha384-xPpkMo5nDgD98fIcuRVYhxkZV6/9Y4L8s3p0J5c4MxgJkyKJ8BJr+xfRkq7kn6Tw',
+  'mode/javascript/javascript.min.js': 'sha384-g0o+WW9mdIxA7LaaCKTkRm0M5TVT+Bb4s9eocxPsI2G0Xm0POG9iD6G6qP1IIsfS',
+  'mode/css/css.min.js': 'sha384-fpeIC2FZuPmw7mIsTvgB5BNc8QVxQC/nWg2W+CgPYOAiBiYVuHe2E8HiTWHBMIJQ',
+  'mode/htmlmixed/htmlmixed.min.js': 'sha384-xYIbc5F55vPi7pb/lUnFj3wu24HlpAMZdtBHkNrb2YhPzJV3pX7+eqXT2PXSNMrw',
+  'mode/markdown/markdown.min.js': 'sha384-nPWqI+4+e+SwcpI6LVYBpaQd+zIZIQgC6lN7Gep8MJQr5DdmMGtWV8qJQgcyODcF',
+};
+const sri = (p) => ` integrity="${CM_SRI[p]}" crossorigin="anonymous"`;
 const CM_MODE = { html: 'htmlmixed', htm: 'htmlmixed', svg: 'xml', xml: 'xml', css: 'css', js: 'javascript', json: { name: 'javascript', json: true }, md: 'markdown' };
 const editor = (ctx, m, { rel, content, isNew }) => {
   const ext = extOf(rel);
   const isHtml = ext === 'html' || ext === 'htm';
   const dir = rel.split('/').slice(0, -1).join('/');
   const siteBase = `${ctx.cfg.siteUrl(ctx.user.username)}/${dir ? dir + '/' : ''}`;
-  const head = `<link rel="stylesheet" href="${CM}/codemirror.min.css"><link rel="stylesheet" href="${CM}/theme/material-darker.min.css">`;
+  const head = `<link rel="stylesheet" href="${CM}/codemirror.min.css"${sri('codemirror.min.css')}><link rel="stylesheet" href="${CM}/theme/material-darker.min.css"${sri('theme/material-darker.min.css')}>`;
   return layout(ctx, `Edit ${rel}`, `
 <section class="box"><h2>${isNew ? 'New file' : 'Editing'}: ${esc(rel)}</h2>${msg(m)}
 <form id="edform" method="post" action="/dashboard/save" style="display:flex;flex-direction:column;gap:8px">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
 <div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
 <div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a></div></form></section>
-<script src="${CM}/codemirror.min.js"></script><script src="${CM}/mode/xml/xml.min.js"></script><script src="${CM}/mode/javascript/javascript.min.js"></script>
-<script src="${CM}/mode/css/css.min.js"></script><script src="${CM}/mode/htmlmixed/htmlmixed.min.js"></script><script src="${CM}/mode/markdown/markdown.min.js"></script>
+<script src="${CM}/codemirror.min.js"${sri('codemirror.min.js')}></script><script src="${CM}/mode/xml/xml.min.js"${sri('mode/xml/xml.min.js')}></script><script src="${CM}/mode/javascript/javascript.min.js"${sri('mode/javascript/javascript.min.js')}></script>
+<script src="${CM}/mode/css/css.min.js"${sri('mode/css/css.min.js')}></script><script src="${CM}/mode/htmlmixed/htmlmixed.min.js"${sri('mode/htmlmixed/htmlmixed.min.js')}></script><script src="${CM}/mode/markdown/markdown.min.js"${sri('mode/markdown/markdown.min.js')}></script>
 <script>(function(){
 var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
 var base=${JSON.stringify(`<base href="${siteBase}">`).replace(/</g, '\\u003c')};

@@ -255,7 +255,7 @@ main.use((req, res, next) => {
   }
   next();
 });
-main.use(express.urlencoded({ extended: false, limit: '2mb' }));
+main.use(express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 })); // the editor posts whole files, and percent-escaping can triple a byte, so the cap tracks MAX_FILE_MB with room for that
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
 const csrfOk = (req) => !req.ctx.user || (req.body && req.body._csrf === req.ctx.csrf);
@@ -263,6 +263,8 @@ main.use((req, res, next) => {
   if (req.method !== 'POST') return next();
   const origin = req.headers.origin;
   if (origin && origin !== cfg.BASE_URL) return res.status(403).type('text').send('Cross-site request blocked');
+  // multipart bodies are not parsed yet here, so their token cannot be checked yet:
+  // every multipart route MUST call csrfOk itself after multer runs (upload and import do)
   if (!req.is('multipart/form-data') && !csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   next();
 });
@@ -359,10 +361,23 @@ main.post('/signup', async (req, res) => {
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
   if (!(await humanCheck(req))) return fail('The "are you human" check did not pass. Try again.');
   const t = now();
-  const id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-    .run(username, email, U.hashPw(password), req.ip, t, t).lastInsertRowid;
-  fs.mkdirSync(siteDir(username), { recursive: true });
-  fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
+  let id;
+  try {
+    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .run(username, email, U.hashPw(password), req.ip, t, t).lastInsertRowid;
+  } catch (err) {
+    // a twin signup for the same name or email landed while the human check ran, so the checks above are stale;
+    // anything that is not a constraint violation (a locked or full db) is a server error, not a conflict
+    if (!String(err && err.code).includes('CONSTRAINT')) return fail('Something went wrong on our end. Try again.', 500);
+    return fail(q.userByName.get(username) ? 'That site name is taken.' : 'That email already has a site. Log in or reset your password.');
+  }
+  try {
+    fs.mkdirSync(siteDir(username), { recursive: true });
+    fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
+  } catch {
+    try { deleteAccount(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
+    return fail('Something went wrong making your site. Try again.', 500);
+  }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
     `Welcome! Confirm your email to put ${username}.${cfg.BASE_HOST} online:\n\n${cfg.BASE_URL}/verify?token=${makeToken(id, 'verify', 2 * DAY)}\n\nIf you did not sign up, ignore this message.`);
   res.send(V.notice(req.ctx, 'Check your email', `<p>We sent a confirmation link to <b>${U.esc(email)}</b>. Your site goes live when you click it. The link works for 48 hours.</p>`));
@@ -436,29 +451,43 @@ main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok 
 // The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
 const uploadRel = (dir, name) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'));
 
+// write beside the target and rename over it, so a failed write never leaves a replaced file half-written
+function writeAtomic(full, data) {
+  const tmp = `${full}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, full);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+const MAX_FILES = 2000; // the byte quota alone lets a member mint unlimited empty files; this is far above any real site
+
 // Write uploaded or unzipped files into a member's folder through the same checks: safe name, allowed type, quota.
 function saveFiles(user, dir, files, skipped) {
-  let used = U.dirSize(siteDir(user.username)).total;
+  const size = U.dirSize(siteDir(user.username));
+  let used = size.total;
+  let count = size.count;
   const saved = [];
   for (const f of files) {
     const rel = uploadRel(dir, f.name);
     const full = rel && resolveIn(user, rel);
     if (!full) { skipped.push(`${f.name} (name or file type not allowed)`); continue; }
-    const old = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
+    const exists = fs.existsSync(full);
+    const old = exists && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
+    if (!exists && count >= MAX_FILES) { skipped.push(`${f.name} (too many files: ${MAX_FILES} max)`); continue; }
     if (used - old + f.data.length > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.name} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
-    // write beside the target and rename over it, so a failed write never leaves a replaced file half-written
-    const tmp = `${full}.${crypto.randomBytes(6).toString('hex')}.tmp`;
     try {
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(tmp, f.data);
-      fs.renameSync(tmp, full);
+      writeAtomic(full, f.data);
     } catch {
-      fs.rmSync(tmp, { force: true });
       skipped.push(`${f.name} (a file or folder with that name is in the way)`);
       continue;
     }
     autoFlag(user, rel, f.data.toString('utf8'));
     used += f.data.length - old;
+    if (!exists) count++;
     saved.push(rel);
   }
   if (saved.length) markUpdated(user.id);
@@ -530,13 +559,17 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   if (!full) return res.status(400).send(V.notice(req.ctx, 'Cannot save', '<p>That file path is not allowed. <a href="/dashboard">Back to my site.</a></p>'));
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
   const size = Buffer.byteLength(content);
-  const old = fs.existsSync(full) && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
-  if (U.dirSize(siteDir(user.username)).total - old + size > cfg.QUOTA_MB * 1048576) {
+  const exists = fs.existsSync(full) && fs.statSync(full).isFile();
+  const old = exists ? fs.statSync(full).size : 0;
+  const dirSize = U.dirSize(siteDir(user.username));
+  if (!exists && dirSize.count >= MAX_FILES) {
+    return res.status(400).send(V.editor(req.ctx, { err: `Not saved: your site already has ${MAX_FILES} files, the most we keep.` }, { rel, content, isNew: true }));
+  }
+  if (dirSize.total - old + size > cfg.QUOTA_MB * 1048576) {
     return res.status(400).send(V.editor(req.ctx, { err: `Not saved: this would go over your ${cfg.QUOTA_MB} MB limit.` }, { rel, content, isNew: !old }));
   }
   try {
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, content);
+    writeAtomic(full, content);
   } catch {
     return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
   }
@@ -607,6 +640,7 @@ main.get('/account/email/confirm', (req, res) => {
   done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
 });
 main.post('/dashboard/delete-account', auth, (req, res) => {
+  if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
   if (!U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash)) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
@@ -650,7 +684,7 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   if (action === 'delete') { deleteAccount(target); return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` }); }
   const ban = action === 'ban' ? 1 : 0;
   db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? String(req.body.reason || '').slice(0, 200) : null, target.id);
-  if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); fs.rmSync(shotPath(target.username), { force: true }); }
+  if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id); fs.rmSync(shotPath(target.username), { force: true }); }
   else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
 });
@@ -663,12 +697,15 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 
 // housekeeping: expired sessions/tokens, old guestbook and report IPs, and accounts never confirmed after 3 days
 const housekeeping = () => {
-  db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
-  db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
-  db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
-  db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
-  db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
-  for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
+  // an error here must not kill the process: this runs from a timer with nobody watching
+  try {
+    db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
+    db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
+    db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
+    db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+    db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+    for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
+  } catch (e) { console.error('housekeeping failed:', e.message); }
 };
 setInterval(housekeeping, 3600000).unref();
 
