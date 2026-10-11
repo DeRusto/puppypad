@@ -17,13 +17,14 @@ mkdir -p backups
 # Copying puppypad.db while the app writes to it can give a broken file. SQLite's online backup can't.
 docker compose exec -T app node -e "require('better-sqlite3')('/data/puppypad.db').backup('/data/backup.db').then(() => console.log('database copied'))"
 
-tar -czf "backups/puppypad-$stamp.tar.gz" -C data backup.db sites
+tar -czf "backups/puppypad-$stamp.tar.gz" -C data backup.db sites shots
 rm -f data/backup.db
 echo "wrote backups/puppypad-$stamp.tar.gz"
 
 ls -1t backups/puppypad-*.tar.gz | tail -n +15 | xargs -r rm --
 
 if [ -n "${BACKUP_REMOTE:-}" ]; then
-  rclone sync backups "$BACKUP_REMOTE"
-  echo "synced to $BACKUP_REMOTE"
+  rclone copy backups "$BACKUP_REMOTE" # copy, not sync: a wiped local folder must not delete the remote copies
+  rclone delete "$BACKUP_REMOTE" --include 'puppypad-*.tar.gz' --min-age 14d # copy never prunes, so roll the remote over by hand
+  echo "copied to $BACKUP_REMOTE"
 fi

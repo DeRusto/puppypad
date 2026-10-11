@@ -322,8 +322,8 @@ says to:
 1. Cloudflare DNS: `A puppypad.org → VPS`, `A *.puppypad.org → VPS` (plus `AAAA` if the VPS has
    IPv6), both **DNS only**. Create an API token from the "Edit zone DNS" template, scoped to the
    `puppypad.org` zone.
-2. `.env`: `BASE_DOMAIN=puppypad.org`, `ACME_EMAIL`, `CF_API_TOKEN`, `ADMIN_EMAILS`, `ABUSE_EMAIL=abuse@puppypad.org`, a strong
-   `SHOT_TOKEN` (`openssl rand -hex 32`), and the SMTP settings.
+2. `.env`: `BASE_DOMAIN=puppypad.org`, `ACME_EMAIL`, `ADMIN_EMAILS`, `ABUSE_EMAIL=abuse@puppypad.org`, a strong
+   `SHOT_TOKEN` (`openssl rand -hex 32`), and the SMTP settings. `CF_API_TOKEN` goes in `.env.caddy`, which only Caddy reads.
 3. Firewall the `shots` container from the private network and `169.254.169.254`, as the README
    says.
 4. `docker compose up -d --build`, sign up with your `ADMIN_EMAILS` address, confirm it, open `/admin`.

@@ -2,6 +2,7 @@
 // It asks the app which site needs a picture, renders it in headless Chromium, and posts the JPEG back.
 const { chromium } = require('playwright-core');
 const net = require('net');
+const dns = require('dns').promises;
 
 const APP = process.env.APP_URL || 'http://app:3000';
 const TOKEN = process.env.SHOT_TOKEN;
@@ -21,11 +22,49 @@ function allowed(url) {
   return h.includes('.') && !net.isIP(h) && !/(^|\.)(localhost|internal|local)$/i.test(h);
 }
 
+// allowed() judges the name; this judges what the name points at, which is what a DNS-rebinding
+// page controls. Chromium resolves again for the real connection, so a name that flips answers
+// between the two lookups can still slip through — the container egress firewall stays required.
+function isPublicIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) || a >= 224);
+  }
+  const h = ip.toLowerCase();
+  return !(h === '::' || h === '::1' || h.startsWith('::ffff:') || h.startsWith('2001:db8:') ||
+    h.startsWith('fc') || h.startsWith('fd') ||
+    h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb') ||
+    h.startsWith('fec') || h.startsWith('fed') || h.startsWith('fee') || h.startsWith('fef') ||
+    h.startsWith('ff'));
+}
+async function resolvesPublic(hostname) {
+  try {
+    const all = await dns.lookup(hostname, { all: true });
+    return all.length > 0 && all.every(({ address }) => isPublicIp(address));
+  } catch { return false; }
+}
+
 async function shoot(browser, url) {
   const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 }, deviceScaleFactor: 0.5, acceptDownloads: false, serviceWorkers: 'block' });
   try {
     const page = await ctx.newPage();
-    await page.route('**/*', (route) => (allowed(route.request().url()) ? route.continue() : route.abort()));
+    // the site being shot is exempt from the resolution check: its name deliberately
+    // resolves to the Caddy container in production (SHOT_HOST_MAP)
+    const ownHost = new URL(url).hostname;
+    const verdicts = new Map(); // hostname -> safe to connect, for this page only
+    const routeOk = async (rawUrl) => {
+      const url = rawUrl.replace(/^ws(s?):\/\//i, 'http$1://'); // sockets are checked as the http(s) address they belong to
+      if (!allowed(url)) return false;
+      let u; try { u = new URL(url); } catch { return false; }
+      if (u.protocol === 'data:' || u.protocol === 'blob:' || u.hostname === ownHost) return true;
+      if (!verdicts.has(u.hostname)) verdicts.set(u.hostname, resolvesPublic(u.hostname)); // the promise, so concurrent requests share one lookup and one verdict
+      return verdicts.get(u.hostname);
+    };
+    await page.route('**/*', async (route) => ((await routeOk(route.request().url())) ? route.continue() : route.abort()));
+    // page.route does not see WebSocket connections; route them through the same check
+    await page.routeWebSocket(/.*/, async (ws) => ((await routeOk(ws.url())) ? ws.connectToServer() : ws.close({ code: 1008, reason: 'blocked' })));
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
     await page.goto(url, { waitUntil: 'load', timeout: 15000 });
     await page.waitForTimeout(1500); // let fonts and gifs settle
