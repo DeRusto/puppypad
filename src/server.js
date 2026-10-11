@@ -128,7 +128,21 @@ function deleteAccount(user, rows = deleteAccountRows) {
   rows(user);
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
+  usageCache.delete(user.username);
 }
+// A site's bytes and file count. Walking the whole folder on every dashboard view and upload stalls every other site,
+// so the result is kept and updated by the writes made here; the short expiry catches changes made outside the app (a restore)
+const usageCache = new Map();
+const USAGE_TTL = 60000;
+function usage(name) {
+  const hit = usageCache.get(name);
+  if (hit && now() - hit.at < USAGE_TTL) return hit;
+  const fresh = { ...U.dirSize(siteDir(name)), at: now() };
+  usageCache.set(name, fresh);
+  return fresh;
+}
+// Express 4 drops a rejected promise from an async handler, and Node then exits; this hands it to the error handler instead
+const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 // resolve a member path inside their folder, or null
 function resolveIn(user, rel) {
   const root = siteDir(user.username);
@@ -374,11 +388,12 @@ main.post('/signup', async (req, res) => {
   if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
   if (!(await humanCheck(req))) return fail('The "are you human" check did not pass. Try again.');
+  const pwHash = await U.hashPw(password);
   const t = now();
   let id;
   try {
     id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-      .run(username, email, U.hashPw(password), req.ip, t, t).lastInsertRowid;
+      .run(username, email, pwHash, req.ip, t, t).lastInsertRowid;
   } catch (err) {
     // a twin signup for the same name or email landed while the human check ran, so the checks above are stale;
     // anything that is not a constraint violation (a locked or full db) is a server error, not a conflict
@@ -413,7 +428,7 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  if (!user || !U.checkPw(String(req.body.password || ''), user.pw_hash)) {
+  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash))) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
   }
   if (!user.verified) {
@@ -439,16 +454,17 @@ main.post('/forgot', async (req, res) => {
   res.send(V.notice(req.ctx, 'Check your email', '<p>If that address has a site here, a reset link is on its way.</p>'));
 });
 main.get('/reset', (req, res) => res.send(V.reset(req.ctx, null, String(req.query.token || ''))));
-main.post('/reset', (req, res) => {
+main.post('/reset', wrap(async (req, res) => {
   const password = String(req.body.password || '');
   if (password.length < 10 || password.length > 200) return res.status(400).send(V.reset(req.ctx, { err: 'Use a password with at least 10 characters.' }, String(req.body.token || '')));
+  const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
   if (!user) return res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That reset link is no longer valid. <a href="/forgot">Request a new one.</a></p>'));
-  db.prepare('UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?').run(U.hashPw(password), user.id);
+  db.prepare('UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?').run(pwHash, user.id);
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
   startSession(res, user.id);
   res.redirect('/dashboard');
-});
+}));
 
 // ----- dashboard -----
 function showDashboard(req, res, m, status = 200) {
@@ -459,7 +475,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: U.dirSize(siteDir(user.username)), listed: isListed(user) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), listed: isListed(user) }));
 }
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
@@ -483,7 +499,7 @@ const MAX_FILES = 2000; // the byte quota alone lets a member mint unlimited emp
 
 // Write uploaded or unzipped files into a member's folder through the same checks: safe name, allowed type, quota.
 function saveFiles(user, dir, files, skipped) {
-  const size = U.dirSize(siteDir(user.username));
+  const size = usage(user.username);
   let used = size.total;
   let count = size.count;
   const saved = [];
@@ -506,6 +522,7 @@ function saveFiles(user, dir, files, skipped) {
     if (!exists) count++;
     saved.push(rel);
   }
+  usageCache.set(user.username, { total: used, count, at: now() });
   if (saved.length) markUpdated(user.id);
   return saved;
 }
@@ -577,7 +594,7 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   const size = Buffer.byteLength(content);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   const old = exists ? fs.statSync(full).size : 0;
-  const dirSize = U.dirSize(siteDir(user.username));
+  const dirSize = usage(user.username);
   if (!exists && dirSize.count >= MAX_FILES) {
     return res.status(400).send(V.editor(req.ctx, { err: `Not saved: your site already has ${MAX_FILES} files, the most we keep.` }, { rel, content, isNew: true }));
   }
@@ -589,6 +606,7 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   } catch {
     return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
   }
+  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1), at: now() });
   autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
@@ -598,6 +616,7 @@ main.post('/dashboard/delete', auth, canEdit, (req, res) => {
   const full = rel && resolveIn(req.ctx.user, rel);
   if (full && fs.existsSync(full) && fs.statSync(full).isFile()) {
     fs.unlinkSync(full);
+    usageCache.delete(req.ctx.user.username);
     const root = siteDir(req.ctx.user.username);
     for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
     markUpdated(req.ctx.user.id);
@@ -655,27 +674,27 @@ main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
   res.redirect('/dashboard/guestbook');
 });
-main.post('/account/password', auth, (req, res) => {
+main.post('/account/password', auth, wrap(async (req, res) => {
   const user = req.ctx.user;
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const password = String(req.body.new_password || '');
   if (!U.limit(`pwchange:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!U.checkPw(String(req.body.password || ''), user.pw_hash)) return fail('Your current password is wrong. Nothing was changed.');
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your current password is wrong. Nothing was changed.');
   if (password.length < 10 || password.length > 200) return fail('Use a new password with at least 10 characters.');
   if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
-  if (U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
-  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(U.hashPw(password), user.id);
+  if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
+  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(await U.hashPw(password), user.id);
   // log out everywhere else, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
-});
+}));
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
 main.post('/account/email', auth, async (req, res) => {
   const user = req.ctx.user;
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
-  if (!U.checkPw(String(req.body.password || ''), user.pw_hash)) return fail('Your password is wrong. Nothing was changed.');
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Nothing was changed.');
   if (!validEmail(email)) return fail('That email address does not look right.');
   if (email === user.email) return fail('That is already your email address.');
   if (q.userByEmail.get(email)) return fail('That email already has a site.');
@@ -696,13 +715,13 @@ main.get('/account/email/confirm', (req, res) => {
     `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
   done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
 });
-main.post('/dashboard/delete-account', auth, (req, res) => {
+main.post('/dashboard/delete-account', auth, wrap(async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
-  if (!U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash)) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
+  if (!(await U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
-});
+}));
 
 // ----- reports + admin -----
 main.get('/report', (req, res) => res.send(V.report(req.ctx, null, { site: String(req.query.site || '') })));
@@ -788,6 +807,7 @@ setInterval(housekeeping, 3600000).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
+app.forgetUsage = (name) => usageCache.delete(name); // for tests that put files on disk behind the app's back
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);

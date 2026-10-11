@@ -573,6 +573,7 @@ test('site file cap: new files stop at the cap, replacements still work, deletes
   const m = await member('filecap');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'filecap');
   for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x'); // seed to the cap on disk; 2,000 real uploads would take all day
+  app.forgetUsage('filecap'); // the app keeps each site's usage, and these files arrived without it seeing
   const res = await upload(m, 'one-more.txt', 'x');
   assert.match(res.text, /too many files: 2000 max/);
   const rep = await upload(m, 'f0.txt', 'y'); // overwriting a file that is already there is not a new file
@@ -583,4 +584,29 @@ test('site file cap: new files stop at the cap, replacements still work, deletes
   const again = await upload(m, 'one-more.txt', 'x');
   assert.doesNotMatch(again.text, /too many files/);
   assert.ok(fs.existsSync(path.join(dir, 'one-more.txt')));
+});
+
+test('the space-used line stays right through uploads, edits, replacements and deletes without rewalking the folder', async () => {
+  const m = await member('tally');
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'tally');
+  const shown = async () => (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/Space used: (.*?) of .*? in (\d+) file/).slice(1).join(' / ');
+  const truth = () => { const s = U.dirSize(dir); return `${U.fmtBytes(s.total)} / ${s.count}`; };
+  await shown(); // fills the cache
+  await upload(m, 'a.txt', 'x'.repeat(3000));
+  assert.equal(await shown(), truth());
+  await upload(m, 'a.txt', 'x'.repeat(10)); // replacing shrinks it
+  assert.equal(await shown(), truth());
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'b.html', content: 'y'.repeat(5000) });
+  assert.equal(await shown(), truth());
+  await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'b.html' });
+  assert.equal(await shown(), truth());
+});
+
+test('password hashing does not block: hashes are made and checked asynchronously', async () => {
+  const pending = U.hashPw('longpassword1');
+  assert.ok(pending instanceof Promise);
+  const hash = await pending;
+  assert.equal(await U.checkPw('longpassword1', hash), true);
+  assert.equal(await U.checkPw('wrongpassword', hash), false);
+  assert.equal(await U.checkPw('anything', 'not-a-hash'), false);
 });
