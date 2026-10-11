@@ -1,0 +1,12 @@
+# Builds the images from this source tree, for development. Release bundles leave this file out, so
+# a server installed from a release pulls the published images named in docker-compose.yml instead.
+services:
+  app:
+    build: .
+    pull_policy: build
+  shots:
+    build: ./shots
+    pull_policy: build
+  caddy:
+    build: ./caddy
+    pull_policy: build

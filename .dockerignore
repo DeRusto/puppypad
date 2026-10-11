@@ -4,3 +4,6 @@ data
 .env.caddy
 .git
 shots
+.upgrade
+backups
+dist

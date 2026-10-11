@@ -19,13 +19,16 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 ## Deploy on a VPS
 
 1. In Cloudflare DNS, point `A example.com` and `A *.example.com` at the server, set to **DNS only** (grey cloud). Create an API token with the "Edit zone DNS" template for that zone; Caddy uses it to get one wildcard certificate.
-2. Install Docker, copy this folder up, then:
+2. Install Docker (with the compose plugin), `curl`, `jq` and `cron`, then install the newest release:
 
    ```
-   cp .env.example .env             # fill in BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*
-   cp .env.caddy.example .env.caddy # fill in CF_API_TOKEN (only the Caddy container reads this file)
-   docker compose up -d --build
+   sudo mkdir -p /srv/puppypad && sudo chown "$USER" /srv/puppypad && cd /srv/puppypad
+   curl -fsSL https://github.com/DeRusto/puppypad/releases/latest/download/install.sh | sh
    ```
+
+   That unpacks the release, creates `.env` and `.env.caddy` from the examples, and adds the upgrade
+   watcher (every minute) and the nightly backup (03:15) to your crontab. Fill in `.env` (BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*, SHOT_TOKEN)
+   and `.env.caddy` (CF_API_TOKEN, only the Caddy container reads it), then `docker compose up -d`.
 3. Sign up with an email you put in `ADMIN_EMAILS` and confirm it. Until SMTP is set, the confirmation link is in `docker compose logs app`.
 4. Open `/admin` when logged in as that member.
 
@@ -35,13 +38,56 @@ Everything lives in `./data` (SQLite database plus `sites/`). Back that folder u
 
 `scripts/backup.sh` takes a consistent copy of the database while the app runs, archives it with
 every member's files into `./backups`, and keeps the last 14. Set `BACKUP_REMOTE` to an
-[rclone](https://rclone.org) remote to copy the archives off the server too. Run it nightly from cron
-(see the top of the script).
+[rclone](https://rclone.org) remote to copy the archives off the server too. `scripts/install.sh` schedules it every night at
+03:15 in the installing user's crontab, logging to `backups/backup.log`.
 
 To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/puppypad.db-shm`
 (left over, they would be replayed onto the restored database and corrupt it), unpack an archive
 into `./data`, rename `backup.db` to `puppypad.db`, and `docker compose start app`.
 `docs/launch-checklist.md` has a restore test that doesn't touch the live data.
+
+## Releases and upgrades
+
+Servers run published releases, not the source tree. Publishing a GitHub release tagged `vX.Y.Z`
+runs `.github/workflows/release.yml`, which tests the code, pushes the app, shots and Caddy images to
+`ghcr.io/derusto/puppypad-{app,shots,caddy}:vX.Y.Z`, and attaches the deploy bundle, `install.sh`
+and `SHA256SUMS` to the release. The first time, check that those three packages are public under
+your GitHub profile > Packages, or servers can't pull them.
+
+`scripts/install.sh` both installs and upgrades. In an install folder, `scripts/install.sh` moves to
+the newest release and `scripts/install.sh v1.2.3` to a given one (older ones too). An upgrade:
+
+1. downloads the release bundle and checks it against `SHA256SUMS`
+2. pulls the new images (nothing has changed yet if this fails)
+3. runs `scripts/backup.sh`
+4. puts the release's files in place, sets `PUPPYPAD_VERSION` in `.env` and runs `docker compose up -d`
+5. waits for `/healthz`; if the new release doesn't come up, it puts the previous files and version back
+
+A rollback leaves the database as the new release left it, which is fine while schema changes only
+add tables and columns. The backup from step 3 is the newest archive in `./backups` if one ever isn't.
+
+**From /admin.** The "Server version" box at the bottom of `/admin` shows the running release, the
+newest one with its notes, and a button that runs the upgrade above. The app never upgrades itself:
+it runs in a container with no Docker access and no credentials. It only leaves a request in
+`data/upgrade/`, and `scripts/upgrade-watch.sh` on the host, run every minute from the cron line the
+installer adds, picks it up. The watcher only accepts "check" or the newest release's tag, so a
+compromised app can at most ask for the release you published. It asks GitHub for the newest release
+every `UPGRADE_CHECK_MINUTES` (60 by default); its output goes to `.upgrade/watch.log`, and the full
+output of the last upgrade to `.upgrade/last.log`.
+
+The app (uid 1000 in its container) and the watcher both write to `data/upgrade/`, which is
+group-writable. If the user running the watcher isn't uid 1000 or root, the installer prints the one
+`sudo chown` it needs.
+
+**Moving a server from a git checkout to releases.** In the checkout, with the app running, run
+`curl -fsSL https://github.com/DeRusto/puppypad/releases/latest/download/install.sh | sh`. It sees
+`.env` and `data/puppypad.db`, so it treats the move like an upgrade: it pulls the images, backs up,
+switches, and puts the checkout's files back if the release doesn't come up healthy. `.env`,
+`.env.caddy`, `data/` and `backups/` stay as they are. (If the checkout already has
+`docker-compose.override.yml`, delete it first.)
+
+**Working on the code.** In the source tree, `docker-compose.override.yml` makes
+`docker compose up -d --build` build the images locally instead of pulling them.
 
 ## Email that arrives
 

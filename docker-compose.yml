@@ -4,9 +4,12 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# Images come from GitHub's container registry, built by .github/workflows/release.yml for each
+# release; PUPPYPAD_VERSION in .env picks the release. docker-compose.override.yml (source tree only)
+# builds them locally instead.
 services:
   app:
-    build: .
+    image: ${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-app:${PUPPYPAD_VERSION:-dev}
     restart: unless-stopped
     logging: *default-logging
     env_file: .env
@@ -20,7 +23,7 @@ services:
   # Takes the screenshots for the explore page. Kept apart from the app: it runs member pages
   # in a real browser, so it gets no volume and no secrets beyond its own token.
   shots:
-    build: ./shots
+    image: ${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-shots:${PUPPYPAD_VERSION:-dev}
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -35,7 +38,7 @@ services:
       - caddy
 
   caddy:
-    build: ./caddy
+    image: ${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-caddy:${PUPPYPAD_VERSION:-dev}
     restart: unless-stopped
     logging: *default-logging
     ports:

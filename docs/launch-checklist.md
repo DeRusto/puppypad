@@ -141,14 +141,13 @@ It should print `database copied`, `wrote backups/puppypad-….tar.gz` and
 sudo rclone ls r2:puppypad-backups/nightly
 ```
 
-Then `sudo crontab -e` and add:
-
-```
-15 3 * * * /srv/puppypad/scripts/backup.sh >> /var/log/puppypad-backup.log 2>&1
-```
+`scripts/install.sh` already added the nightly line (03:15, logging to `backups/backup.log`) to the
+crontab of the user that ran it; `crontab -l` as that user shows it. rclone reads its config from
+that user's home, so run the rclone setup above as the same user (drop the `sudo` if you installed
+as a normal user). If you added a backup line by hand earlier, keep only one of them.
 
 Optional but worth it: a free check at healthchecks.io that emails you when a night is missed.
-Append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<your uuid>` to that cron line.
+`crontab -e` and append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<your uuid>` to the backup line.
 
 ### 2d. Test a restore once (doesn't touch the live site)
 
