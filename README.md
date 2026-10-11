@@ -52,8 +52,16 @@ request in `data/upgrade/`, and `scripts/upgrade-watch.sh` on the host picks it 
 accepts nothing but "check" or a commit that is already on the deploy branch, so a compromised app
 can at most ask for a version you pushed.
 
-To turn it on, deploy from a `git clone` (not a copied folder) and add a cron line for the user that
-owns the checkout and can run docker:
+To turn it on, deploy from a `git clone` (not a copied folder) and keep `./data` inside it. The app
+(user id 1000 in its container) and the watcher both write to `data/upgrade/`, which the app creates
+group-writable for group 1000. If the user that will run the watcher isn't uid 1000 or root, give
+that folder to its group once, after the app has started:
+
+```
+sudo chgrp deploy data/upgrade   # "deploy" being the cron user's group
+```
+
+Then add a cron line for the user that owns the checkout and can run docker:
 
 ```
 * * * * * /srv/puppypad/scripts/upgrade-watch.sh >> /var/log/puppypad-upgrade.log 2>&1

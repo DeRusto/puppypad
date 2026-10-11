@@ -14,7 +14,11 @@ const STALE = 5 * 60000; // the watcher runs every minute; no sign of it for thi
 const RUN_STALE = 60 * 60000;
 
 const dirOf = (dataDir) => path.join(dataDir, 'upgrade');
-const ensureDir = (dataDir) => fs.mkdirSync(dirOf(dataDir), { recursive: true });
+// group-writable: the host watcher, running as a user in this folder's group, renames files in and out
+const ensureDir = (dataDir) => {
+  fs.mkdirSync(dirOf(dataDir), { recursive: true });
+  try { fs.chmodSync(dirOf(dataDir), 0o770); } catch { /* not ours to change; the README covers it */ }
+};
 
 const readText = (file, max = 65536) => {
   try {

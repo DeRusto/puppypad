@@ -8,8 +8,9 @@
 #
 # data/upgrade is writable by the app container, which serves untrusted member files, so nothing
 # read from it is trusted: the request must match a fixed pattern, upgrade.sh only accepts a commit
-# that is already on origin/UPGRADE_BRANCH, and every file written there is made under a fresh
-# name and renamed into place so a planted symlink can't redirect the write.
+# that is already on origin/UPGRADE_BRANCH, the request is moved out into .upgrade/ before it is
+# looked at, and every file published there is written in .upgrade/ and renamed in, so a planted
+# symlink is replaced rather than followed.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -28,16 +29,24 @@ export UPGRADE_BRANCH="$branch"
 shared=data/upgrade
 # the app creates this folder when it starts; until then there is nobody to talk to
 if [ ! -d "$shared" ] || [ -L "$shared" ] || [ -L data ]; then exit 0; fi
+if [ ! -w "$shared" ]; then
+  echo "$(date -u) can't write to $shared; see \"Upgrades\" in the README for the permissions it needs"; exit 1
+fi
+# renames between .upgrade/ and data/upgrade/ are only atomic (and only replace links instead of
+# following them) on one filesystem
+if [ "$(stat -c %d .upgrade)" != "$(stat -c %d "$shared")" ]; then
+  echo "$(date -u) .upgrade and $shared are on different filesystems; keep ./data inside the checkout"; exit 1
+fi
 
 # host-side memory lives in .upgrade/, out of the app's reach
 get() { cat ".upgrade/$1" 2>/dev/null || true; }
 put() { printf '%s\n' "$2" > ".upgrade/$1"; }
 
 publish() { # publish <name> < content
-  tmp=$(mktemp "$shared/.host-XXXXXX")
+  tmp=$(mktemp .upgrade/publish-XXXXXX)
   cat > "$tmp"
   chmod 644 "$tmp"
-  mv -f "$tmp" "$shared/$1"
+  mv -fT "$tmp" "$shared/$1"
 }
 publish_state() {
   current=$(git rev-parse HEAD)
@@ -69,11 +78,16 @@ if [ "$(get status)" = running ]; then
   put status failed; put message "the last upgrade was interrupted; see .upgrade/last.log"; put finished_at "$(date +%s)"
 fi
 
+# claim the request by moving it out of the app's reach first: the app can't swap it for a link
+# after the checks below, and a request written after this point waits for the next run
 request=""
-if [ -f "$shared/request" ] && [ ! -L "$shared/request" ]; then
-  request=$(head -c 200 "$shared/request" | head -n 1 | tr -d '\r')
+rm -rf .upgrade/request
+if mv -T "$shared/request" .upgrade/request 2>/dev/null; then
+  if [ -f .upgrade/request ] && [ ! -L .upgrade/request ]; then
+    request=$(head -c 200 .upgrade/request | head -n 1 | tr -d '\r')
+  fi
+  rm -rf .upgrade/request
 fi
-rm -f "$shared/request" 2>/dev/null || true
 
 case "$request" in
   check)

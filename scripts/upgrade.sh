@@ -10,6 +10,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# one upgrade at a time, whether started by hand or by the watcher, so one run's rollback can't undo another
+mkdir -p .upgrade
+exec 8>.upgrade/upgrade.lock
+flock -n 8 || { echo "another upgrade is already running"; exit 1; }
+
 if [ -z "${UPGRADE_BRANCH:-}" ] && [ -f .env ]; then
   UPGRADE_BRANCH=$(sed -n 's/^UPGRADE_BRANCH=//p' .env | tail -n 1 | tr -d "\"'\r")
 fi
