@@ -288,6 +288,8 @@ test('starter previews render with stand-ins for the counter and guestbook', asy
   }
   assert.equal((await req('get', '/starters/nope')).status, 404);
   assert.equal((await req('get', '/starters/hasOwnProperty')).status, 404);
+});
+
 test('guestbook and report IPs are erased after 90 days', () => {
   const old = Date.now() - 91 * 86400000;
   const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
