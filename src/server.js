@@ -342,15 +342,17 @@ const randomSite = (req, res) => {
 };
 main.get('/random', randomSite);
 main.get('/webring/random', randomSite);
-main.get(['/webring/next', '/webring/prev'], (req, res) => {
+const webring = (next) => (req, res) => {
   const from = q.userByName.get(String(req.query.from || '').toLowerCase());
   const id = from ? from.id : 0;
   const ring = listed();
-  const r = req.path === '/webring/next'
+  const r = next
     ? db.prepare(`SELECT username FROM users WHERE ${ring} AND id > ? ORDER BY id LIMIT 1`).get(id) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id LIMIT 1`).get()
     : db.prepare(`SELECT username FROM users WHERE ${ring} AND id < ? ORDER BY id DESC LIMIT 1`).get(id || 1e15) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id DESC LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
-});
+};
+main.get('/webring/next', webring(true));
+main.get('/webring/prev', webring(false));
 main.get('/rules', (req, res) => res.send(V.rules(req.ctx)));
 main.get('/terms', (req, res) => res.redirect(301, '/rules'));
 main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));

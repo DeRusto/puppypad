@@ -606,3 +606,16 @@ test('a POST that is not a form gets the normal answer, not a crash', async () =
   const res = await req('post', '/login').set('Content-Type', 'application/json').send('{"username":"x"}');
   assert.equal(res.status, 401);
 });
+
+test('webring next and prev go the right way, with or without a trailing slash', async () => {
+  const a = await member('ringa');
+  const b = await member('ringb');
+  for (const [m, n] of [[a, 'ringa'], [b, 'ringb']]) {
+    await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'x.html', content: 'x' });
+    db.prepare('UPDATE users SET created_at = 0 WHERE username = ?').run(n); // past the new-site wait
+  }
+  for (const slash of ['', '/']) {
+    assert.match((await req('get', `/webring/next${slash}?from=ringa`)).headers.location, /ringb\./);
+    assert.match((await req('get', `/webring/prev${slash}?from=ringb`)).headers.location, /ringa\./);
+  }
+});
