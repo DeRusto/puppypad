@@ -200,6 +200,9 @@ app.use((req, res, next) => {
     const name = host.slice(0, -cfg.BASE_HOST.length - 1);
     if (!name.includes('.')) { req.siteName = name; return site(req, res, next); }
   }
+  // monitors and the installer's upgrade check call /healthz by whatever name reaches the app (localhost, an IP),
+  // not the public hostname; member sites keep their own /healthz
+  if (req.path === '/healthz') return main(req, res, next);
   res.status(404).type('text').send('Unknown host');
 });
 

@@ -446,6 +446,9 @@ test('/healthz checks the database and fails under 5% free disk', async () => {
     let res = await req('get', '/healthz');
     assert.equal(res.status, 200);
     assert.deepEqual(res.body, { ok: true, db: true, disk: true });
+    // by any name that isn't a member site, e.g. localhost from inside the container
+    assert.equal((await req('get', '/healthz', 'localhost')).status, 200);
+    assert.equal((await req('get', '/', 'localhost')).status, 404);
     disk(49);
     res = await req('get', '/healthz');
     assert.equal(res.status, 503);

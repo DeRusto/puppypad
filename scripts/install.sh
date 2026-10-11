@@ -174,11 +174,12 @@ set_env PUPPYPAD_VERSION "$target"
 ensure_cron
 ensure_upgrade_dir
 
-# waits for /healthz inside the app container; true once it answers 200
+# waits for /healthz inside the app container; true once it answers 200. Asks with the public hostname
+# as Host (fetch() can't set it), since releases up to v0.1.0 only serve /healthz on that name.
 healthy() {
   i=0
   while [ $i -lt 30 ]; do
-    if docker compose exec -T app node -e "fetch('http://localhost:3000/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" 2>/dev/null; then
+    if docker compose exec -T app node -e "require('http').get({ host: 'localhost', port: 3000, path: '/healthz', headers: { host: new URL(process.env.BASE_URL || 'http://localhost').host } }, (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1)).setTimeout(5000, () => process.exit(1))" 2>/dev/null; then
       return 0
     fi
     i=$((i + 1)); sleep 3
