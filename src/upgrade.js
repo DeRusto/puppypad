@@ -1,15 +1,21 @@
 // The admin page's side of in-place upgrades. The app runs in a container with no git, no Docker
 // socket and no network credentials, so it never upgrades itself. It shares one folder,
 // data/upgrade, with scripts/upgrade-watch.sh on the host:
-//   state, pending, log  written by the host: what is running, what is new on the branch, the last run's output
-//   request              written here: "check" or "upgrade <sha>"; the host deletes it when it picks it up
-// The worst a compromised app can do through this folder is ask for a commit that is already on the
-// branch the host follows; the host checks that before running anything.
+//   state, notes, log  written by the host: the running and newest release, that release's notes, the last run's output
+//   request            written here: "check" or "upgrade <tag>"; the host takes it away when it picks it up
+// The worst a compromised app can do through this folder is ask for the newest published release;
+// the host checks that before running anything.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const SHA = /^[0-9a-f]{40}$/;
+const TAG = /^v\d+\.\d+\.\d+$/;
+// true when release tag a is newer than b
+const newer = (a, b) => {
+  const [x, y] = [a, b].map((t) => t.slice(1).split('.').map(Number));
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+};
 const STALE = 5 * 60000; // the watcher runs every minute; no sign of it for this long means it isn't running
 const RUN_STALE = 60 * 60000;
 
@@ -36,25 +42,27 @@ function readState(dataDir, now = Date.now()) {
     const m = line.match(/^([a-z_]+)=(.*)$/);
     if (m) kv[m[1]] = m[2].trim();
   }
-  const sha = (s) => (SHA.test(s || '') ? s : '');
+  const tag = (s) => (TAG.test(s || '') ? s : '');
   const time = (s) => (/^\d+$/.test(s || '') ? Number(s) * 1000 : 0);
   const seenAt = time(kv.seen_at);
   const state = {
-    // a long rebuild holds the watcher up, so "running" counts as alive for a while longer
+    // a long upgrade holds the watcher up, so "running" counts as alive for a while longer
     watcher: seenAt > 0 && (now - seenAt < STALE || (kv.status === 'running' && now - seenAt < RUN_STALE)),
     seenAt,
     status: ['idle', 'queued', 'running', 'ok', 'failed'].includes(kv.status) ? kv.status : 'idle',
-    branch: kv.branch || '',
-    current: sha(kv.current),
-    latest: sha(kv.latest),
+    current: tag(kv.current),
+    latest: tag(kv.latest),
+    url: /^https:\/\/github\.com\/[\w./-]+$/.test(kv.url || '') ? kv.url : '',
+    publishedAt: time(kv.published_at),
     checkedAt: time(kv.checked_at),
     finishedAt: time(kv.finished_at),
     message: (kv.message || '').slice(0, 300),
-    pending: readText(path.join(dir, 'pending'), 16384).split('\n').filter(Boolean).slice(0, 50),
+    notes: readText(path.join(dir, 'notes'), 8000).trim(),
     log: readText(path.join(dir, 'log'), 16384),
     request: readText(path.join(dir, 'request'), 200).trim(),
   };
-  state.behind = !!(state.current && state.latest && state.current !== state.latest);
+  // nothing recorded as running (a server set up from a git checkout) counts as behind too
+  state.behind = !!(state.latest && (!state.current || newer(state.latest, state.current)));
   return state;
 }
 
@@ -67,4 +75,4 @@ function writeRequest(dataDir, line) {
   fs.renameSync(tmp, path.join(dir, 'request'));
 }
 
-module.exports = { SHA, readState, writeRequest, ensureDir };
+module.exports = { TAG, newer, readState, writeRequest, ensureDir };

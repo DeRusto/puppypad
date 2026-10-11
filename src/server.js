@@ -837,15 +837,15 @@ main.post('/admin/upgrade', auth, adminOnly, (req, res) => {
   if (st.request || st.status === 'queued' || st.status === 'running') return showAdmin(req, res, { err: 'An upgrade or check is already under way.' });
   if (req.body.action === 'check') {
     upgrade.writeRequest(DATA_DIR, 'check');
-    return showAdmin(req, res, { ok: 'Checking for a new version. Reload this page in a minute.' });
+    return showAdmin(req, res, { ok: 'Checking for a new release. Reload this page in a minute.' });
   }
   if (req.body.action === 'upgrade') {
     const target = String(req.body.target || '');
-    // only the version this page showed, so nobody installs something they didn't see listed
-    if (!upgrade.SHA.test(target) || target !== st.latest || !st.behind) return showAdmin(req, res, { err: 'That version is no longer the newest one. Check again.' });
+    // only the release this page showed, so nobody installs something they didn't see listed
+    if (!upgrade.TAG.test(target) || target !== st.latest || !st.behind) return showAdmin(req, res, { err: 'That release is no longer the newest one. Check again.' });
     upgrade.writeRequest(DATA_DIR, `upgrade ${target}`);
-    adminLog(req, 'upgrade', '', `${st.current.slice(0, 7)} -> ${target.slice(0, 7)}`);
-    return showAdmin(req, res, { ok: 'Upgrade queued. The server backs up the database, then rebuilds; the site blips for a few seconds. Reload this page to follow it.' });
+    adminLog(req, 'upgrade', '', `${st.current || 'unknown'} -> ${target}`);
+    return showAdmin(req, res, { ok: 'Upgrade queued. The server backs up the database, then switches to the new release; the site blips for a few seconds. Reload this page to follow it.' });
   }
   res.redirect('/admin');
 });

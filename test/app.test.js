@@ -825,7 +825,15 @@ test('webring next and prev go the right way, with or without a trailing slash',
   }
 });
 
-test('admin upgrade button only asks the host watcher for the version it showed', async () => {
+test('release tags compare as numbers', () => {
+  const { newer } = require('../src/upgrade');
+  assert.ok(newer('v0.10.0', 'v0.9.9'));
+  assert.ok(newer('v1.0.0', 'v0.99.99'));
+  assert.ok(!newer('v0.2.0', 'v0.2.0'));
+  assert.ok(!newer('v0.2.0', 'v0.3.0'));
+});
+
+test('admin upgrade button only asks the host watcher for the release it showed', async () => {
   const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
   const cookie = login.headers['set-cookie'][0].split(';')[0];
   const page = () => req('get', '/admin').set('Cookie', cookie);
@@ -838,20 +846,21 @@ test('admin upgrade button only asks the host watcher for the version it showed'
   assert.match((await post({ action: 'check' })).text, /not running/);
   assert.ok(!fs.existsSync(request));
 
-  const [cur, next] = ['a'.repeat(40), 'b'.repeat(40)];
-  fs.writeFileSync(path.join(dir, 'state'), `status=idle\nbranch=main\ncurrent=${cur}\nlatest=${next}\nseen_at=${Math.floor(Date.now() / 1000)}\n`);
-  fs.writeFileSync(path.join(dir, 'pending'), 'bbbbbbb Add <b>things</b>\n');
+  const now = Math.floor(Date.now() / 1000);
+  fs.writeFileSync(path.join(dir, 'state'), `status=idle\ncurrent=v0.9.0\nlatest=v0.10.0\nurl=https://github.com/DeRusto/puppypad/releases/tag/v0.10.0\npublished_at=${now}\nseen_at=${now}\n`);
+  fs.writeFileSync(path.join(dir, 'notes'), 'Add <b>things</b>\n');
   const shown = (await page()).text;
-  assert.match(shown, /Running <code>aaaaaaa<\/code>/);
+  assert.match(shown, /Running <code>v0\.9\.0<\/code>/);
   assert.match(shown, /Add &lt;b&gt;things&lt;\/b&gt;/);
-  assert.match(shown, /upgrade to bbbbbbb/);
+  assert.match(shown, /upgrade to v0\.10\.0/);
 
-  assert.match((await post({ action: 'upgrade', target: 'c'.repeat(40) })).text, /no longer the newest/);
+  assert.match((await post({ action: 'upgrade', target: 'v0.11.0' })).text, /no longer the newest/);
+  assert.match((await post({ action: 'upgrade', target: 'v0.10.0; rm -rf /' })).text, /no longer the newest/);
   assert.ok(!fs.existsSync(request));
-  await post({ action: 'upgrade', target: next });
-  assert.equal(fs.readFileSync(request, 'utf8'), `upgrade ${next}\n`);
+  await post({ action: 'upgrade', target: 'v0.10.0' });
+  assert.equal(fs.readFileSync(request, 'utf8'), 'upgrade v0.10.0\n');
   assert.match((await post({ action: 'check' })).text, /already under way/);
-  assert.equal(db.prepare("SELECT detail FROM admin_log WHERE action = 'upgrade'").get().detail, 'aaaaaaa -> bbbbbbb');
+  assert.equal(db.prepare("SELECT detail FROM admin_log WHERE action = 'upgrade'").get().detail, 'v0.9.0 -> v0.10.0');
 
   const other = await member('upgrade-nosy');
   assert.equal((await req('post', '/admin/upgrade').set('Cookie', other.cookie).type('form').send({ _csrf: other.csrf, action: 'check' })).status, 404);

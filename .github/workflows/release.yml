@@ -1,0 +1,52 @@
+name: Release
+# Publishing a release tagged vX.Y.Z builds the app, shots and caddy images, pushes them to
+# ghcr.io/<owner>/puppypad-{app,shots,caddy}:vX.Y.Z, and attaches the deploy bundle, install.sh and
+# SHA256SUMS to the release. Servers install and upgrade from those with scripts/install.sh.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag
+        run: echo "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || { echo "release tags look like v1.2.3, not $TAG"; exit 1; }
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the images
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          OWNER: ${{ github.repository_owner }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/puppypad"
+          for part in app:. shots:shots caddy:caddy; do
+            name=${part%%:*} dir=${part#*:}
+            docker build --label "org.opencontainers.image.source=$SOURCE" --label "org.opencontainers.image.version=$TAG" \
+              -t "$image-$name:$TAG" "$dir"
+            docker push "$image-$name:$TAG"
+          done
+      - name: Attach the deploy bundle
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/make-bundle.sh "$TAG" dist
+          gh release upload "$TAG" dist/* --clobber

@@ -1,16 +1,15 @@
 #!/bin/sh
-# The host half of the "Server version" box on /admin. Run it every minute from cron, as the user
-# that owns this checkout and can run docker, e.g.:
+# The host half of the "Server version" box on /admin. Run it every minute from cron, as a user that
+# can run docker, from the install folder, e.g.:
 #   * * * * * /srv/puppypad/scripts/upgrade-watch.sh >> /var/log/puppypad-upgrade.log 2>&1
-# Each run it tells the app it is alive, looks for new commits on the deploy branch every
+# Each run it tells the app it is alive, asks GitHub for the newest release every
 # UPGRADE_CHECK_MINUTES (60 by default), and acts on a request the admin page left in
-# data/upgrade/request: "check" fetches now, "upgrade <sha>" runs scripts/upgrade.sh <sha>.
+# data/upgrade/request: "check" asks now, "upgrade <tag>" runs scripts/install.sh <tag>.
 #
 # data/upgrade is writable by the app container, which serves untrusted member files, so nothing
-# read from it is trusted: the request must match a fixed pattern, upgrade.sh only accepts a commit
-# that is already on origin/UPGRADE_BRANCH, the request is moved out into .upgrade/ before it is
-# looked at, and every file published there is written in .upgrade/ and renamed in, so a planted
-# symlink is replaced rather than followed.
+# read from it is trusted: the request must match a fixed pattern and name the newest release, the
+# request is moved out into .upgrade/ before it is looked at, and every file published there is
+# written in .upgrade/ and renamed in, so a planted symlink is replaced rather than followed.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -19,12 +18,13 @@ exec 9>.upgrade/lock
 flock -n 9 || exit 0 # an upgrade is still running
 
 env_val() { sed -n "s/^$1=//p" .env 2>/dev/null | tail -n 1 | tr -d "\"'\r"; }
-[ -n "${UPGRADE_BRANCH:-}" ] || UPGRADE_BRANCH=$(env_val UPGRADE_BRANCH)
+[ -n "${UPGRADE_REPO:-}" ] || UPGRADE_REPO=$(env_val UPGRADE_REPO)
 [ -n "${UPGRADE_CHECK_MINUTES:-}" ] || UPGRADE_CHECK_MINUTES=$(env_val UPGRADE_CHECK_MINUTES)
-branch=${UPGRADE_BRANCH:-main}
+repo=${UPGRADE_REPO:-DeRusto/puppypad}
+api=${UPGRADE_API_URL:-https://api.github.com}
 every=${UPGRADE_CHECK_MINUTES:-60}
 case "$every" in *[!0-9]*|'') every=60 ;; esac
-export UPGRADE_BRANCH="$branch"
+is_tag() { echo "$1" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; }
 
 shared=data/upgrade
 # the app creates this folder when it starts; until then there is nobody to talk to
@@ -35,7 +35,7 @@ fi
 # renames between .upgrade/ and data/upgrade/ are only atomic (and only replace links instead of
 # following them) on one filesystem
 if [ "$(stat -c %d .upgrade)" != "$(stat -c %d "$shared")" ]; then
-  echo "$(date -u) .upgrade and $shared are on different filesystems; keep ./data inside the checkout"; exit 1
+  echo "$(date -u) .upgrade and $shared are on different filesystems; keep ./data inside the install folder"; exit 1
 fi
 
 # host-side memory lives in .upgrade/, out of the app's reach
@@ -49,27 +49,33 @@ publish() { # publish <name> < content
   mv -fT "$tmp" "$shared/$1"
 }
 publish_state() {
-  current=$(git rev-parse HEAD)
-  latest=$(git rev-parse --verify --quiet "origin/$branch" || echo "$current")
   publish state <<EOF
 status=$(get status)
-branch=$branch
-current=$current
-latest=$latest
+repo=$repo
+current=$(env_val PUPPYPAD_VERSION)
+latest=$(get latest)
+published_at=$(get published_at)
+url=$(get url)
 checked_at=$(get checked_at)
 finished_at=$(get finished_at)
 seen_at=$(date +%s)
 message=$(get message | tr -d '\n' | cut -c1-300)
 EOF
-  # only commits ahead of what runs now; empty when up to date or when HEAD isn't behind
-  if git merge-base --is-ancestor "$current" "$latest" 2>/dev/null; then
-    git log --format='%h %s' -n 50 "$current..$latest" | publish pending
-  else
-    : | publish pending
-  fi
+  get notes | publish notes
 }
+# the newest release (GitHub leaves drafts and pre-releases out of /releases/latest)
 check() {
-  if git fetch --quiet origin "$branch"; then put checked_at "$(date +%s)"; else echo "$(date -u) git fetch failed"; fi
+  json=.upgrade/latest.json
+  if ! curl -fsSL --max-time 30 -o "$json" "$api/repos/$repo/releases/latest"; then
+    echo "$(date -u) could not reach GitHub for the newest release"; return 0
+  fi
+  tag=$(jq -r '.tag_name // ""' "$json")
+  if ! is_tag "$tag"; then echo "$(date -u) the newest release has an unexpected tag: $tag"; return 0; fi
+  put latest "$tag"
+  put url "$(jq -r '.html_url // ""' "$json" | tr -d '\n')"
+  put published_at "$(jq -r '.published_at // "" | if . == "" then "" else fromdateiso8601 end' "$json")"
+  jq -r '.body // ""' "$json" | tr -d '\r' | head -c 8000 > .upgrade/notes
+  put checked_at "$(date +%s)"
 }
 
 [ -n "$(get status)" ] || put status idle
@@ -93,12 +99,13 @@ case "$request" in
   check)
     check ;;
   "upgrade "*)
-    sha=${request#upgrade }
-    if printf '%s' "$sha" | grep -Eqx '[0-9a-f]{40}'; then
+    tag=${request#upgrade }
+    # only the release the page showed as newest; anything else (an older one) is a job for the shell
+    if is_tag "$tag" && [ "$tag" = "$(get latest)" ]; then
       put status running; put message ""; publish_state
-      echo "$(date -u) upgrading to $sha"
-      if scripts/upgrade.sh "$sha" > .upgrade/last.log 2>&1; then
-        put status ok; put message "upgraded to $(echo "$sha" | cut -c1-7)"
+      echo "$(date -u) upgrading to $tag"
+      if scripts/install.sh "$tag" > .upgrade/last.log 2>&1; then
+        put status ok; put message "upgraded to $tag"
       else
         put status failed; put message "$(tail -n 1 .upgrade/last.log)"
       fi
@@ -106,7 +113,7 @@ case "$request" in
       tail -n 200 .upgrade/last.log | publish log
       cat .upgrade/last.log
     else
-      echo "$(date -u) ignored a malformed request"
+      echo "$(date -u) ignored a request for something other than the newest release"
     fi ;;
   "") ;;
   *) echo "$(date -u) ignored a malformed request" ;;
