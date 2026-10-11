@@ -437,7 +437,7 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash)) || !stillCurrent(req, user)) {
+  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash)) || q.userById.get(user.id)?.pw_hash !== user.pw_hash) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
   }
   if (!user.verified) {
