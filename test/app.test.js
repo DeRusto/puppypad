@@ -603,6 +603,55 @@ test('the main site sends a Content-Security-Policy; member sites and the editor
   }
 });
 
+test('uploads and imports go through temp files on disk and leave none behind', async () => {
+  const m = await member('tempdog');
+  const tmp = path.join(process.env.DATA_DIR, 'tmp');
+  const site = path.join(process.env.DATA_DIR, 'sites', 'tempdog');
+  assert.equal((await upload(m, 'pic.gif', 'GIF89a-one')).status, 200);
+  assert.equal(fs.readFileSync(path.join(site, 'pic.gif'), 'utf8'), 'GIF89a-one');
+  await upload(m, 'bad.exe', 'MZ'); // refused type: its temp file still goes
+  await upload(m, 'big.txt', 'x'.repeat(1048577)); // over MAX_FILE_MB: multer stops mid-file
+  await importZip(m, await makeZip([['a.html', 'zipped a'], ['b/c.css', 'p{}'], ['huge.txt', 'x'.repeat(1048577)]]));
+  assert.equal(fs.readFileSync(path.join(site, 'a.html'), 'utf8'), 'zipped a');
+  assert.equal(fs.readFileSync(path.join(site, 'b/c.css'), 'utf8'), 'p{}');
+  await importZip(m, Buffer.from('not a zip'));
+  assert.deepEqual(fs.readdirSync(tmp), []);
+});
+
+test('an uploaded page is still checked for phishing', async () => {
+  const m = await member('phishup');
+  await upload(m, 'login.html', '<title>PayPal login</title><input type="password">');
+  assert.ok(db.prepare("SELECT 1 FROM reports WHERE site = 'phishup' AND reason = 'Auto-flag'").get());
+});
+
+test('a zip that fails partway through unpacking leaves the site and the temp folder untouched', async () => {
+  const m = await member('halfzip');
+  const site = path.join(process.env.DATA_DIR, 'sites', 'halfzip');
+  const zip = await makeZip([['first.html', 'fine'], ['second.html', 'x'.repeat(5000)]]);
+  // claim the second entry inflates to 10 bytes: yauzl aborts mid-stream once more than that comes out
+  const cd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  zip.writeUInt32LE(10, cd + 24);
+  const res = await importZip(m, zip);
+  assert.match(res.text, /could not be read/);
+  assert.equal(fs.existsSync(path.join(site, 'first.html')), false); // the entry unpacked before the failure never moved in
+  assert.deepEqual(fs.readdirSync(path.join(process.env.DATA_DIR, 'tmp')), []);
+});
+
+test('uploads are turned away while the disk is too full to hold them', async () => {
+  const m = await member('fulldisk');
+  const real = fs.statfsSync;
+  fs.statfsSync = (p) => ({ ...real(p), bavail: 10, blocks: 1000, bsize: 4096 }); // 1% free
+  try {
+    const res = await upload(m, 'a.txt', 'x');
+    assert.equal(res.status, 503);
+    const json = await req('post', '/dashboard/upload').set('Cookie', m.cookie).set('Accept', 'application/json')
+      .field('_csrf', m.csrf).field('dir', '').attach('files', Buffer.from('x'), 'b.txt');
+    assert.equal(json.status, 503);
+    assert.match(json.body.error, /short on space/);
+  } finally { fs.statfsSync = real; }
+  assert.equal((await upload(m, 'a.txt', 'x')).status, 200); // and accepted again once there is room
+});
+
 test('the space-used line stays right through uploads, edits, replacements and deletes without rewalking the folder', async () => {
   const m = await member('tally');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'tally');
