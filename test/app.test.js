@@ -462,10 +462,18 @@ test('visitors can sign a guestbook and the entry shows', async () => {
   assert.match(page.text, /nice pad!/);
 });
 
-test('site file cap refuses uploads once the folder is at the cap', async () => {
+test('site file cap: new files stop at the cap, replacements still work, deletes free slots', async () => {
   const m = await member('filecap');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'filecap');
   for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x'); // seed to the cap on disk; 2,000 real uploads would take all day
   const res = await upload(m, 'one-more.txt', 'x');
   assert.match(res.text, /too many files: 2000 max/);
+  const rep = await upload(m, 'f0.txt', 'y'); // overwriting a file that is already there is not a new file
+  assert.doesNotMatch(rep.text, /too many files/);
+  assert.equal(fs.readFileSync(path.join(dir, 'f0.txt'), 'utf8'), 'y');
+  for (const f of ['f1.txt', 'f2.txt']) // the folder also holds the starter page, so free two slots
+    await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: f });
+  const again = await upload(m, 'one-more.txt', 'x');
+  assert.doesNotMatch(again.text, /too many files/);
+  assert.ok(fs.existsSync(path.join(dir, 'one-more.txt')));
 });
