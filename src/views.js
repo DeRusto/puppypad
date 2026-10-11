@@ -56,6 +56,8 @@ footer{text-align:center;font-size:13px}
 .feed li{display:flex;gap:10px;align-items:center}.feed .shot{width:96px;flex:none;border-width:2px}
 .edwrap{display:flex;gap:10px;flex-wrap:wrap}.edwrap>div{flex:1 1 420px;min-width:0}
 .CodeMirror{height:65vh;border:2px inset var(--edge);font:14px/1.4 "Courier New",monospace}
+.drop{display:flex;flex-direction:column;gap:6px;border:3px dashed var(--edge);padding:12px;background:#fff}.drop.over{background:var(--pee)}
+progress{width:100%;max-width:460px}
 iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#fff}
 `;
 
@@ -134,7 +136,12 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 <label for="newpw">New password (10 characters or more)</label>
 <input type="password" id="newpw" name="new_password" minlength="10" maxlength="200" required autocomplete="new-password">
 <label for="newpw2">New password again</label>
-<input type="password" id="newpw2" name="confirm_password" minlength="10" maxlength="200" required autocomplete="new-password"><button>Change password</button></form></section>` : ''}`);
+<input type="password" id="newpw2" name="confirm_password" minlength="10" maxlength="200" required autocomplete="new-password"><button>Change password</button></form></section>
+<section class="box"><h2>Change email</h2><p>Your email is <b>${esc(ctx.user.email)}</b>.${ctx.user.new_email ? ` Waiting for <b>${esc(ctx.user.new_email)}</b> to confirm.` : ''}</p>
+<form class="stack" method="post" action="/account/email">${csrfField(ctx)}<label for="newemail">New email (we send a link there to confirm it)</label>
+<input type="email" id="newemail" name="email" maxlength="200" required autocomplete="email">
+<label for="emailpw">Your password</label>
+<input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>` : ''}`);
 };
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
@@ -177,6 +184,48 @@ const reset = (ctx, m, token) => layout(ctx, 'Choose a new password', `
 
 const notice = (ctx, title, html) => layout(ctx, title, `<section class="box"><h2>${esc(title)}</h2>${html}</section>`);
 
+// Drag-and-drop and many-file uploads: sends the files 20 at a time with a progress bar, then reloads the folder with the totals.
+// Without JavaScript the form above still posts normally (20 files at most).
+const UPLOADER = `<script>(function(){
+var form=document.getElementById('upform'),drop=document.getElementById('drop'),input=document.getElementById('files'),bar=document.getElementById('upbar'),note=document.getElementById('upnote');
+if(!form||!window.FormData||!window.XMLHttpRequest)return;
+var max=Number(form.dataset.max),busy=false;
+function post(batch,sent,total,cb){
+  var fd=new FormData();fd.append('_csrf',form._csrf.value);fd.append('dir',form.dir.value);
+  batch.forEach(function(f){fd.append('files',f,f.name)});
+  var x=new XMLHttpRequest();x.open('POST',form.action);x.setRequestHeader('Accept','application/json');
+  x.upload.onprogress=function(e){if(e.lengthComputable){bar.value=(sent+e.loaded*(batch.reduce(function(n,f){return n+f.size},0)/e.total))/total}};
+  x.onload=function(){var r;try{r=JSON.parse(x.responseText)}catch(e){r={error:'Upload failed ('+x.status+').'}}cb(r)};
+  x.onerror=function(){cb({error:'Upload failed. Check your connection and try again.'})};
+  x.send(fd);
+}
+function send(list){
+  if(busy||!list.length)return;busy=true;
+  var files=[],skipped=[],saved=0;
+  for(var i=0;i<list.length;i++){if(list[i].size>max)skipped.push(list[i].name+' (too big)');else files.push(list[i])}
+  var total=files.reduce(function(n,f){return n+f.size},0)||1,sent=0,start=0;
+  bar.hidden=false;bar.value=0;
+  (function next(){
+    if(start>=files.length){
+      var q='?dir='+encodeURIComponent(form.dir.value)+(saved?'&ok='+encodeURIComponent('Uploaded '+saved+' file'+(saved===1?'':'s')+'.'):'');
+      if(skipped.length)q+='&err='+encodeURIComponent('Skipped: '+skipped.slice(0,20).join(', ')+(skipped.length>20?' and '+(skipped.length-20)+' more':'')+'.');
+      location.href='/dashboard'+q;return;
+    }
+    var batch=files.slice(start,start+20);start+=20;
+    note.textContent='Uploading '+Math.min(start,files.length)+' of '+files.length+' files...';
+    post(batch,sent,total,function(r){
+      if(r.error){skipped=skipped.concat(batch.map(function(f){return f.name+' ('+r.error+')'}))}
+      else{saved+=r.saved;skipped=skipped.concat(r.skipped)}
+      sent+=batch.reduce(function(n,f){return n+f.size},0);bar.value=sent/total;next();
+    });
+  })();
+}
+form.addEventListener('submit',function(e){e.preventDefault();send(Array.prototype.slice.call(input.files))});
+['dragenter','dragover'].forEach(function(t){drop.addEventListener(t,function(e){e.preventDefault();drop.classList.add('over')})});
+['dragleave','drop'].forEach(function(t){drop.addEventListener(t,function(e){e.preventDefault();drop.classList.remove('over')})});
+drop.addEventListener('drop',function(e){send(Array.prototype.slice.call(e.dataTransfer.files).filter(function(f){return f.size||f.type}))});
+})();</script>`;
+
 function dashboard(ctx, m, d) {
   const { cfg, user } = ctx;
   const url = cfg.siteUrl(user.username);
@@ -195,19 +244,24 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
 <p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${cfg.QUOTA_MB} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+${d.listed || user.banned ? '' : `<p class="note">Your site is online, but it shows up in the dog park, on the home page and in the webring only after your first edit${cfg.NEW_SITE_HOURS > 0 ? ` and once it is ${cfg.NEW_SITE_HOURS} hours old` : ''}. Make it yours!</p>`}
 <form class="stack" method="post" action="/dashboard/tagline">${csrfField(ctx)}<label for="tagline">One-line description for the site directory</label>
 <input type="text" id="tagline" name="tagline" maxlength="100" value="${esc(user.tagline)}"><button>Save description</button></form></section>
 
 <section class="box"><h2>Files in /${esc(d.dir)}</h2>
 <div class="scroll"><table><tr><th>Name</th><th>Size</th><th>Actions</th></tr>${rows || '<tr><td colspan="3">This folder is empty.</td></tr>'}</table></div>
 <h3>Upload files</h3>
-<form class="stack" method="post" action="/dashboard/upload" enctype="multipart/form-data">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
-<label for="files">Up to 20 files, ${cfg.MAX_FILE_MB} MB each. Files with the same name are replaced.</label>
-<input type="file" id="files" name="files" multiple required><button>Upload</button></form>
+<form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${cfg.MAX_FILE_MB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
+<div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
+<input type="file" id="files" name="files" multiple required></div>
+<progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
+${UPLOADER}
 <h3>Import a zip</h3>
 <form class="stack" method="post" action="/dashboard/import" enctype="multipart/form-data">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
 <label for="zip">Moving in from another host? Zip up your site folder (up to ${cfg.ZIP_MAX_MB} MB) and it unpacks here, folders and all. Files with the same name are replaced.</label>
 <input type="file" id="zip" name="zip" accept=".zip,application/zip" required><button>Import zip</button></form>
+<h3>Download my site</h3>
+<p>Get every file as one <a href="/dashboard/download">.zip</a>, folders and all. Handy as a backup, or to move your site somewhere else.</p>
 <h3>New file or folder</h3>
 <form class="stack" method="get" action="/dashboard/edit"><label for="newpath">File path, for example <code>about.html</code> or <code>pics/index.html</code>. Folders are created for you.</label>
 <input type="text" id="newpath" name="path" value="${esc(d.dir ? d.dir + '/' : '')}" required><button>Create and edit</button></form></section>

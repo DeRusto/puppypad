@@ -261,3 +261,106 @@ test('rules page carries the terms; /terms points at it', async () => {
   assert.equal(t.status, 301);
   assert.equal(t.headers.location, '/rules');
 });
+
+test('clean URLs: /about serves about.html unless something called about exists', async () => {
+  const m = await member('clean');
+  await upload(m, 'about.html', 'about page');
+  assert.equal((await req('get', '/about', 'clean.pad.test')).text, 'about page');
+  assert.equal((await req('get', '/about.html', 'clean.pad.test')).text, 'about page');
+  assert.equal((await req('get', '/about/', 'clean.pad.test')).status, 404);
+  assert.equal((await req('get', '/nothing', 'clean.pad.test')).status, 404);
+  assert.equal((await req('get', '/.env', 'clean.pad.test')).status, 404);
+  // a folder of the same name wins, as it always did
+  await importZip(m, await makeZip([['index.html', 'folder page']]), 'about');
+  assert.equal((await req('get', '/about', 'clean.pad.test')).status, 301);
+  assert.equal((await req('get', '/about/', 'clean.pad.test')).text, 'folder page');
+});
+
+test('members download their whole site as one zip', async () => {
+  const m = await member('packer');
+  await importZip(m, await makeZip([['index.html', '<h1>home</h1>'], ['pics/dog.gif', 'GIF89a']]));
+  const res = await req('get', '/dashboard/download').set('Cookie', m.cookie).buffer(true).parse((r, cb) => {
+    const chunks = []; r.on('data', (c) => chunks.push(c)); r.on('end', () => cb(null, Buffer.concat(chunks)));
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'application/zip');
+  assert.match(res.headers['content-disposition'], /attachment; filename="packer-\d{4}-\d{2}-\d{2}\.zip"/);
+  const { readZip } = require('../src/zip');
+  const { files } = await readZip(res.body, { maxFileBytes: 1e6, maxTotalBytes: 1e7 });
+  assert.deepEqual(Object.fromEntries(files.map((f) => [f.name, f.data.toString()])), { 'index.html': '<h1>home</h1>', 'pics/dog.gif': 'GIF89a' });
+  assert.equal((await req('get', '/dashboard/download')).status, 302); // logged out: to the login page
+});
+
+test('changing email waits for the new address to confirm, and tells the old one', async () => {
+  const m = await member('mover', 'mover@example.com');
+  const change = (body) => req('post', '/account/email').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  assert.match((await change({ email: 'new@example.com', password: 'wrongpassword' })).text, /password is wrong/);
+  assert.match((await change({ email: 'boss@example.com', password: 'longpassword1' })).text, /already has a site/);
+  assert.match((await change({ email: 'not-an-email', password: 'longpassword1' })).text, /does not look right/);
+
+  const sent = mail.length;
+  assert.equal((await change({ email: 'New@Example.com', password: 'longpassword1' })).status, 302);
+  assert.ok(mail.slice(sent).some((s) => s.includes('to=mover@example.com') && s.includes('being changed')));
+  assert.equal(db.prepare('SELECT email FROM users WHERE username = ?').get('mover').email, 'mover@example.com'); // not yet
+
+  const token = lastLink('account/email/confirm');
+  assert.match((await req('get', `/account/email/confirm?token=${token}`)).text, /Your email is now <b>new@example\.com<\/b>/);
+  assert.equal(db.prepare('SELECT email, new_email FROM users WHERE username = ?').get('mover').email, 'new@example.com');
+  assert.match((await req('get', `/account/email/confirm?token=${token}`)).text, /no longer valid/); // one use only
+  // the new address now works for password reset
+  await req('post', '/forgot').type('form').send({ email: 'new@example.com' });
+  assert.ok(mail.at(-1).includes('to=new@example.com'));
+});
+
+test('an email taken while waiting for confirmation is not handed over', async () => {
+  const m = await member('slowpoke');
+  await req('post', '/account/email').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, email: 'race@example.com', password: 'longpassword1' });
+  const token = lastLink('account/email/confirm');
+  await member('quick', 'race@example.com');
+  assert.match((await req('get', `/account/email/confirm?token=${token}`)).text, /Nothing was changed/);
+});
+
+test('new sites stay off the public lists until edited and a day old', async () => {
+  const m = await member('newbie');
+  const inLists = async () => {
+    const browse = (await req('get', '/browse')).text;
+    const home = (await req('get', '/')).text;
+    return { browse: browse.includes('/site/newbie'), home: home.includes('/site/newbie') };
+  };
+  assert.deepEqual(await inLists(), { browse: false, home: false });
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /only after your first edit and once it is 24 hours old/);
+  // its address and profile work from the start
+  assert.equal((await req('get', '/', 'newbie.pad.test')).status, 200);
+  assert.equal((await req('get', '/site/newbie')).status, 200);
+
+  await upload(m, 'index.html', '<h1>mine now</h1>');
+  assert.deepEqual(await inLists(), { browse: false, home: false }); // edited, but brand new
+
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'newbie');
+  assert.deepEqual(await inLists(), { browse: true, home: true });
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /only after your first edit/);
+
+  // old but never edited: still off the lists, and the webring skips it
+  await member('idle');
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'idle');
+  assert.equal((await req('get', '/browse')).text.includes('/site/idle'), false);
+  for (let i = 0; i < 10; i++) assert.doesNotMatch((await req('get', '/webring/random')).headers.location, /idle|quick|slowpoke/);
+  assert.equal((await req('get', '/webring/next?from=newbie')).headers.location.includes('idle'), false);
+});
+
+test('the drag-and-drop uploader gets JSON back', async () => {
+  const m = await member('dropper');
+  const res = await req('post', '/dashboard/upload').set('Cookie', m.cookie).set('Accept', 'application/json')
+    .field('_csrf', m.csrf).field('dir', 'pics').attach('files', Buffer.from('GIF89a'), 'a.gif').attach('files', Buffer.from('<?php'), 'b.php');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { saved: 1, skipped: ['b.php (name or file type not allowed)'] });
+  assert.equal((await req('get', '/pics/a.gif', 'dropper.pad.test')).status, 200);
+  const bad = await req('post', '/dashboard/upload').set('Cookie', m.cookie).set('Accept', 'application/json')
+    .field('_csrf', 'wrong').attach('files', Buffer.from('x'), 'c.txt');
+  assert.equal(bad.status, 403);
+  assert.ok(bad.body.error);
+  // results come back through the dashboard's ?ok= and ?err=
+  const dash = await req('get', '/dashboard?dir=pics&ok=Uploaded%201%20file.&err=Skipped%3A%20b.php.').set('Cookie', m.cookie);
+  assert.match(dash.text, /Uploaded 1 file\./);
+  assert.match(dash.text, /Skipped: b\.php\./);
+});

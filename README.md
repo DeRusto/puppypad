@@ -4,11 +4,11 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 
 ## What's in the box
 
-- Signup with email confirmation, login, password reset, account deletion (a deleted site's name is held for 90 days)
-- Per-member folder with uploads, zip import (unpacks a whole site, with the same name, type and quota checks), folders, text editor, quota (50 MB) and file-type allowlist
-- Member sites served on their own subdomain, with custom `not_found.html`
+- Signup with email confirmation, login, password reset, email change (confirmed by link), account deletion (a deleted site's name is held for 90 days)
+- Per-member folder with drag-and-drop uploads (many files at once, with a progress bar), zip import (unpacks a whole site, with the same name, type and quota checks), folders, text editor, quota (50 MB), file-type allowlist, and a one-click download of the whole site as a zip
+- Member sites served on their own subdomain, with custom `not_found.html` and clean URLs (`/about` serves `about.html`)
 - Widgets: `/_hw/counter.svg`, `/_hw/guestbook` (owner can delete entries), webring prev/next/random
-- Explore page with a screenshot of every site, sortable by recently updated, newest, most followed, most visited
+- Explore page with a screenshot of every site (new sites join it after their first edit and once they are `NEW_SITE_HOURS` old, 24 by default), sortable by recently updated, newest, most followed, most visited
 - Follows, a personal feed of updates from sites you follow, and a profile page per site (`/site/name`)
 - Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files
 - Moderation: public report form, `/admin` queue, take down / restore / delete, signup IPs

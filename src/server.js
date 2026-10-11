@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const { db, SITES_DIR, SHOTS_DIR } = require('./db');
 const U = require('./util');
 const V = require('./views');
-const { readZip } = require('./zip');
+const { readZip, writeZip } = require('./zip');
 
 // ---------- config ----------
 const env = process.env;
@@ -25,6 +25,8 @@ const cfg = {
   QUOTA_MB: Number(env.QUOTA_MB || 50),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
+  // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
+  NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
   ADMIN_EMAILS: new Set((env.ADMIN_EMAILS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean)),
   SECURE: base.protocol === 'https:',
@@ -89,6 +91,10 @@ function autoFlag(user, rel, content) {
 }
 const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
 const LIVE = 'verified = 1 AND banned = 0';
+// live sites shown on the home page, the dog park, the webring and /random (profiles and addresses work for every live site)
+const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
+const listed = () => `${LIVE} AND updates > 0 AND created_at <= ${listedSince()}`;
+const isListed = (u) => !!(u.verified && !u.banned && u.updates > 0 && u.created_at <= listedSince());
 const siteDir = (name) => path.join(SITES_DIR, name);
 const starter = fs.readFileSync(path.join(__dirname, '..', 'templates', 'starter.html'), 'utf8');
 
@@ -104,6 +110,7 @@ function useToken(t, kind) {
   db.prepare('DELETE FROM tokens WHERE token_hash = ?').run(row.token_hash);
   return q.userById.get(row.user_id);
 }
+const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
 function startSession(res, userId) {
   const t = U.newToken();
@@ -195,7 +202,11 @@ site.use((req, res) => {
     if (!err && st.isDirectory()) {
       if (!req.path.endsWith('/')) return res.redirect(301, req.path + '/');
       full = path.join(full, 'index.html');
-    } else if (err) return notFound();
+    } else if (err) {
+      // clean URLs: /about serves about.html when nothing called "about" exists
+      if (req.path.endsWith('/') || path.extname(full)) return notFound();
+      full += '.html';
+    }
     res.set('Cache-Control', 'public, max-age=60');
     res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
   });
@@ -260,8 +271,8 @@ const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404
 
 // ----- public pages -----
 main.get('/', (req, res) => res.send(V.home(req.ctx, {
-  recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${LIVE} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
-  newest: db.prepare(`SELECT * FROM users WHERE ${LIVE} ORDER BY id DESC LIMIT 10`).all(),
+  recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
+  newest: db.prepare(`SELECT * FROM users WHERE ${listed()} ORDER BY id DESC LIMIT 10`).all(),
   total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${LIVE}`).get().n,
 })));
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
@@ -269,10 +280,10 @@ const WITH_FOLLOWERS = `SELECT u.*, (SELECT COUNT(*) FROM follows f WHERE f.foll
 const hasShot = (r) => ({ ...r, shot: fs.existsSync(shotPath(r.username)) });
 main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
-  const total = db.prepare(`SELECT COUNT(*) n FROM users WHERE ${LIVE}`).get().n;
+  const total = db.prepare(`SELECT COUNT(*) n FROM users WHERE ${listed()}`).get().n;
   const pages = Math.max(1, Math.ceil(total / 24));
   const page = Math.min(pages, Math.max(1, parseInt(req.query.page, 10) || 1));
-  const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${LIVE} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET ?`).all((page - 1) * 24).map(hasShot);
+  const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET ?`).all((page - 1) * 24).map(hasShot);
   res.send(V.browse(req.ctx, { rows, page, pages, sort }));
 });
 function showProfile(req, res, name, m, status = 200) {
@@ -306,7 +317,7 @@ main.get('/feed', (req, res) => {
   res.send(V.feed(req.ctx, { events, count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
 });
 const randomSite = (req, res) => {
-  const r = db.prepare(`SELECT username FROM users WHERE ${LIVE} ORDER BY RANDOM() LIMIT 1`).get();
+  const r = db.prepare(`SELECT username FROM users WHERE ${listed()} ORDER BY RANDOM() LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 };
 main.get('/random', randomSite);
@@ -314,9 +325,10 @@ main.get('/webring/random', randomSite);
 main.get('/webring/:dir(next|prev)', (req, res) => {
   const from = q.userByName.get(String(req.query.from || '').toLowerCase());
   const id = from ? from.id : 0;
+  const ring = listed();
   const r = req.params.dir === 'next'
-    ? db.prepare(`SELECT username FROM users WHERE ${LIVE} AND id > ? ORDER BY id LIMIT 1`).get(id) || db.prepare(`SELECT username FROM users WHERE ${LIVE} ORDER BY id LIMIT 1`).get()
-    : db.prepare(`SELECT username FROM users WHERE ${LIVE} AND id < ? ORDER BY id DESC LIMIT 1`).get(id || 1e15) || db.prepare(`SELECT username FROM users WHERE ${LIVE} ORDER BY id DESC LIMIT 1`).get();
+    ? db.prepare(`SELECT username FROM users WHERE ${ring} AND id > ? ORDER BY id LIMIT 1`).get(id) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id LIMIT 1`).get()
+    : db.prepare(`SELECT username FROM users WHERE ${ring} AND id < ? ORDER BY id DESC LIMIT 1`).get(id || 1e15) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id DESC LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 });
 main.get('/rules', (req, res) => res.send(V.rules(req.ctx)));
@@ -333,7 +345,7 @@ main.post('/signup', async (req, res) => {
   if (req.body.website) return res.send(V.notice(req.ctx, 'Check your email', '<p>We sent you a confirmation link.</p>')); // bot
   if (!U.limit(`signup:${req.ip}`, 5, 3600000)) return fail('Too many signups from your connection. Try again in an hour.', 429);
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 200) return fail('That email address does not look right.');
+  if (!validEmail(email)) return fail('That email address does not look right.');
   if (password.length < 10 || password.length > 200) return fail('Use a password with at least 10 characters.');
   if (!req.body.agree) return fail('You need to be 13 or older and accept the rules.');
   if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
@@ -410,9 +422,10 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: U.dirSize(siteDir(user.username)) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: U.dirSize(siteDir(user.username)), listed: isListed(user) }));
 }
-main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok ? { ok: String(req.query.ok) } : null));
+// ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
+main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
 
 // The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
 const uploadRel = (dir, name) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'));
@@ -451,14 +464,19 @@ const savedMsg = (saved, skipped, verb) => ({
 });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
+// The plain form gets the dashboard back; the drag-and-drop uploader asks for JSON so it can send many batches and sum them up
 main.post('/dashboard/upload', auth, canEdit, (req, res) => upload(req, res, (err) => {
-  if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
-  if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time.' }, 400);
+  const json = req.accepts(['html', 'json']) === 'json';
+  const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
+  if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
+  if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
-  if (dir === null) return showDashboard(req, res, { err: 'That folder name is not allowed.' }, 400);
+  if (dir === null) return fail('That folder name is not allowed.', 400);
   const skipped = [];
   const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), data: f.buffer }));
-  showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, files, skipped), skipped, 'Uploaded'));
+  const saved = saveFiles(req.ctx.user, dir, files, skipped);
+  if (json) return res.json({ saved: saved.length, skipped });
+  showDashboard(req, res, savedMsg(saved, skipped, 'Uploaded'));
 }));
 
 // Import a whole site from one .zip, unpacked into the current folder
@@ -480,6 +498,17 @@ async function importZip(req, res, err) {
   const skipped = zip.skipped;
   showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, zip.files, skipped), skipped, 'Imported'));
 }
+
+// the member's whole site as one zip: their own backup, or their bags packed to move elsewhere
+main.get('/dashboard/download', auth, (req, res) => {
+  const user = req.ctx.user;
+  if (!U.limit(`download:${user.id}`, 10, 3600000)) return showDashboard(req, res, { err: 'That is a lot of downloads. Try again in an hour.' }, 429);
+  res.set('Content-Type', 'application/zip').set('Cache-Control', 'no-store')
+    .set('Content-Disposition', `attachment; filename="${user.username}-${new Date().toISOString().slice(0, 10)}.zip"`);
+  const zip = writeZip(siteDir(user.username));
+  zip.on('error', (e) => { console.error('zip download failed:', e.message); res.destroy(); });
+  zip.pipe(res);
+});
 
 main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.query.path);
@@ -543,6 +572,33 @@ main.post('/account/password', auth, (req, res) => {
   // log out everywhere else, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
+});
+// a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
+main.post('/account/email', auth, async (req, res) => {
+  const user = req.ctx.user;
+  const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
+  if (!U.checkPw(String(req.body.password || ''), user.pw_hash)) return fail('Your password is wrong. Nothing was changed.');
+  if (!validEmail(email)) return fail('That email address does not look right.');
+  if (email === user.email) return fail('That is already your email address.');
+  if (q.userByEmail.get(email)) return fail('That email already has a site.');
+  db.prepare('UPDATE users SET new_email = ? WHERE id = ?').run(email, user.id);
+  await sendMail(email, `Confirm your new ${cfg.SITE_NAME} email`,
+    `Confirm this address for ${user.username}.${cfg.BASE_HOST}:\n\n${cfg.BASE_URL}/account/email/confirm?token=${makeToken(user.id, 'email', 2 * DAY)}\n\nThe link works for 48 hours. If you did not ask for this, ignore it.`);
+  await sendMail(user.email, `Your ${cfg.SITE_NAME} email is being changed`,
+    `Someone logged in as ${user.username} asked to move the account to ${email}. It changes once that address confirms.\n\nIf this was not you, reset your password now: ${cfg.BASE_URL}/forgot`);
+  res.redirect(`/site/${user.username}?ok=${encodeURIComponent(`Check ${email} for a confirmation link. Your email changes when you click it.`)}`);
+});
+main.get('/account/email/confirm', (req, res) => {
+  const user = useToken(req.query.token, 'email');
+  const done = (title, html, code = 200) => res.status(code).send(V.notice(req.ctx, title, html));
+  if (!user || !user.new_email) return done('Link expired', '<p>That confirmation link is no longer valid. Ask for a new one from your profile page.</p>', 400);
+  if (q.userByEmail.get(user.new_email)) return done('Email taken', '<p>Another site signed up with that address in the meantime. Nothing was changed.</p>', 400);
+  db.prepare('UPDATE users SET email = ?, new_email = NULL WHERE id = ?').run(user.new_email, user.id);
+  sendMail(user.email, `Your ${cfg.SITE_NAME} email was changed`,
+    `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
+  done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
 });
 main.post('/dashboard/delete-account', auth, (req, res) => {
   if (!U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash)) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
