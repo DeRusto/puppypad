@@ -9,6 +9,7 @@ const U = require('./util');
 const V = require('./views');
 const { readZip, writeZip } = require('./zip');
 const starters = require('./starters');
+const upgrade = require('./upgrade');
 
 // ---------- config ----------
 const env = process.env;
@@ -826,8 +827,28 @@ const showAdmin = (req, res, m) => res.send(V.admin(req.ctx, m, {
     banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned = 1').get().n,
     open: db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n,
   },
+  upgrade: upgrade.readState(DATA_DIR),
 }));
 main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res));
+// asks scripts/upgrade-watch.sh on the host to look for a new version or install one (see src/upgrade.js)
+main.post('/admin/upgrade', auth, adminOnly, (req, res) => {
+  const st = upgrade.readState(DATA_DIR);
+  if (!st.watcher) return showAdmin(req, res, { err: 'The upgrade watcher is not running on the server. See "Upgrades" in the README.' });
+  if (st.request || st.status === 'queued' || st.status === 'running') return showAdmin(req, res, { err: 'An upgrade or check is already under way.' });
+  if (req.body.action === 'check') {
+    upgrade.writeRequest(DATA_DIR, 'check');
+    return showAdmin(req, res, { ok: 'Checking for a new version. Reload this page in a minute.' });
+  }
+  if (req.body.action === 'upgrade') {
+    const target = String(req.body.target || '');
+    // only the version this page showed, so nobody installs something they didn't see listed
+    if (!upgrade.SHA.test(target) || target !== st.latest || !st.behind) return showAdmin(req, res, { err: 'That version is no longer the newest one. Check again.' });
+    upgrade.writeRequest(DATA_DIR, `upgrade ${target}`);
+    adminLog(req, 'upgrade', '', `${st.current.slice(0, 7)} -> ${target.slice(0, 7)}`);
+    return showAdmin(req, res, { ok: 'Upgrade queued. The server backs up the database, then rebuilds; the site blips for a few seconds. Reload this page to follow it.' });
+  }
+  res.redirect('/admin');
+});
 main.post('/admin/report-close', auth, adminOnly, (req, res) => {
   const r = db.prepare("SELECT * FROM reports WHERE id = ? AND status = 'open'").get(Number(req.body.id) || 0);
   if (r) {
@@ -866,6 +887,8 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   console.error(err);
   res.status(500).type('text').send('Something broke on our side. Try again.');
 });
+
+upgrade.ensureDir(DATA_DIR);
 
 // housekeeping: expired sessions/tokens, old guestbook and report IPs, and accounts never confirmed after 3 days
 const housekeeping = () => {

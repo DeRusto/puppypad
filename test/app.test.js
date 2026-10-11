@@ -824,3 +824,35 @@ test('webring next and prev go the right way, with or without a trailing slash',
     assert.match((await req('get', `/webring/prev${slash}?from=ringb`)).headers.location, /ringa\./);
   }
 });
+
+test('admin upgrade button only asks the host watcher for the version it showed', async () => {
+  const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
+  const cookie = login.headers['set-cookie'][0].split(';')[0];
+  const page = () => req('get', '/admin').set('Cookie', cookie);
+  const csrf = (await page()).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  const post = (body) => req('post', '/admin/upgrade').set('Cookie', cookie).type('form').send({ _csrf: csrf, ...body });
+  const dir = path.join(process.env.DATA_DIR, 'upgrade');
+  const request = path.join(dir, 'request');
+
+  assert.match((await page()).text, /upgrade watcher is not running/);
+  assert.match((await post({ action: 'check' })).text, /not running/);
+  assert.ok(!fs.existsSync(request));
+
+  const [cur, next] = ['a'.repeat(40), 'b'.repeat(40)];
+  fs.writeFileSync(path.join(dir, 'state'), `status=idle\nbranch=main\ncurrent=${cur}\nlatest=${next}\nseen_at=${Math.floor(Date.now() / 1000)}\n`);
+  fs.writeFileSync(path.join(dir, 'pending'), 'bbbbbbb Add <b>things</b>\n');
+  const shown = (await page()).text;
+  assert.match(shown, /Running <code>aaaaaaa<\/code>/);
+  assert.match(shown, /Add &lt;b&gt;things&lt;\/b&gt;/);
+  assert.match(shown, /upgrade to bbbbbbb/);
+
+  assert.match((await post({ action: 'upgrade', target: 'c'.repeat(40) })).text, /no longer the newest/);
+  assert.ok(!fs.existsSync(request));
+  await post({ action: 'upgrade', target: next });
+  assert.equal(fs.readFileSync(request, 'utf8'), `upgrade ${next}\n`);
+  assert.match((await post({ action: 'check' })).text, /already under way/);
+  assert.equal(db.prepare("SELECT detail FROM admin_log WHERE action = 'upgrade'").get().detail, 'aaaaaaa -> bbbbbbb');
+
+  const other = await member('upgrade-nosy');
+  assert.equal((await req('post', '/admin/upgrade').set('Cookie', other.cookie).type('form').send({ _csrf: other.csrf, action: 'check' })).status, 404);
+});

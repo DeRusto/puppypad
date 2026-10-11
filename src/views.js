@@ -456,7 +456,26 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
 <p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`);
 
-const admin = (ctx, m, { reports, users, stats, log }) => layout(ctx, 'Admin', `
+const short = (sha) => esc((sha || '').slice(0, 7));
+const upgradeBox = (ctx, u) => {
+  if (!u) return '';
+  const when = (t) => (t ? ago(t) : 'never');
+  const busy = !!u.request || u.status === 'queued' || u.status === 'running';
+  const btn = (action, label, cls = '') => `<form class="inline" method="post" action="/admin/upgrade">${csrfField(ctx)}<input type="hidden" name="action" value="${action}">${action === 'upgrade' ? `<input type="hidden" name="target" value="${esc(u.latest)}">` : ''}<button${cls ? ` class="${cls}"` : ''}>${label}</button></form>`;
+  if (!u.watcher) {
+    return `<h3>Server version</h3><p>The upgrade watcher is not running on the server${u.seenAt ? ` (last seen ${ago(u.seenAt)})` : ''}. Add it to cron as described under "Upgrades" in the README.</p>`;
+  }
+  const status = busy ? `<p><strong>${u.status === 'running' ? 'Upgrading now.' : 'Waiting for the server to pick this up.'}</strong> Reload to follow it.</p>`
+    : u.status === 'failed' ? `<p class="err">The last upgrade failed ${when(u.finishedAt)}: ${esc(u.message)}</p>`
+    : u.status === 'ok' ? `<p class="ok">Last upgrade finished ${when(u.finishedAt)}.</p>` : '';
+  return `<h3>Server version</h3>
+<p>Running <code>${short(u.current) || 'unknown'}</code> from <code>${esc(u.branch || '?')}</code>. Last checked ${when(u.checkedAt)}.</p>${status}
+${u.behind ? `<p>${u.pending.length || 'Some'} new commit${u.pending.length === 1 ? '' : 's'} up to <code>${short(u.latest)}</code>:</p><pre class="scroll">${esc(u.pending.join('\n'))}</pre>` : '<p>Up to date.</p>'}
+<div>${busy ? '' : btn('check', 'Check now') + (u.behind ? ` ${btn('upgrade', `Back up and upgrade to ${short(u.latest)}`, 'danger')}` : '')}</div>
+${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll">${esc(u.log)}</pre></details>` : ''}`;
+};
+
+const admin = (ctx, m, { reports, users, stats, log, upgrade }) => layout(ctx, 'Admin', `
 <section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
 <h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
 ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
@@ -468,7 +487,8 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <h3>Newest members</h3><div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th></tr>
 ${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}</td><td>${esc(u.signup_ip)}</td></tr>`).join('')}</table></div>
 <h3>Moderation log</h3><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
-${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div></section>`);
+${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div>
+${upgradeBox(ctx, upgrade)}</section>`);
 
 // ---- pages served on member subdomains ----
 const bare = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>

@@ -19,7 +19,7 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 ## Deploy on a VPS
 
 1. In Cloudflare DNS, point `A example.com` and `A *.example.com` at the server, set to **DNS only** (grey cloud). Create an API token with the "Edit zone DNS" template for that zone; Caddy uses it to get one wildcard certificate.
-2. Install Docker, copy this folder up, then:
+2. Install Docker, `git clone` this repository onto the server (the upgrade button needs a clone), then:
 
    ```
    cp .env.example .env             # fill in BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*
@@ -42,6 +42,34 @@ To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/p
 (left over, they would be replayed onto the restored database and corrupt it), unpack an archive
 into `./data`, rename `backup.db` to `puppypad.db`, and `docker compose start app`.
 `docs/launch-checklist.md` has a restore test that doesn't touch the live data.
+
+## Upgrades
+
+The "Server version" box at the bottom of `/admin` shows which commit is running, lists new commits
+on the deploy branch, and has a button that backs up and upgrades in place. The app never upgrades
+itself: it runs in a container with no git, no Docker access and no credentials. It only leaves a
+request in `data/upgrade/`, and `scripts/upgrade-watch.sh` on the host picks it up. That script
+accepts nothing but "check" or a commit that is already on the deploy branch, so a compromised app
+can at most ask for a version you pushed.
+
+To turn it on, deploy from a `git clone` (not a copied folder) and add a cron line for the user that
+owns the checkout and can run docker:
+
+```
+* * * * * /srv/puppypad/scripts/upgrade-watch.sh >> /var/log/puppypad-upgrade.log 2>&1
+```
+
+An upgrade runs `scripts/upgrade.sh`, which you can also run by hand:
+
+1. refuses to start if the checkout has local edits or commits (it only fast-forwards)
+2. runs `scripts/backup.sh`
+3. fast-forwards to the chosen commit and runs `docker compose up -d --build`
+4. waits for `/healthz`; if the new version doesn't come up, it resets the code to the old commit and rebuilds
+
+A rollback leaves the database as the new version left it, which is fine while schema changes only
+add tables and columns. The backup from step 2 is the newest archive in `./backups` if one ever isn't.
+`UPGRADE_BRANCH` (default `main`) and `UPGRADE_CHECK_MINUTES` (default 60) in `.env` set what it
+follows and how often it looks. The full output of the last run is in `.upgrade/last.log`.
 
 ## Email that arrives
 
