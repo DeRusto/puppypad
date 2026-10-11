@@ -418,6 +418,15 @@ test('log in with the site name or the email address', async () => {
   assert.equal((await login('nobody@example.com')).status, 401);
 });
 
+test('wrong passwords count against the account whether typed as site name or email', async () => {
+  await member('guessme');
+  // each request comes from a new IP, so only the per-account limit can stop the eleventh
+  const login = (username) => req('post', '/login').type('form').send({ username, password: 'wrongpassword' });
+  for (let i = 0; i < 10; i++) assert.equal((await login(i % 2 ? 'guessme' : 'guessme@example.com')).status, 401);
+  assert.equal((await login('guessme')).status, 429);
+  assert.equal((await login('guessme@example.com')).status, 429);
+});
+
 test('default 404 and 410 pages link to the report form', async () => {
   await member('reportme');
   const nf = await req('get', '/missing.html', 'reportme.pad.test');
@@ -429,10 +438,23 @@ test('default 404 and 410 pages link to the report form', async () => {
   assert.match(gone.text, /report\?site=reportme/);
 });
 
-test('/healthz says ok while the database answers', async () => {
-  const res = await req('get', '/healthz');
-  assert.equal(res.status, 200);
-  assert.deepEqual(res.body, { ok: true, db: true, disk: true });
+test('/healthz checks the database and fails under 5% free disk', async () => {
+  const realStatfs = fs.statfsSync;
+  const disk = (bavail) => { fs.statfsSync = () => ({ bavail, blocks: 1000 }); };
+  try {
+    disk(50); // exactly 5% free
+    let res = await req('get', '/healthz');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { ok: true, db: true, disk: true });
+    disk(49);
+    res = await req('get', '/healthz');
+    assert.equal(res.status, 503);
+    assert.deepEqual(res.body, { ok: false, db: true, disk: false });
+    fs.statfsSync = () => { throw new Error('EIO'); };
+    assert.equal((await req('get', '/healthz')).body.disk, false);
+  } finally {
+    fs.statfsSync = realStatfs;
+  }
 });
 
 test('admin actions land in the moderation log', async () => {

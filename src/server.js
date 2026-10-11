@@ -119,10 +119,13 @@ function startSession(res, userId) {
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
   res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
 }
-function deleteAccount(user) {
+function deleteAccountRows(user) {
   db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
   // never-confirmed accounts were never online, so their names are free again at once
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
+}
+function deleteAccount(user, rows = deleteAccountRows) {
+  rows(user);
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
 }
@@ -733,8 +736,10 @@ main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res));
 main.post('/admin/report-close', auth, adminOnly, (req, res) => {
   const r = db.prepare("SELECT * FROM reports WHERE id = ? AND status = 'open'").get(Number(req.body.id) || 0);
   if (r) {
-    db.prepare("UPDATE reports SET status = 'closed' WHERE id = ?").run(r.id);
-    adminLog(req, 'close report', r.site, `${r.reason}: ${r.details}`.slice(0, 200));
+    db.transaction(() => {
+      db.prepare("UPDATE reports SET status = 'closed' WHERE id = ?").run(r.id);
+      adminLog(req, 'close report', r.site, `${r.reason}: ${r.details}`.slice(0, 200));
+    })();
   }
   res.redirect('/admin');
 });
@@ -745,15 +750,19 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
-    deleteAccount(target);
-    adminLog(req, 'delete', target.username, reason);
+    // the rows and the log entry commit together; the files go only after both have
+    deleteAccount(target, db.transaction((u) => { deleteAccountRows(u); adminLog(req, 'delete', u.username, reason); }));
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
   }
   const ban = action === 'ban' ? 1 : 0;
-  db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, target.id);
-  adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
-  if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id); fs.rmSync(shotPath(target.username), { force: true }); }
-  else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
+  // the state change and its log entry commit together, so no take-down or restore goes unrecorded
+  db.transaction(() => {
+    db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, target.id);
+    adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
+    if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id); }
+    else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
+  })();
+  if (ban) fs.rmSync(shotPath(target.username), { force: true });
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
 });
 
