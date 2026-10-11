@@ -7,15 +7,17 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const newToken = () => crypto.randomBytes(32).toString('base64url');
 
-function hashPw(pw) {
+// async, so a login's ~50 ms of hashing doesn't stall every other site on the one event loop
+const scrypt = require('util').promisify(crypto.scrypt);
+async function hashPw(pw) {
   const salt = crypto.randomBytes(16);
-  return `scrypt$${salt.toString('hex')}$${crypto.scryptSync(pw, salt, 64).toString('hex')}`;
+  return `scrypt$${salt.toString('hex')}$${(await scrypt(pw, salt, 64)).toString('hex')}`;
 }
-function checkPw(pw, stored) {
+async function checkPw(pw, stored) {
   const [, saltHex, hashHex] = String(stored).split('$');
   if (!saltHex || !hashHex) return false;
   const want = Buffer.from(hashHex, 'hex');
-  const got = crypto.scryptSync(pw, Buffer.from(saltHex, 'hex'), 64);
+  const got = await scrypt(pw, Buffer.from(saltHex, 'hex'), 64);
   return want.length === got.length && crypto.timingSafeEqual(want, got);
 }
 
