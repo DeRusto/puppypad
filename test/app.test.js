@@ -586,6 +586,23 @@ test('site file cap: new files stop at the cap, replacements still work, deletes
   assert.ok(fs.existsSync(path.join(dir, 'one-more.txt')));
 });
 
+test('the main site sends a Content-Security-Policy; member sites and the editor do not', async () => {
+  const m = await member('cspdog');
+  const home = await req('get', '/');
+  assert.match(home.headers['content-security-policy'], /script-src 'self' 'nonce-[\w+/=]+'/);
+  assert.match(home.headers['content-security-policy'], /frame-ancestors 'none'/);
+  const dash = await req('get', '/dashboard').set('Cookie', m.cookie);
+  const nonce = dash.headers['content-security-policy'].match(/'nonce-([\w+/=]+)'/)[1];
+  assert.ok(dash.text.includes(`<script nonce="${nonce}">`)); // the uploader runs
+  assert.notEqual(nonce, (await req('get', '/dashboard').set('Cookie', m.cookie)).headers['content-security-policy'].match(/'nonce-([\w+/=]+)'/)[1]);
+  assert.equal((await req('get', '/', 'cspdog.pad.test')).headers['content-security-policy'], undefined); // members may run their own scripts
+  for (const p of ['/dashboard/edit', '/dashboard/edit/', '/Dashboard/Edit']) { // every spelling the router accepts
+    const ed = await req('get', `${p}?path=index.html`).set('Cookie', m.cookie);
+    assert.equal(ed.status, 200, p);
+    assert.equal(ed.headers['content-security-policy'], undefined, p);
+  }
+});
+
 test('uploads and imports go through temp files on disk and leave none behind', async () => {
   const m = await member('tempdog');
   const tmp = path.join(process.env.DATA_DIR, 'tmp');
