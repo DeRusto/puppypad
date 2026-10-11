@@ -27,7 +27,7 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
    ```
 
    That unpacks the release, creates `.env` and `.env.caddy` from the examples, and adds the upgrade
-   watcher to your crontab. Fill in `.env` (BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*, SHOT_TOKEN)
+   watcher (every minute) and the nightly backup (03:15) to your crontab. Fill in `.env` (BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*, SHOT_TOKEN)
    and `.env.caddy` (CF_API_TOKEN, only the Caddy container reads it), then `docker compose up -d`.
 3. Sign up with an email you put in `ADMIN_EMAILS` and confirm it. Until SMTP is set, the confirmation link is in `docker compose logs app`.
 4. Open `/admin` when logged in as that member.
@@ -38,8 +38,8 @@ Everything lives in `./data` (SQLite database plus `sites/`). Back that folder u
 
 `scripts/backup.sh` takes a consistent copy of the database while the app runs, archives it with
 every member's files into `./backups`, and keeps the last 14. Set `BACKUP_REMOTE` to an
-[rclone](https://rclone.org) remote to copy the archives off the server too. Run it nightly from cron
-(see the top of the script).
+[rclone](https://rclone.org) remote to copy the archives off the server too. `scripts/install.sh` schedules it every night at
+03:15 in the installing user's crontab, logging to `backups/backup.log`.
 
 To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/puppypad.db-shm`
 (left over, they would be replayed onto the restored database and corrupt it), unpack an archive

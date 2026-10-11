@@ -5,7 +5,8 @@
 #   sudo mkdir -p /srv/puppypad && sudo chown "$USER" /srv/puppypad && cd /srv/puppypad
 #   curl -fsSL https://github.com/DeRusto/puppypad/releases/latest/download/install.sh | sh
 # That unpacks the newest release into the current folder, creates .env and .env.caddy from the
-# examples, and adds the cron line for scripts/upgrade-watch.sh. It doesn't start anything: fill in
+# examples, and adds cron lines for scripts/upgrade-watch.sh and the nightly scripts/backup.sh. It
+# doesn't start anything: fill in
 # .env and .env.caddy, then run docker compose up -d.
 #
 # Upgrade, from the install folder (the button on /admin runs the same thing through the watcher):
@@ -61,15 +62,21 @@ echo "$repo" | grep -Eqx '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "bad UPGRAD
 web=${UPGRADE_GITHUB_URL:-https://github.com}
 api=${UPGRADE_API_URL:-https://api.github.com}
 
-# the watcher's cron line, added once; also put back on upgrades in case it went missing
-ensure_cron() {
-  line="* * * * * $root/scripts/upgrade-watch.sh >> $root/.upgrade/watch.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "$root/scripts/upgrade-watch.sh"; then return 0; fi
+# the upgrade watcher (every minute) and the nightly backup (03:15), each added once to this user's
+# crontab; also put back on upgrades in case one went missing
+add_cron() { # add_cron <script> <schedule> <log>
+  line="$2 $root/scripts/$1 >> $3 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "$root/scripts/$1"; then return 0; fi
   if { crontab -l 2>/dev/null || true; echo "$line"; } | crontab -; then
     echo "added to $(id -un)'s crontab: $line"
   else
     echo "couldn't edit the crontab; add this line yourself: $line"
   fi
+}
+ensure_cron() {
+  mkdir -p backups
+  add_cron upgrade-watch.sh '* * * * *' "$root/.upgrade/watch.log"
+  add_cron backup.sh '15 3 * * *' "$root/backups/backup.log"
 }
 
 old=$(cat VERSION 2>/dev/null || true)
@@ -120,7 +127,7 @@ if [ -z "$old" ]; then
 PuppyPad $target is installed in $root. Next:
   1. Fill in .env (BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*, SHOT_TOKEN) and .env.caddy (CF_API_TOKEN).
   2. docker compose up -d
-  3. Add the nightly backup cron line from README.md ("Backups").
+  3. Optional: set BACKUP_REMOTE in .env to copy the nightly backups off this server (README.md, "Backups").
 EOF
   exit 0
 fi

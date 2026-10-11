@@ -1,7 +1,7 @@
 #!/bin/sh
 # Nightly backup of ./data: a consistent copy of the SQLite database plus every member's files.
-# Run from the host, next to docker-compose.yml. Example crontab line (03:15 every night):
-#   15 3 * * * /srv/puppypad/scripts/backup.sh >> /var/log/puppypad-backup.log 2>&1
+# Run from the host, next to docker-compose.yml. scripts/install.sh adds this crontab line (03:15 every night):
+#   15 3 * * * /srv/puppypad/scripts/backup.sh >> /srv/puppypad/backups/backup.log 2>&1
 # Keeps the last 14 archives in ./backups. To also copy them off this server, install rclone,
 # configure a remote (Backblaze B2, Cloudflare R2, S3, ...) and set BACKUP_REMOTE (in .env or the environment),
 # e.g. "b2:my-bucket/puppypad".
