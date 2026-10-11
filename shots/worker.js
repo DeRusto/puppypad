@@ -33,8 +33,11 @@ function isPublicIp(ip) {
       (a === 198 && (b === 18 || b === 19)) || a >= 224);
   }
   const h = ip.toLowerCase();
-  return !(h === '::' || h === '::1' || h.startsWith('::ffff:') || h.startsWith('fc') || h.startsWith('fd') ||
-    h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb'));
+  return !(h === '::' || h === '::1' || h.startsWith('::ffff:') || h.startsWith('2001:db8:') ||
+    h.startsWith('fc') || h.startsWith('fd') ||
+    h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb') ||
+    h.startsWith('fec') || h.startsWith('fed') || h.startsWith('fee') || h.startsWith('fef') ||
+    h.startsWith('ff'));
 }
 async function resolvesPublic(hostname) {
   try {
@@ -55,7 +58,7 @@ async function shoot(browser, url) {
       if (!allowed(rawUrl)) return false;
       let u; try { u = new URL(rawUrl); } catch { return false; }
       if (u.protocol === 'data:' || u.protocol === 'blob:' || u.hostname === ownHost) return true;
-      if (!verdicts.has(u.hostname)) verdicts.set(u.hostname, await resolvesPublic(u.hostname));
+      if (!verdicts.has(u.hostname)) verdicts.set(u.hostname, resolvesPublic(u.hostname)); // the promise, so concurrent requests share one lookup and one verdict
       return verdicts.get(u.hostname);
     };
     await page.route('**/*', async (route) => ((await routeOk(route.request().url())) ? route.continue() : route.abort()));

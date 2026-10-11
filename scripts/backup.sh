@@ -25,5 +25,6 @@ ls -1t backups/puppypad-*.tar.gz | tail -n +15 | xargs -r rm --
 
 if [ -n "${BACKUP_REMOTE:-}" ]; then
   rclone copy backups "$BACKUP_REMOTE" # copy, not sync: a wiped local folder must not delete the remote copies
+  rclone delete "$BACKUP_REMOTE" --include 'puppypad-*.tar.gz' --min-age 14d # copy never prunes, so roll the remote over by hand
   echo "copied to $BACKUP_REMOTE"
 fi

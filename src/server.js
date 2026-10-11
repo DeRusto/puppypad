@@ -361,12 +361,6 @@ main.post('/signup', async (req, res) => {
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
   if (!(await humanCheck(req))) return fail('The "are you human" check did not pass. Try again.');
   const t = now();
-  // write the starter page first: a failure here must not leave a user row with no site behind,
-  // and if the insert below loses a signup race, the file on disk is a starter page either way
-  try {
-    fs.mkdirSync(siteDir(username), { recursive: true });
-    fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
-  } catch { return fail('Something went wrong making your site. Try again.', 500); }
   let id;
   try {
     id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
@@ -374,6 +368,13 @@ main.post('/signup', async (req, res) => {
   } catch {
     // a twin signup for the same name or email landed while the human check ran, so the checks above are stale
     return fail(q.userByName.get(username) ? 'That site name is taken.' : 'That email already has a site. Log in or reset your password.');
+  }
+  try {
+    fs.mkdirSync(siteDir(username), { recursive: true });
+    fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
+  } catch {
+    deleteAccount(q.userById.get(id)); // roll the row back: no account without its starter page
+    return fail('Something went wrong making your site. Try again.', 500);
   }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
     `Welcome! Confirm your email to put ${username}.${cfg.BASE_HOST} online:\n\n${cfg.BASE_URL}/verify?token=${makeToken(id, 'verify', 2 * DAY)}\n\nIf you did not sign up, ignore this message.`);
