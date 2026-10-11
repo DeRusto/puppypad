@@ -19,6 +19,11 @@
 # UPGRADE_REPO (in .env or the environment), DeRusto/puppypad by default.
 set -eu
 
+# everything is in main(), so when this is piped into sh the shell has read the whole script before
+# running any of it, and docker and the other commands below can't eat the rest of it from stdin
+main() {
+exec </dev/null
+
 # run from scripts/install.sh: the install folder is one up. Piped into sh: the current folder.
 case "$0" in */scripts/install.sh|scripts/install.sh) cd "$(dirname "$0")/.." ;; esac
 
@@ -190,3 +195,6 @@ docker compose up -d --remove-orphans || true
 if healthy; then echo "$target failed its health check; went back to ${old:-the git checkout}"
 else echo "went back to ${old:-the git checkout}, but it is not healthy either; check docker compose logs app"; fi
 exit 1
+}
+
+main "$@"

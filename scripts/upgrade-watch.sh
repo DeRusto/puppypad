@@ -1,7 +1,7 @@
 #!/bin/sh
 # The host half of the "Server version" box on /admin. Run it every minute from cron, as a user that
-# can run docker, from the install folder, e.g.:
-#   * * * * * /srv/puppypad/scripts/upgrade-watch.sh >> /var/log/puppypad-upgrade.log 2>&1
+# can run docker, from the install folder (scripts/install.sh adds this line):
+#   * * * * * /srv/puppypad/scripts/upgrade-watch.sh >> /srv/puppypad/.upgrade/watch.log 2>&1
 # Each run it tells the app it is alive, asks GitHub for the newest release every
 # UPGRADE_CHECK_MINUTES (60 by default), and acts on a request the admin page left in
 # data/upgrade/request: "check" asks now, "upgrade <tag>" runs scripts/install.sh <tag>.
