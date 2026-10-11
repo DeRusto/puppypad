@@ -41,7 +41,7 @@ it. It covers what the framework is today, what must change before signups open 
 | Schema | `src/db.js` | `CREATE TABLE IF NOT EXISTS` plus ad-hoc `ALTER TABLE` for new columns |
 | Helpers | `src/util.js` | scrypt passwords, name rules, reserved names, path safety, in-memory rate limiter |
 | HTML | `src/views.js` | Server-rendered template strings; CodeMirror 5 from cdnjs |
-| New-site page | `templates/starter.html` | Written to `index.html` at signup |
+| New-site page | `templates/*.html`, listed in `src/starters.js` | The layout picked at signup is written to `index.html` |
 | Screenshots | `shots/worker.js` | Separate container, blocks IPs and internal hostnames |
 | Deploy | `docker-compose.yml`, `Caddyfile`, `Dockerfile` | One VPS, everything under `./data` |
 
@@ -148,7 +148,7 @@ signup. **Your step:** read both pages and make them match how you run things
 **Phase A — small wins (weeks 1–3 after launch)**
 - ✅ Zip import: `/dashboard/import` unpacks a `.zip` (up to `ZIP_MAX_MB`) through the same name, type, quota and phishing checks as uploads; drops a wrapping folder and OS junk; refuses `../` names, links, encrypted entries and oversized files.
 - Folder rename/move.
-- Template gallery at signup: a few retro starters next to `starter.html`.
+- ✅ Starter layouts at signup: Sky Blue (the original), Shrine (sidebar), Notebook (diary) and Arcade (neon tiles), each with a "Peek" preview at `/starters/:id`. Every template opens with a `:root` block of colour, font and width variables so members can restyle it in one place; the style editor (§3.1) can build on those.
 - Log in with site name *or* email.
 - Admin audit log table: who banned, restored or deleted what, and when.
 - Visible "Report this site" link on default 404/410 pages and profile pages.

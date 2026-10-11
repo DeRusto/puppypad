@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NAME}} // ARCADE</title>
+<style>
+  /* Black-and-neon grid: a big banner, then tiles that wrap to fit any screen.
+     Easy knobs: change these colours and fonts and the whole page follows. */
+  :root {
+    --page: #000;
+    --grid: #0f2a0f;      /* faint grid lines on the background */
+    --tile: #050505;
+    --main: #39ff14;      /* the neon green */
+    --pop: #ff2bd6;       /* the hot pink */
+    --text: #c8ffc0;
+    --link: #39ff14;
+    --visited: #ff2bd6;
+    --font: "Courier New", Courier, monospace;
+    --width: 1000px;      /* how wide the page gets */
+    --tile-min: 220px;    /* tiles shrink to this before wrapping */
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; color: var(--text); font: 15px/1.5 var(--font);
+         background: var(--page) linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 100% 32px; }
+  a { color: var(--link); }  a:visited { color: var(--visited); }
+  a:hover { background: var(--pop); color: var(--page); }
+  .page { max-width: var(--width); margin: 0 auto; }
+  header { border: 3px double var(--main); padding: 18px; text-align: center; margin-bottom: 16px; }
+  h1 { margin: 0; font: 700 clamp(30px, 8vw, 60px)/1 var(--font); color: var(--main); letter-spacing: 4px;
+       text-shadow: 3px 3px 0 var(--pop); }
+  .blink { animation: blink 1s steps(1) infinite; color: var(--pop); }
+  @keyframes blink { 50% { visibility: hidden; } }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr)); gap: 16px; }
+  .tile { background: var(--tile); border: 2px solid var(--main); padding: 12px; box-shadow: 4px 4px 0 var(--pop); }
+  .tile.wide { grid-column: 1 / -1; }
+  h2 { margin: 0 0 8px; font-size: 16px; color: var(--page); background: var(--main); padding: 2px 8px; display: inline-block; }
+  h2::before { content: "> "; }
+  ul { margin: 0; padding-left: 20px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { border-bottom: 1px dashed var(--grid); padding: 2px 4px; }
+  td:last-child { text-align: right; color: var(--pop); }
+  iframe { border: 1px solid var(--main); width: 100%; height: 380px; background: #fff; }
+  footer { text-align: center; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>{{NAME}}</h1>
+    <p>PLAYER 1 HAS ENTERED THE WEB <span class="blink">_</span></p>
+  </header>
+
+  <div class="tiles">
+    <section class="tile">
+      <h2>WHO</h2>
+      <p>Your bio goes here. Name, likes, hates, what you're working on.</p>
+    </section>
+
+    <section class="tile">
+      <h2>HIGH SCORES</h2>
+      <table>
+        <tr><td>favourite game</td><td>???</td></tr>
+        <tr><td>favourite song</td><td>???</td></tr>
+        <tr><td>favourite food</td><td>???</td></tr>
+        <tr><td>hours online</td><td>9999</td></tr>
+      </table>
+    </section>
+
+    <section class="tile">
+      <h2>WARP ZONE</h2>
+      <ul>
+        <li><a href="{{HOST_URL}}/browse">the dog park</a></li>
+        <li><a href="{{HOST_URL}}/random">random pad</a></li>
+        <li><a href="#">add your own links</a></li>
+      </ul>
+    </section>
+
+    <section class="tile">
+      <h2>INSERT COIN</h2>
+      <p>Visitors so far: <img src="/_hw/counter.svg" alt="hit counter" style="vertical-align: middle"></p>
+      <p>Add another tile by copying any &lt;section class="tile"&gt;.</p>
+    </section>
+
+    <section class="tile wide">
+      <h2>GUESTBOOK</h2>
+      <iframe src="/_hw/guestbook" title="Guestbook"></iframe>
+    </section>
+  </div>
+
+  <footer>
+    <a href="{{HOST_URL}}/webring/prev?from={{NAME}}">&lt;&lt; PREV</a> |
+    <a href="{{HOST_URL}}/webring/random">RANDOM</a> |
+    <a href="{{HOST_URL}}/webring/next?from={{NAME}}">NEXT &gt;&gt;</a>
+    <br><small>hosted free on <a href="{{HOST_URL}}">{{HOST_NAME}}</a></small>
+  </footer>
+
+</div>
+</body>
+</html>
