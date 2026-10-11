@@ -1,4 +1,5 @@
 const express = require('express');
+const helmet = require('helmet');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
@@ -134,6 +135,7 @@ function resolveIn(user, rel) {
 
 // ---------- app ----------
 const app = express();
+app.use(helmet());
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use((req, res, next) => { res.set('X-Content-Type-Options', 'nosniff'); next(); });
