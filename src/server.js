@@ -255,7 +255,7 @@ main.use((req, res, next) => {
   }
   next();
 });
-main.use(express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB + 1) * 1048576 })); // the editor posts whole files, so the cap tracks MAX_FILE_MB
+main.use(express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 })); // the editor posts whole files, and percent-escaping can triple a byte, so the cap tracks MAX_FILE_MB with room for that
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
 const csrfOk = (req) => !req.ctx.user || (req.body && req.body._csrf === req.ctx.csrf);
@@ -365,15 +365,17 @@ main.post('/signup', async (req, res) => {
   try {
     id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
       .run(username, email, U.hashPw(password), req.ip, t, t).lastInsertRowid;
-  } catch {
-    // a twin signup for the same name or email landed while the human check ran, so the checks above are stale
+  } catch (err) {
+    // a twin signup for the same name or email landed while the human check ran, so the checks above are stale;
+    // anything that is not a constraint violation (a locked or full db) is a server error, not a conflict
+    if (!String(err && err.code).includes('CONSTRAINT')) return fail('Something went wrong on our end. Try again.', 500);
     return fail(q.userByName.get(username) ? 'That site name is taken.' : 'That email already has a site. Log in or reset your password.');
   }
   try {
     fs.mkdirSync(siteDir(username), { recursive: true });
     fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
   } catch {
-    deleteAccount(q.userById.get(id)); // roll the row back: no account without its starter page
+    try { deleteAccount(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
     return fail('Something went wrong making your site. Try again.', 500);
   }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,

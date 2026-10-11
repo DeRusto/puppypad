@@ -55,8 +55,9 @@ async function shoot(browser, url) {
     const ownHost = new URL(url).hostname;
     const verdicts = new Map(); // hostname -> safe to connect, for this page only
     const routeOk = async (rawUrl) => {
-      if (!allowed(rawUrl)) return false;
-      let u; try { u = new URL(rawUrl); } catch { return false; }
+      const url = rawUrl.replace(/^ws(s?):\/\//i, 'http$1://'); // sockets are checked as the http(s) address they belong to
+      if (!allowed(url)) return false;
+      let u; try { u = new URL(url); } catch { return false; }
       if (u.protocol === 'data:' || u.protocol === 'blob:' || u.hostname === ownHost) return true;
       if (!verdicts.has(u.hostname)) verdicts.set(u.hostname, resolvesPublic(u.hostname)); // the promise, so concurrent requests share one lookup and one verdict
       return verdicts.get(u.hostname);

@@ -461,3 +461,11 @@ test('visitors can sign a guestbook and the entry shows', async () => {
   assert.match(page.text, /Visitor/);
   assert.match(page.text, /nice pad!/);
 });
+
+test('site file cap refuses uploads once the folder is at the cap', async () => {
+  const m = await member('filecap');
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'filecap');
+  for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x'); // seed to the cap on disk; 2,000 real uploads would take all day
+  const res = await upload(m, 'one-more.txt', 'x');
+  assert.match(res.text, /too many files: 2000 max/);
+});
