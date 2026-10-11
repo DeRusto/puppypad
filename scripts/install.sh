@@ -88,6 +88,21 @@ ensure_cron() {
   add_cron backup.sh '15 3 * * *' "$root/backups/backup.log"
 }
 
+# the app runs as uid 1000 in its container and writes to data/; the watcher (this user) and the app
+# both write to data/upgrade/. Also run on upgrades, since a git checkout being migrated has never
+# had it set up.
+ensure_upgrade_dir() {
+  mkdir -p data/upgrade 2>/dev/null || true
+  chmod 770 data/upgrade 2>/dev/null || true
+  if [ "$(id -u)" = 0 ]; then
+    chown 1000:1000 data data/upgrade
+  elif [ "$(id -u)" != 1000 ]; then
+    if [ "$(stat -c %u data 2>/dev/null)" != 1000 ] || [ "$(stat -c %u data/upgrade 2>/dev/null)" != 1000 ] || [ ! -w data/upgrade ]; then
+      echo "the app (uid 1000) and this user both need to write to data/upgrade; run once: sudo chown 1000:1000 data && sudo chown 1000:$(id -gn) data/upgrade && sudo chmod 770 data/upgrade"
+    fi
+  fi
+}
+
 # what is here now: a release (VERSION), a deployment from a git checkout (.env and a database but no
 # VERSION, which gets the same backup and rollback as an upgrade), or nothing
 old=$(cat VERSION 2>/dev/null || true)
@@ -126,15 +141,7 @@ if [ "$mode" = fresh ]; then
   [ -f .env.caddy ] || { cp .env.caddy.example .env.caddy; chmod 600 .env.caddy; }
   set_env PUPPYPAD_VERSION "$target"
   ensure_cron
-  # the app runs as uid 1000 in its container and writes to data/; the watcher (this user) and the
-  # app both write to data/upgrade/
-  mkdir -p data/upgrade
-  chmod 770 data/upgrade
-  if [ "$(id -u)" = 0 ]; then
-    chown 1000:1000 data data/upgrade
-  elif [ "$(id -u)" != 1000 ]; then
-    echo "the app (uid 1000) needs to write to data/; run once: sudo chown 1000:1000 data && sudo chown 1000:$(id -gn) data/upgrade"
-  fi
+  ensure_upgrade_dir
   cat <<EOF
 
 PuppyPad $target is installed in $root. Next:
@@ -165,6 +172,7 @@ echo "== switching ${old:-the git checkout} -> $target"
 put_files
 set_env PUPPYPAD_VERSION "$target"
 ensure_cron
+ensure_upgrade_dir
 
 # waits for /healthz inside the app container; true once it answers 200
 healthy() {
