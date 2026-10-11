@@ -18,7 +18,8 @@ mkdir -p backups
 docker compose exec -T app node -e "require('better-sqlite3')('/data/puppypad.db').backup('/data/backup.db').then(() => console.log('database copied'))"
 
 tar -czf "backups/puppypad-$stamp.tar.gz" -C data backup.db sites shots
-rm -f data/backup.db
+# data/ belongs to the app's user (uid 1000), so remove the copy from inside the container
+docker compose exec -T app rm -f /data/backup.db
 echo "wrote backups/puppypad-$stamp.tar.gz"
 
 ls -1t backups/puppypad-*.tar.gz | tail -n +15 | xargs -r rm --

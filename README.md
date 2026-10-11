@@ -79,10 +79,12 @@ The app (uid 1000 in its container) and the watcher both write to `data/upgrade/
 group-writable. If the user running the watcher isn't uid 1000 or root, the installer prints the one
 `sudo chown` it needs.
 
-**Moving a server from a git checkout to releases.** In the checkout, delete
-`docker-compose.override.yml` (it makes compose build from source), run
-`curl -fsSL https://github.com/DeRusto/puppypad/releases/latest/download/install.sh | sh`, then
-`docker compose up -d`. `.env`, `.env.caddy`, `data/` and `backups/` stay as they are.
+**Moving a server from a git checkout to releases.** In the checkout, with the app running, run
+`curl -fsSL https://github.com/DeRusto/puppypad/releases/latest/download/install.sh | sh`. It sees
+`.env` and `data/puppypad.db`, so it treats the move like an upgrade: it pulls the images, backs up,
+switches, and puts the checkout's files back if the release doesn't come up healthy. `.env`,
+`.env.caddy`, `data/` and `backups/` stay as they are. (If the checkout already has
+`docker-compose.override.yml`, delete it first.)
 
 **Working on the code.** In the source tree, `docker-compose.override.yml` makes
 `docker compose up -d --build` build the images locally instead of pulling them.

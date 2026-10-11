@@ -22,13 +22,17 @@ set -eu
 # run from scripts/install.sh: the install folder is one up. Piped into sh: the current folder.
 case "$0" in */scripts/install.sh|scripts/install.sh) cd "$(dirname "$0")/.." ;; esac
 
-# an upgrade replaces this file, so run from a copy (also one level down, so the line above lands in
-# the same folder)
-if [ -f VERSION ] && [ "${PUPPYPAD_INSTALL_COPY:-}" != 1 ]; then
-  mkdir -p .upgrade
-  cp scripts/install.sh .upgrade/install.sh
-  PUPPYPAD_INSTALL_COPY=1 exec sh .upgrade/install.sh "$@"
-fi
+# an upgrade replaces this file, so run from a copy of our own (also one level down, so the line
+# above lands in the same folder); a copy per run, so a second run can't rewrite the one in use
+case "$0" in
+  */scripts/install.sh|scripts/install.sh)
+    mkdir -p .upgrade
+    copy=$(mktemp .upgrade/install-XXXXXX)
+    cp scripts/install.sh "$copy"
+    PUPPYPAD_INSTALL_COPY=1 exec sh "$copy" "$@" ;;
+esac
+# the shell holds the copy open, so it can go now
+[ "${PUPPYPAD_INSTALL_COPY:-}" = 1 ] && rm -f "$0"
 root=$(pwd)
 
 missing=""
@@ -79,7 +83,11 @@ ensure_cron() {
   add_cron backup.sh '15 3 * * *' "$root/backups/backup.log"
 }
 
+# what is here now: a release (VERSION), a deployment from a git checkout (.env and a database but no
+# VERSION, which gets the same backup and rollback as an upgrade), or nothing
 old=$(cat VERSION 2>/dev/null || true)
+mode=fresh
+if [ -n "$old" ]; then mode=upgrade; elif [ -f .env ] && [ -f data/puppypad.db ]; then mode=migrate; fi
 target=${1:-}
 if [ -z "$target" ]; then
   target=$(curl -fsSL "$api/repos/$repo/releases/latest" | jq -r .tag_name)
@@ -106,7 +114,7 @@ put_files() {
 }
 
 # ---------- first install ----------
-if [ -z "$old" ]; then
+if [ "$mode" = fresh ]; then
   put_files
   rm -rf "$new"
   [ -f .env ] || cp .env.example .env
@@ -142,12 +150,13 @@ PUPPYPAD_VERSION=$target docker compose -f "$new/files/docker-compose.yml" --pro
 echo "== backing up before the upgrade"
 scripts/backup.sh
 
-# keep the files this release replaces, to put back on a rollback
+# keep the files this release replaces, to put back on a rollback, and note the ones it adds
 prev=.upgrade/prev.tar
-existing=$(for f in $files; do [ -f "$f" ] && echo "$f"; done)
+existing=$(for f in $files; do [ -f "$f" ] && echo "$f"; done; true)
+added=$(for f in $files; do [ -f "$f" ] || echo "$f"; done; true)
 if [ -n "$existing" ]; then tar -cf "$prev" $existing; else tar -cf "$prev" -T /dev/null; fi
 
-echo "== switching $old -> $target"
+echo "== switching ${old:-the git checkout} -> $target"
 put_files
 set_env PUPPYPAD_VERSION "$target"
 ensure_cron
@@ -167,15 +176,17 @@ healthy() {
 if docker compose up -d --remove-orphans && healthy; then
   rm -rf "$new"
   echo "== upgraded to $target"
+  [ "$mode" = upgrade ] || echo "this folder now runs releases; the git checkout's other files are no longer used"
   exit 0
 fi
 
 echo "== $target did not come up healthy; going back"
 tar -xf "$prev"
-set_env PUPPYPAD_VERSION "$old"
+for f in $added; do rm -f "$f"; done
+if [ -n "$old" ]; then set_env PUPPYPAD_VERSION "$old"; else set_env PUPPYPAD_VERSION ""; fi
 docker compose up -d --remove-orphans || true
 # the database stays as the new release left it: schema changes are new tables and columns, which
 # older code ignores. If a release ever needs more, the backup from before the upgrade is the newest archive in ./backups.
-if healthy; then echo "$target failed its health check; went back to $old"
-else echo "went back to $old, but it is not healthy either; check docker compose logs app"; fi
+if healthy; then echo "$target failed its health check; went back to ${old:-the git checkout}"
+else echo "went back to ${old:-the git checkout}, but it is not healthy either; check docker compose logs app"; fi
 exit 1
