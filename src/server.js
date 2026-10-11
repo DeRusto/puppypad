@@ -4,7 +4,7 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { db, SITES_DIR, SHOTS_DIR } = require('./db');
+const { db, DATA_DIR, SITES_DIR, SHOTS_DIR } = require('./db');
 const U = require('./util');
 const V = require('./views');
 const { readZip, writeZip } = require('./zip');
@@ -93,6 +93,27 @@ function autoFlag(user, rel, content) {
   sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] auto-flag: ${user.username}`, `${details}\n\nReview: ${cfg.BASE_URL}/admin`);
 }
 const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
+// uploads and unpacked zips land here first: on disk, not in memory, and on the same volume as the sites so they move in with a rename
+const UPLOAD_TMP = path.join(DATA_DIR, 'tmp');
+fs.rmSync(UPLOAD_TMP, { recursive: true, force: true }); // whatever a crash left behind
+fs.mkdirSync(UPLOAD_TMP, { recursive: true });
+// Temp files sit outside every member's quota, so running uploads share one budget: each reserves its largest
+// possible size up front and is turned away while that would eat into the 5% of the disk /healthz keeps free.
+let tempReserved = 0;
+const tempBudget = (bytes) => (req, res, next) => {
+  let spare = 0;
+  try { const s = fs.statfsSync(UPLOAD_TMP); spare = (s.bavail - s.blocks * HEALTH_MIN_FREE) * s.bsize; } catch { /* unknown: refuse */ }
+  if (spare - tempReserved < bytes) {
+    const msg = 'The server is short on space for uploads right now. Try again in a little while.';
+    return req.accepts(['html', 'json']) === 'json' ? res.status(503).json({ error: msg }) : res.status(503).send(V.notice(req.ctx, 'Try again soon', `<p>${msg}</p>`));
+  }
+  tempReserved += bytes;
+  let held = true;
+  const release = () => { if (held) { held = false; tempReserved -= bytes; } };
+  res.on('finish', release).on('close', release);
+  next();
+};
+const dropTemp = (files) => { for (const f of files) if (f && f.path) fs.rmSync(f.path, { force: true }); };
 const LIVE = 'verified = 1 AND banned = 0';
 // live sites shown on the home page, the dog park, the webring and /random (profiles and addresses work for every live site)
 const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
@@ -513,6 +534,7 @@ function writeAtomic(full, data) {
 const MAX_FILES = 2000; // the byte quota alone lets a member mint unlimited empty files; this is far above any real site
 
 // Write uploaded or unzipped files into a member's folder through the same checks: safe name, allowed type, quota.
+// Each file is { name, data } in memory or { name, path, size } in UPLOAD_TMP; the caller removes temp files that were not moved in.
 function saveFiles(user, dir, files, skipped) {
   const size = usage(user.username);
   let used = size.total;
@@ -525,19 +547,22 @@ function saveFiles(user, dir, files, skipped) {
     const exists = fs.existsSync(full);
     const old = exists && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
     if (!exists && count >= MAX_FILES) { skipped.push(`${f.name} (too many files: ${MAX_FILES} max)`); continue; }
-    if (used - old + f.data.length > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.name} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
+    const bytes = f.data ? f.data.length : f.size;
+    if (used - old + bytes > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.name} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
     try {
-      writeAtomic(full, f.data);
+      if (f.data) writeAtomic(full, f.data);
+      else { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.renameSync(f.path, full); } // a rename replaces the old file in one step
     } catch {
       skipped.push(`${f.name} (a file or folder with that name is in the way)`);
       continue;
     }
-    used += f.data.length - old;
+    used += bytes - old;
     if (!exists) count++;
     // record each write as it lands, so a later failure in the batch can't leave the totals short;
     // `at` stays the time of the last real walk, so the expiry still catches changes made outside the app
     usageCache.set(user.username, { total: used, count, at: size.at });
-    autoFlag(user, rel, f.data.toString('utf8'));
+    // only pages and scripts are scanned, so only they are read back
+    if (SCANNED.test(rel)) autoFlag(user, rel, f.data ? f.data.toString('utf8') : fs.readFileSync(full, 'utf8'));
     saved.push(rel);
   }
   if (saved.length) markUpdated(user.id);
@@ -548,9 +573,13 @@ const savedMsg = (saved, skipped, verb) => ({
   err: skipped.length ? `Skipped: ${skipped.slice(0, 20).join(', ')}${skipped.length > 20 ? ` and ${skipped.length - 20} more` : ''}. Allowed types: ${[...U.ALLOWED_EXT].join(', ')}.` : '',
 });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
+const tmpStorage = multer.diskStorage({ destination: UPLOAD_TMP, filename: (req, file, cb) => cb(null, `up-${crypto.randomBytes(8).toString('hex')}`) });
+const upload = multer({ storage: tmpStorage, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
 // The plain form gets the dashboard back; the drag-and-drop uploader asks for JSON so it can send many batches and sum them up
-main.post('/dashboard/upload', auth, canEdit, (req, res) => upload(req, res, (err) => {
+main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res) => upload(req, res, (err) => {
+  try { handleUpload(req, res, err); } finally { dropTemp(req.files || []); }
+}));
+function handleUpload(req, res, err) {
   const json = req.accepts(['html', 'json']) === 'json';
   const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
   if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
@@ -558,15 +587,15 @@ main.post('/dashboard/upload', auth, canEdit, (req, res) => upload(req, res, (er
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return fail('That folder name is not allowed.', 400);
   const skipped = [];
-  const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), data: f.buffer }));
+  const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), path: f.path, size: f.size }));
   const saved = saveFiles(req.ctx.user, dir, files, skipped);
   if (json) return res.json({ saved: saved.length, skipped });
   showDashboard(req, res, savedMsg(saved, skipped, 'Uploaded'));
-}));
+}
 
 // Import a whole site from one .zip, unpacked into the current folder
-const zipUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
-main.post('/dashboard/import', auth, canEdit, (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next)));
+const zipUpload = multer({ storage: tmpStorage, limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
+main.post('/dashboard/import', auth, canEdit, tempBudget((cfg.ZIP_MAX_MB + cfg.QUOTA_MB) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
 async function importZip(req, res, err) {
   if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
@@ -576,12 +605,16 @@ async function importZip(req, res, err) {
   if (!U.limit(`import:${req.ctx.user.id}`, 10, 3600000)) return showDashboard(req, res, { err: 'That is a lot of imports. Try again in an hour.' }, 429);
   let zip;
   try {
-    zip = await readZip(req.file.buffer, { maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: cfg.QUOTA_MB * 1048576, allowed: (name) => !!uploadRel(dir, name) });
+    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: cfg.QUOTA_MB * 1048576, allowed: (name) => !!uploadRel(dir, name) });
   } catch (e) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }
   const skipped = zip.skipped;
-  showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, zip.files, skipped), skipped, 'Imported'));
+  try {
+    showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, zip.files, skipped), skipped, 'Imported'));
+  } finally {
+    dropTemp(zip.files);
+  }
 }
 
 // the member's whole site as one zip: their own backup, or their bags packed to move elsewhere
@@ -822,6 +855,11 @@ const housekeeping = () => {
     db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
+    // temp files are removed when their request ends; anything an hour old was orphaned
+    for (const f of fs.readdirSync(UPLOAD_TMP)) {
+      const full = path.join(UPLOAD_TMP, f);
+      try { if (now() - fs.statSync(full).mtimeMs > 3600000) fs.rmSync(full, { force: true }); } catch { /* finished with meanwhile */ }
+    }
   } catch (e) { console.error('housekeeping failed:', e.message); }
 };
 setInterval(housekeeping, 3600000).unref();
