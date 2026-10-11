@@ -601,7 +601,8 @@ test('a visitor reports a site: it lands in the queue, and bad reports are refus
 });
 
 test('report submissions are rate limited per connection', async () => {
-  const send = () => request(app).post('/report').set('Host', 'pad.test').set('X-Forwarded-For', '10.9.9.9').type('form').send({ site: 'naughty', details: 'again' });
+  await member('reportlimited');
+  const send = () => request(app).post('/report').set('Host', 'pad.test').set('X-Forwarded-For', '10.9.9.9').type('form').send({ site: 'reportlimited', details: 'again' });
   for (let i = 0; i < 5; i++) assert.equal((await send()).status, 200);
   assert.equal((await send()).status, 429);
 });
