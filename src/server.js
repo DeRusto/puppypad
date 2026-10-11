@@ -97,6 +97,22 @@ const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
 const UPLOAD_TMP = path.join(DATA_DIR, 'tmp');
 fs.rmSync(UPLOAD_TMP, { recursive: true, force: true }); // whatever a crash left behind
 fs.mkdirSync(UPLOAD_TMP, { recursive: true });
+// Temp files sit outside every member's quota, so running uploads share one budget: each reserves its largest
+// possible size up front and is turned away while that would eat into the 5% of the disk /healthz keeps free.
+let tempReserved = 0;
+const tempBudget = (bytes) => (req, res, next) => {
+  let spare = 0;
+  try { const s = fs.statfsSync(UPLOAD_TMP); spare = (s.bavail - s.blocks * HEALTH_MIN_FREE) * s.bsize; } catch { /* unknown: refuse */ }
+  if (spare - tempReserved < bytes) {
+    const msg = 'The server is short on space for uploads right now. Try again in a little while.';
+    return req.accepts(['html', 'json']) === 'json' ? res.status(503).json({ error: msg }) : res.status(503).send(V.notice(req.ctx, 'Try again soon', `<p>${msg}</p>`));
+  }
+  tempReserved += bytes;
+  let held = true;
+  const release = () => { if (held) { held = false; tempReserved -= bytes; } };
+  res.on('finish', release).on('close', release);
+  next();
+};
 const dropTemp = (files) => { for (const f of files) if (f && f.path) fs.rmSync(f.path, { force: true }); };
 const LIVE = 'verified = 1 AND banned = 0';
 // live sites shown on the home page, the dog park, the webring and /random (profiles and addresses work for every live site)
@@ -526,7 +542,7 @@ const savedMsg = (saved, skipped, verb) => ({
 const tmpStorage = multer.diskStorage({ destination: UPLOAD_TMP, filename: (req, file, cb) => cb(null, `up-${crypto.randomBytes(8).toString('hex')}`) });
 const upload = multer({ storage: tmpStorage, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
 // The plain form gets the dashboard back; the drag-and-drop uploader asks for JSON so it can send many batches and sum them up
-main.post('/dashboard/upload', auth, canEdit, (req, res) => upload(req, res, (err) => {
+main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res) => upload(req, res, (err) => {
   try { handleUpload(req, res, err); } finally { dropTemp(req.files || []); }
 }));
 function handleUpload(req, res, err) {
@@ -545,7 +561,7 @@ function handleUpload(req, res, err) {
 
 // Import a whole site from one .zip, unpacked into the current folder
 const zipUpload = multer({ storage: tmpStorage, limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
-main.post('/dashboard/import', auth, canEdit, (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
+main.post('/dashboard/import', auth, canEdit, tempBudget((cfg.ZIP_MAX_MB + cfg.QUOTA_MB) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
 async function importZip(req, res, err) {
   if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
