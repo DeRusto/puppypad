@@ -199,9 +199,9 @@ function post(batch,sent,total,cb){
   x.onerror=function(){cb({error:'Upload failed. Check your connection and try again.'})};
   x.send(fd);
 }
-function send(list){
+function send(list,pre){
   if(busy||!list.length)return;busy=true;
-  var files=[],skipped=[],saved=0;
+  var files=[],skipped=pre||[],saved=0;
   for(var i=0;i<list.length;i++){if(list[i].size>max)skipped.push(list[i].name+' (too big)');else files.push(list[i])}
   var total=files.reduce(function(n,f){return n+f.size},0)||1,sent=0,start=0;
   bar.hidden=false;bar.value=0;
@@ -223,7 +223,15 @@ function send(list){
 form.addEventListener('submit',function(e){e.preventDefault();send(Array.prototype.slice.call(input.files))});
 ['dragenter','dragover'].forEach(function(t){drop.addEventListener(t,function(e){e.preventDefault();drop.classList.add('over')})});
 ['dragleave','drop'].forEach(function(t){drop.addEventListener(t,function(e){e.preventDefault();drop.classList.remove('over')})});
-drop.addEventListener('drop',function(e){send(Array.prototype.slice.call(e.dataTransfer.files).filter(function(f){return f.size||f.type}))});
+// folders can't be sent as files; name them as skipped instead of letting one sink its whole batch
+drop.addEventListener('drop',function(e){
+  var items=e.dataTransfer.items,list=[],folders=[];
+  if(!items||!items[0]||!items[0].webkitGetAsEntry)return send(Array.prototype.slice.call(e.dataTransfer.files));
+  for(var i=0;i<items.length;i++){if(items[i].kind!=='file')continue;var en=items[i].webkitGetAsEntry();
+    if(en&&en.isDirectory)folders.push(en.name+' (a folder: zip it and use Import a zip)');else{var f=items[i].getAsFile();if(f)list.push(f)}}
+  if(!list.length&&folders.length){note.textContent='Skipped: '+folders.join(', ')+'.';return}
+  send(list,folders);
+});
 })();</script>`;
 
 function dashboard(ctx, m, d) {
@@ -409,7 +417,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <ul>
 <li><b>Your account:</b> site name, email address, and a scrambled (hashed) copy of your password. We use your email only for confirmation, password resets and messages about your site.</li>
 <li><b>Your site:</b> the files you upload, your description, your hit count, who you follow, and a screenshot of your front page for the directory.</li>
-<li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse.</li>
+<li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse. Guestbook and report addresses are erased after 90 days; your signup address is kept until you delete your account.</li>
 <li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
 </ul>
 <h3>Who else sees it</h3>
