@@ -655,3 +655,38 @@ test("a member's own not_found.html is their 404 page", async () => {
   assert.equal(res.status, 404);
   assert.equal(res.text, '<h1>lost puppy</h1>');
 });
+
+test('an error thrown inside an async handler is a 500, not a crashed process', async () => {
+  const realCheck = U.checkPw;
+  U.checkPw = () => { throw new Error('boom'); }; // /login is async; under Express 4 this rejection took the process down
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    await signup('throwdog', 'throwdog@example.com');
+    const res = await req('post', '/login').type('form').send({ username: 'throwdog', password: 'longpassword1' });
+    assert.equal(res.status, 500);
+    assert.match(res.text, /Something broke/);
+  } finally {
+    U.checkPw = realCheck;
+    console.error = realError;
+  }
+  assert.equal((await req('get', '/healthz')).status, 200); // still serving
+});
+
+test('a POST that is not a form gets the normal answer, not a crash', async () => {
+  const res = await req('post', '/login').set('Content-Type', 'application/json').send('{"username":"x"}');
+  assert.equal(res.status, 401);
+});
+
+test('webring next and prev go the right way, with or without a trailing slash', async () => {
+  const a = await member('ringa');
+  const b = await member('ringb');
+  for (const [m, n] of [[a, 'ringa'], [b, 'ringb']]) {
+    await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'x.html', content: 'x' });
+    db.prepare('UPDATE users SET created_at = 0 WHERE username = ?').run(n); // past the new-site wait
+  }
+  for (const slash of ['', '/']) {
+    assert.match((await req('get', `/webring/next${slash}?from=ringa`)).headers.location, /ringb\./);
+    assert.match((await req('get', `/webring/prev${slash}?from=ringb`)).headers.location, /ringa\./);
+  }
+});

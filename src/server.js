@@ -137,6 +137,8 @@ function resolveIn(user, rel) {
 }
 
 // ---------- app ----------
+// Express 5 leaves req.body undefined when no parser ran (a GET, or a POST that is not a form); handlers read fields off it freely
+const bodyDefault = (req, res, next) => { req.body ??= {}; next(); };
 const app = express();
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -181,7 +183,7 @@ site.get('/_hw/counter.svg', (req, res) => {
 
 const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
 site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id))));
-site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), (req, res) => {
+site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 40);
   const message = String(req.body.message || '').trim().slice(0, 500);
   if (req.body.website) return res.redirect('/_hw/guestbook'); // bot filled the hidden field
@@ -270,6 +272,7 @@ main.use((req, res, next) => {
   next();
 });
 main.use(express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 })); // the editor posts whole files, and percent-escaping can triple a byte, so the cap tracks MAX_FILE_MB with room for that
+main.use(bodyDefault);
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
 const csrfOk = (req) => !req.ctx.user || (req.body && req.body._csrf === req.ctx.csrf);
@@ -339,15 +342,17 @@ const randomSite = (req, res) => {
 };
 main.get('/random', randomSite);
 main.get('/webring/random', randomSite);
-main.get('/webring/:dir(next|prev)', (req, res) => {
+const webring = (next) => (req, res) => {
   const from = q.userByName.get(String(req.query.from || '').toLowerCase());
   const id = from ? from.id : 0;
   const ring = listed();
-  const r = req.params.dir === 'next'
+  const r = next
     ? db.prepare(`SELECT username FROM users WHERE ${ring} AND id > ? ORDER BY id LIMIT 1`).get(id) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id LIMIT 1`).get()
     : db.prepare(`SELECT username FROM users WHERE ${ring} AND id < ? ORDER BY id DESC LIMIT 1`).get(id || 1e15) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id DESC LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
-});
+};
+main.get('/webring/next', webring(true));
+main.get('/webring/prev', webring(false));
 main.get('/rules', (req, res) => res.send(V.rules(req.ctx)));
 main.get('/terms', (req, res) => res.redirect(301, '/rules'));
 main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));
@@ -564,7 +569,7 @@ main.get('/dashboard/download', auth, (req, res) => {
 main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.query.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
-  if (!full) { req.query.dir = ''; return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400); }
+  if (!full) return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : '', isNew: !exists }));
 });
