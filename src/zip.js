@@ -1,5 +1,7 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const yauzl = require('yauzl');
 const yazl = require('yazl');
 
@@ -12,14 +14,29 @@ async function readEntry(zip, entry) {
   for await (const c of await zip.openReadStreamPromise(entry)) chunks.push(c);
   return Buffer.concat(chunks);
 }
+// unpack one entry straight to a file, so a big import never sits in memory
+async function saveEntry(zip, entry, tmpDir) {
+  const file = path.join(tmpDir, `zip-${crypto.randomBytes(8).toString('hex')}`);
+  try {
+    await pipeline(await zip.openReadStreamPromise(entry), fs.createWriteStream(file, { flags: 'wx' }));
+  } catch (e) {
+    fs.rmSync(file, { force: true });
+    throw e;
+  }
+  return { path: file, size: fs.statSync(file).size };
+}
 
 // Read a member's zip without trusting it. Returns { files: [{ name, data }], skipped: [reason] } with names relative
 // to the zip root (one wrapping folder removed). File names still need U.safeRel before they touch the disk.
 // yauzl rejects absolute and ../ names and checks every entry's real size against the size it declares,
 // so a zip bomb can't push more than maxFileBytes per file or maxTotalBytes overall into memory.
 // allowed(name) drops entries that would be refused anyway before they are unpacked or count toward maxTotalBytes.
-async function readZip(buffer, { maxFileBytes, maxTotalBytes, allowed = () => true }) {
-  const zip = await yauzl.fromBufferPromise(buffer, { lazyEntries: true, autoClose: false, strictFileNames: false });
+// source is the zip as a Buffer or a path to it on disk. With tmpDir, each file is unpacked to its own file there
+// and comes back as { name, path, size } instead of { name, data }; the caller moves or deletes those files.
+async function readZip(source, { maxFileBytes, maxTotalBytes, allowed = () => true, tmpDir = null }) {
+  const opts = { lazyEntries: true, autoClose: false, strictFileNames: false };
+  const zip = Buffer.isBuffer(source) ? await yauzl.fromBufferPromise(source, opts) : await yauzl.openPromise(source, opts);
+  const files = [];
   try {
     const entries = [];
     let seen = 0;
@@ -31,7 +48,6 @@ async function readZip(buffer, { maxFileBytes, maxTotalBytes, allowed = () => tr
     const first = entries.length && entries[0].fileName.split('/')[0];
     const strip = first && entries.every((e) => e.fileName.startsWith(first + '/')) ? first.length + 1 : 0;
 
-    const files = [];
     const skipped = [];
     let total = 0;
     for (const e of entries) {
@@ -41,11 +57,20 @@ async function readZip(buffer, { maxFileBytes, maxTotalBytes, allowed = () => tr
       if (!allowed(name)) { skipped.push(`${name} (name or file type not allowed)`); continue; }
       if (e.uncompressedSize > maxFileBytes) { skipped.push(`${name} (too big)`); continue; }
       if (total + e.uncompressedSize > maxTotalBytes) { skipped.push(`${name} (over your space limit)`); continue; }
-      const data = await readEntry(zip, e);
-      total += data.length;
-      files.push({ name, data });
+      if (tmpDir) {
+        const f = await saveEntry(zip, e, tmpDir);
+        files.push({ name, ...f });
+        total += f.size;
+      } else {
+        const data = await readEntry(zip, e);
+        total += data.length;
+        files.push({ name, data });
+      }
     }
     return { files, skipped };
+  } catch (e) {
+    for (const f of files) if (f.path) fs.rmSync(f.path, { force: true }); // a zip that fails halfway leaves nothing behind
+    throw e;
   } finally {
     zip.close();
   }

@@ -584,3 +584,24 @@ test('site file cap: new files stop at the cap, replacements still work, deletes
   assert.doesNotMatch(again.text, /too many files/);
   assert.ok(fs.existsSync(path.join(dir, 'one-more.txt')));
 });
+
+test('uploads and imports go through temp files on disk and leave none behind', async () => {
+  const m = await member('tempdog');
+  const tmp = path.join(process.env.DATA_DIR, 'tmp');
+  const site = path.join(process.env.DATA_DIR, 'sites', 'tempdog');
+  assert.equal((await upload(m, 'pic.gif', 'GIF89a-one')).status, 200);
+  assert.equal(fs.readFileSync(path.join(site, 'pic.gif'), 'utf8'), 'GIF89a-one');
+  await upload(m, 'bad.exe', 'MZ'); // refused type: its temp file still goes
+  await upload(m, 'big.txt', 'x'.repeat(1048577)); // over MAX_FILE_MB: multer stops mid-file
+  await importZip(m, await makeZip([['a.html', 'zipped a'], ['b/c.css', 'p{}'], ['huge.txt', 'x'.repeat(1048577)]]));
+  assert.equal(fs.readFileSync(path.join(site, 'a.html'), 'utf8'), 'zipped a');
+  assert.equal(fs.readFileSync(path.join(site, 'b/c.css'), 'utf8'), 'p{}');
+  await importZip(m, Buffer.from('not a zip'));
+  assert.deepEqual(fs.readdirSync(tmp), []);
+});
+
+test('an uploaded page is still checked for phishing', async () => {
+  const m = await member('phishup');
+  await upload(m, 'login.html', '<title>PayPal login</title><input type="password">');
+  assert.ok(db.prepare("SELECT 1 FROM reports WHERE site = 'phishup' AND reason = 'Auto-flag'").get());
+});
