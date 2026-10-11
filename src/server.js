@@ -238,7 +238,8 @@ const csp = (nonce) => [
 ].join('; ');
 main.use((req, res, next) => {
   res.locals.nonce = crypto.randomBytes(16).toString('base64');
-  if (!EDITOR_PATHS.has(req.path)) res.set('Content-Security-Policy', csp(res.locals.nonce));
+  // routes match regardless of case and a trailing slash, so the exception has to as well
+  if (!EDITOR_PATHS.has(req.path.toLowerCase().replace(/\/+$/, ''))) res.set('Content-Security-Policy', csp(res.locals.nonce));
   next();
 });
 

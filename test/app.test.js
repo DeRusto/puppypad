@@ -595,5 +595,9 @@ test('the main site sends a Content-Security-Policy; member sites and the editor
   assert.ok(dash.text.includes(`<script nonce="${nonce}">`)); // the uploader runs
   assert.notEqual(nonce, (await req('get', '/dashboard').set('Cookie', m.cookie)).headers['content-security-policy'].match(/'nonce-([\w+/=]+)'/)[1]);
   assert.equal((await req('get', '/', 'cspdog.pad.test')).headers['content-security-policy'], undefined); // members may run their own scripts
-  assert.equal((await req('get', '/dashboard/edit?path=index.html').set('Cookie', m.cookie)).headers['content-security-policy'], undefined);
+  for (const p of ['/dashboard/edit', '/dashboard/edit/', '/Dashboard/Edit']) { // every spelling the router accepts
+    const ed = await req('get', `${p}?path=index.html`).set('Cookie', m.cookie);
+    assert.equal(ed.status, 200, p);
+    assert.equal(ed.headers['content-security-policy'], undefined, p);
+  }
 });
