@@ -1,4 +1,7 @@
+const fs = require('fs');
+const path = require('path');
 const yauzl = require('yauzl');
+const yazl = require('yazl');
 
 const MAX_ENTRIES = 2000;
 // files that operating systems slip into zips; dropped without a word
@@ -48,4 +51,21 @@ async function readZip(buffer, { maxFileBytes, maxTotalBytes, allowed = () => tr
   }
 }
 
-module.exports = { readZip };
+// Pack every regular file under dir into a zip stream, with paths relative to dir (links and dotfiles left out).
+// Files are read from disk as the zip is sent, so a full site never sits in memory.
+function writeZip(dir) {
+  const zip = new yazl.ZipFile();
+  const walk = (d, rel) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (e.name.startsWith('.')) continue;
+      const name = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(path.join(d, e.name), name);
+      else if (e.isFile()) zip.addFile(path.join(d, e.name), name);
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir, '');
+  zip.end();
+  return zip.outputStream;
+}
+
+module.exports = { readZip, writeZip };
