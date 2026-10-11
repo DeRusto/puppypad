@@ -83,3 +83,7 @@ Screenshots locally: `cd shots && npm install`, then run `APP_URL=http://localho
 - **Public Suffix List**: see `docs/public-suffix-list.md`.
 - **Screenshots**: the `shots` container opens every member page in headless Chromium. It blocks requests to IP addresses and internal hostnames, but for defense in depth also firewall that container from your private network and the cloud metadata address (169.254.169.254).
 - **Disk**: worst case is members x `QUOTA_MB`. Size the VPS disk or lower the quota.
+
+## License
+
+PuppyPad is free software, licensed under the [GNU Affero General Public License v3](LICENSE) — Copyright © 2026 Brandon Douglas Winterton. Run it, modify it, share it; if you run a modified version as a public service, publish your changes too.
