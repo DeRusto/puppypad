@@ -21,7 +21,8 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 2. Install Docker, copy this folder up, then:
 
    ```
-   cp .env.example .env     # fill in BASE_DOMAIN, ACME_EMAIL, CF_API_TOKEN, ADMIN_EMAILS, SMTP_*
+   cp .env.example .env             # fill in BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*
+   cp .env.caddy.example .env.caddy # fill in CF_API_TOKEN (only the Caddy container reads this file)
    docker compose up -d --build
    ```
 3. Sign up with an email you put in `ADMIN_EMAILS` and confirm it. Until SMTP is set, the confirmation link is in `docker compose logs app`.
