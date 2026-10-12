@@ -537,8 +537,9 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), listed: isListed(user) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), listed: isListed(user), hasIndex: hasIndex(user) }));
 }
+const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
 
@@ -686,6 +687,30 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
+});
+// put a starter layout back as the front page: straight away when there is none, after a confirm when it would replace one
+main.post('/dashboard/starter', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  if (!starters.valid(req.body.starter)) return showDashboard(req, res, { err: 'Pick one of the starter layouts.' }, 400);
+  const full = path.join(siteDir(user.username), 'index.html');
+  const exists = hasIndex(user);
+  if (exists && req.body.confirm !== '1') return res.send(V.starterConfirm(req.ctx, req.body.starter));
+  if (!U.limit(`starter:${user.id}`, 20, 3600000)) return showDashboard(req, res, { err: 'That is a lot of fresh starts. Try again in an hour.' }, 429);
+  const content = starters.render(req.body.starter, user.username, cfg);
+  const dirSize = usage(user.username);
+  const old = exists ? fs.statSync(full).size : 0;
+  if (!exists && dirSize.count >= MAX_FILES) return showDashboard(req, res, { err: `Your site already has ${MAX_FILES} files, the most we keep. Delete one first.` }, 400);
+  if (dirSize.total - old + Buffer.byteLength(content) > cfg.QUOTA_MB * 1048576) return showDashboard(req, res, { err: `That would go over your ${cfg.QUOTA_MB} MB limit. Free up some space first.` }, 400);
+  try {
+    writeAtomic(full, content);
+  } catch {
+    return showDashboard(req, res, { err: 'Could not write index.html: a folder with that name is in the way.' }, 400);
+  }
+  usageCache.delete(user.username);
+  // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
+  db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(user.id);
+  const name = starters.LIST.find((s) => s.id === req.body.starter).name;
+  res.redirect(`/dashboard?ok=${encodeURIComponent(`${exists ? 'Replaced' : 'Made'} your front page (index.html) from the ${name} starter.`)}`);
 });
 main.post('/dashboard/delete', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.body.path);

@@ -291,6 +291,42 @@ test('starter previews render with stand-ins for the counter and guestbook', asy
   assert.equal((await req('get', '/starters/hasOwnProperty')).status, 404);
 });
 
+test('a missing front page is spotted, and any starter can bring one back', async () => {
+  const m = await member('phoenix');
+  const index = path.join(process.env.DATA_DIR, 'sites', 'phoenix', 'index.html');
+  const pick = (starter, extra = {}) => req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, starter, ...extra });
+  let dash = await req('get', '/dashboard').set('Cookie', m.cookie);
+  assert.doesNotMatch(dash.text, /no front page/);
+  assert.match(dash.text, /Start over with a starter/);
+
+  // an existing page is only replaced after a confirm
+  fs.writeFileSync(index, 'my own page');
+  let res = await pick('arcade');
+  assert.equal(res.status, 200);
+  assert.match(res.text, /Replace your front page\?/);
+  assert.equal(fs.readFileSync(index, 'utf8'), 'my own page');
+  res = await pick('arcade', { confirm: '1' });
+  assert.equal(res.status, 302);
+  assert.match(fs.readFileSync(index, 'utf8'), /phoenix/);
+  assert.doesNotMatch(fs.readFileSync(index, 'utf8'), /my own page|\{\{/);
+
+  // renamed away: the dashboard says so and offers every starter, and no confirm is needed
+  fs.renameSync(index, path.join(path.dirname(index), 'home.html'));
+  dash = await req('get', '/dashboard').set('Cookie', m.cookie);
+  assert.match(dash.text, /no front page/);
+  for (const id of ['sky', 'shrine', 'notebook', 'arcade']) assert.match(dash.text, new RegExp(`name="starter" value="${id}"`));
+  res = await pick('notebook');
+  assert.equal(res.status, 302);
+  assert.match(fs.readFileSync(index, 'utf8'), /phoenix's Notebook/);
+  assert.ok(fs.existsSync(path.join(path.dirname(index), 'home.html')));
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /no front page/);
+
+  // a starter is not an edit, so it does not list a new site
+  assert.equal(db.prepare("SELECT updates FROM users WHERE username = 'phoenix'").get().updates, 0);
+  assert.equal((await pick('../../etc/passwd', { confirm: '1' })).status, 400);
+  assert.equal((await req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ starter: 'sky', confirm: '1' })).status, 403);
+});
+
 test('guestbook and report IPs are erased after 90 days', () => {
   const old = Date.now() - 91 * 86400000;
   const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
