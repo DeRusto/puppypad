@@ -967,11 +967,13 @@ test('SEO: robots, sitemap, favicon, and page meta', async () => {
 
   assert.equal((await req('get', '/favicon.ico')).status, 200);
   assert.equal((await req('get', '/og.svg')).status, 200);
+  assert.equal((await req('get', '/og.png')).status, 200);
 
   const home = await req('get', '/');
   assert.match(home.text, /<meta name="description" content="[^"]*free homepage host/);
   assert.match(home.text, /<link rel="canonical" href="http:\/\/pad\.test\/">/);
   assert.match(home.text, /property="og:title"/);
+  assert.match(home.text, /property="og:image" content="http:\/\/pad\.test\/og\.png"/);
   assert.match(home.text, /application\/ld\+json/);
   assert.ok(!home.text.includes('noindex'));
 
