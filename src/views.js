@@ -132,7 +132,7 @@ const browse = (ctx, { rows, page, pages, sort }) => layout(ctx, 'Dog park', `
 <section class="box"><h2>The dog park <small>(page ${page} of ${pages})</small></h2>
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}">${l}</a>`)).join(' ')}</p>
 ${cards(ctx, rows)}
-<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p></section>`, { wide: true, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: '/browse' });
+<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p></section>`, { wide: true, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}` });
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
