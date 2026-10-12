@@ -75,7 +75,7 @@ function layout(ctx, title, body, opts = {}) {
     opts.noindex || !url ? '<meta name="robots" content="noindex">' : '',
     url ? `<link rel="canonical" href="${esc(url)}">` : '',
     '<link rel="icon" type="image/svg+xml" href="/favicon.svg">',
-    desc && url ? `<meta property="og:type" content="website"><meta property="og:site_name" content="${esc(cfg.SITE_NAME)}"><meta property="og:title" content="${esc(fullTitle)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(opts.ogImage || cfg.BASE_URL + '/og.svg')}"><meta name="twitter:card" content="summary_large_image">` : '',
+    desc && url ? `<meta property="og:type" content="website"><meta property="og:site_name" content="${esc(cfg.SITE_NAME)}"><meta property="og:title" content="${esc(fullTitle)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(opts.ogImage || cfg.BASE_URL + '/og.png')}"><meta name="twitter:card" content="summary_large_image">` : '',
     opts.jsonLd ? `<script type="application/ld+json">${opts.jsonLd}</script>` : '',
   ].join('');
   const nav = [

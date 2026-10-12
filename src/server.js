@@ -363,6 +363,7 @@ const asset = (file, type) => (req, res) => res.set('Cache-Control', 'public, ma
 main.get('/favicon.ico', asset('favicon.svg', 'image/svg+xml')); // shortcut: SVG at the .ico path; browsers and Google accept SVG favicons
 main.get('/favicon.svg', asset('favicon.svg', 'image/svg+xml'));
 main.get('/og.svg', asset('og.svg', 'image/svg+xml'));
+main.get('/og.png', asset('og.png', 'image/png')); // the share-preview raster; og:image points here because several scrapers ignore SVG
 main.get('/robots.txt', (req, res) => res.type('text/plain').send(
   // /login, /signup, /forgot, /reset and /feed stay crawlable on purpose: they carry noindex tags,
   // which a crawler can only read if robots.txt lets it in. Only the auth-gated areas are disallowed.
