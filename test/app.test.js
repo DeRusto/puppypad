@@ -327,6 +327,40 @@ test('a missing front page is spotted, and any starter can bring one back', asyn
   assert.equal((await req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ starter: 'sky', confirm: '1' })).status, 403);
 });
 
+test('restoring a starter respects the file cap and the storage quota, and a refusal changes nothing', async () => {
+  const m = await member('tightfit');
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'tightfit');
+  const index = path.join(dir, 'index.html');
+  const pick = (starter) => req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, starter, confirm: '1' });
+  // over quota: a big file leaves no room for a new front page, and none is written
+  fs.unlinkSync(index);
+  fs.writeFileSync(path.join(dir, 'big.txt'), Buffer.alloc(1048576 - 100));
+  app.forgetUsage('tightfit');
+  let res = await pick('sky');
+  assert.equal(res.status, 400);
+  assert.match(res.text, /over your 1 MB limit/);
+  assert.ok(!fs.existsSync(index));
+  // replacing a page near quota is refused too, and the old page stays as it was
+  fs.writeFileSync(index, 'mine');
+  app.forgetUsage('tightfit');
+  res = await pick('arcade');
+  assert.equal(res.status, 400);
+  assert.equal(fs.readFileSync(index, 'utf8'), 'mine');
+  fs.unlinkSync(path.join(dir, 'big.txt'));
+  // at the file cap a missing front page can't be added, but a replacement still works
+  fs.unlinkSync(index);
+  for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x');
+  app.forgetUsage('tightfit');
+  res = await pick('sky');
+  assert.equal(res.status, 400);
+  assert.match(res.text, /2000 files/);
+  assert.ok(!fs.existsSync(index));
+  fs.renameSync(path.join(dir, 'f0.txt'), index);
+  app.forgetUsage('tightfit');
+  assert.equal((await pick('sky')).status, 302);
+  assert.match(fs.readFileSync(index, 'utf8'), /tightfit's Pad/);
+});
+
 test('guestbook and report IPs are erased after 90 days', () => {
   const old = Date.now() - 91 * 86400000;
   const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
