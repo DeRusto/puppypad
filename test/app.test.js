@@ -938,3 +938,36 @@ test('admin upgrade button only asks the host watcher for the release it showed'
   const other = await member('upgrade-nosy');
   assert.equal((await req('post', '/admin/upgrade').set('Cookie', other.cookie).type('form').send({ _csrf: other.csrf, action: 'check' })).status, 404);
 });
+
+test('SEO: robots, sitemap, favicon, and page meta', async () => {
+  const robots = await req('get', '/robots.txt');
+  assert.equal(robots.status, 200);
+  assert.match(robots.headers['content-type'], /text\/plain/);
+  assert.match(robots.text, /Disallow: \/dashboard/);
+  assert.match(robots.text, /Sitemap: http:\/\/pad\.test\/sitemap\.xml/);
+
+  // a listed site (old enough, has an update) appears in the sitemap; a fresh one does not
+  const old = Date.now() - 48 * 3600000;
+  db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at, updates) VALUES ('oldtimer', 'oldtimer@example.com', 'x', 1, ?, ?, 1)").run(old, old);
+  const sitemap = await req('get', '/sitemap.xml');
+  assert.equal(sitemap.status, 200);
+  assert.match(sitemap.text, /<loc>http:\/\/pad\.test\/<\/loc>/);
+  assert.match(sitemap.text, /<loc>http:\/\/pad\.test\/site\/oldtimer<\/loc><lastmod>/);
+  assert.ok(!sitemap.text.includes('/dashboard'));
+
+  assert.equal((await req('get', '/favicon.ico')).status, 200);
+  assert.equal((await req('get', '/og.svg')).status, 200);
+
+  const home = await req('get', '/');
+  assert.match(home.text, /<meta name="description" content="[^"]*free homepage host/);
+  assert.match(home.text, /<link rel="canonical" href="http:\/\/pad\.test\/">/);
+  assert.match(home.text, /property="og:title"/);
+  assert.match(home.text, /application\/ld\+json/);
+  assert.ok(!home.text.includes('noindex'));
+
+  const dash = await req('get', '/login');
+  assert.match(dash.text, /<meta name="robots" content="noindex">/);
+
+  const profile = await req('get', '/site/oldtimer');
+  assert.match(profile.text, /<link rel="canonical" href="http:\/\/pad\.test\/site\/oldtimer">/);
+});
