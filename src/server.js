@@ -357,6 +357,22 @@ const auth = (req, res, next) => (req.ctx.user ? next() : res.redirect('/login')
 const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard') : next());
 const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notice(req.ctx, 'Not found', '<p>No such page.</p>')));
 
+// ----- SEO: robots, sitemap, brand assets -----
+const ASSETS_DIR = path.join(__dirname, 'assets');
+const asset = (file, type) => (req, res) => res.set('Cache-Control', 'public, max-age=86400').type(type).sendFile(path.join(ASSETS_DIR, file), (e) => { if (e && !res.headersSent) res.sendStatus(404); });
+main.get('/favicon.ico', asset('favicon.svg', 'image/svg+xml')); // shortcut: SVG at the .ico path; browsers and Google accept SVG favicons
+main.get('/favicon.svg', asset('favicon.svg', 'image/svg+xml'));
+main.get('/og.svg', asset('og.svg', 'image/svg+xml'));
+main.get('/robots.txt', (req, res) => res.type('text/plain').send(
+  `User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /login\nDisallow: /signup\nDisallow: /forgot\nDisallow: /reset\nDisallow: /feed\nDisallow: /internal/\n\nSitemap: ${cfg.BASE_URL}/sitemap.xml\n`));
+main.get('/sitemap.xml', (req, res) => {
+  const urls = [['/', null], ['/browse', null], ['/rules', null], ['/privacy', null],
+    ...db.prepare(`SELECT username, updated_at FROM users WHERE ${listed()} ORDER BY updated_at DESC`).all()
+      .map((u) => [`/site/${u.username}`, new Date(u.updated_at).toISOString().slice(0, 10)])];
+  res.set('Cache-Control', 'public, max-age=3600').type('application/xml').send(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(([loc, mod]) => `<url><loc>${cfg.BASE_URL}${loc}</loc>${mod ? `<lastmod>${mod}</lastmod>` : ''}</url>`).join('\n')}\n</urlset>\n`);
+});
+
 // ----- public pages -----
 main.get('/', (req, res) => res.send(V.home(req.ctx, {
   recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
