@@ -65,6 +65,19 @@ iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#f
 
 function layout(ctx, title, body, opts = {}) {
   const { cfg, user, csrf } = ctx;
+  // SEO: a page is indexable only when its view passes a description + path; anything else
+  // (dashboard, login flows, notices) defaults to noindex, so private/transient pages stay out of search.
+  const fullTitle = opts.fullTitle || `${title} - ${cfg.SITE_NAME}`;
+  const desc = opts.description || '';
+  const url = opts.path ? cfg.BASE_URL + opts.path : '';
+  const meta = [
+    desc ? `<meta name="description" content="${esc(desc)}">` : '',
+    opts.noindex || !url ? '<meta name="robots" content="noindex">' : '',
+    url ? `<link rel="canonical" href="${esc(url)}">` : '',
+    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">',
+    desc && url ? `<meta property="og:type" content="website"><meta property="og:site_name" content="${esc(cfg.SITE_NAME)}"><meta property="og:title" content="${esc(fullTitle)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(opts.ogImage || cfg.BASE_URL + '/og.svg')}"><meta name="twitter:card" content="summary_large_image">` : '',
+    opts.jsonLd ? `<script type="application/ld+json">${opts.jsonLd}</script>` : '',
+  ].join('');
   const nav = [
     `<a href="/">Home</a>`, `<a href="/browse">Dog park</a>`, `<a href="/random">Fetch a random pad</a>`, `<a href="/rules">Rules</a>`,
     ...(user
@@ -73,7 +86,7 @@ function layout(ctx, title, body, opts = {}) {
       : [`<a href="/signup">Get a free pad</a>`, `<a href="/login">Log in</a>`]),
   ].join(' ');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} - ${esc(cfg.SITE_NAME)}</title><style>${CSS}</style>${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
+<title>${esc(fullTitle)}</title>${meta}<style>${CSS}</style>${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
 <header class="box"><h1><a href="/">${esc(cfg.SITE_NAME)}</a></h1><p class="tagline">${esc(cfg.TAGLINE)}</p><nav aria-label="Main">${nav}</nav></header>
 ${body}
 <footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/privacy">Privacy</a> | <a href="/report">Report a site</a> | Abuse contact: ${esc(cfg.ABUSE_EMAIL)}</footer>
@@ -107,14 +120,19 @@ const home = (ctx, { recent, newest, total }) => layout(ctx, 'Home', `
 <p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
 <p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p></section>
 <section class="box"><h2>Fresh accidents <small>(recently updated)</small></h2>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
-<section class="box"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}</section>`);
+<section class="box"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}</section>`, {
+  fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
+  description: `${ctx.cfg.SITE_NAME} is a free homepage host. Get yourname.${ctx.cfg.BASE_HOST}, ${ctx.cfg.QUOTA_MB} MB, a built-in editor, guestbook and hit counter. No templates, no algorithm \u2014 write your own HTML. Accidents welcome.`,
+  path: '/',
+  jsonLd: JSON.stringify({ '@context': 'https://schema.org', '@type': 'WebSite', name: ctx.cfg.SITE_NAME, url: ctx.cfg.BASE_URL, description: 'Free old-web homepage host' }),
+});
 
 const SORT_LABELS = { updated: 'Recently updated', newest: 'Newest', followed: 'Most followed', hits: 'Most visited' };
 const browse = (ctx, { rows, page, pages, sort }) => layout(ctx, 'Dog park', `
 <section class="box"><h2>The dog park <small>(page ${page} of ${pages})</small></h2>
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}">${l}</a>`)).join(' ')}</p>
 ${cards(ctx, rows)}
-<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p></section>`, { wide: true });
+<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p></section>`, { wide: true, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}` });
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
@@ -143,7 +161,11 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/email">${csrfField(ctx)}<label for="newemail">New email (we send a link there to confirm it)</label>
 <input type="email" id="newemail" name="email" maxlength="200" required autocomplete="email">
 <label for="emailpw">Your password</label>
-<input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>` : ''}`);
+<input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>` : ''}`, {
+    description: p.tagline ? `${p.tagline} \u2014 ${p.username}'s homepage on ${ctx.cfg.SITE_NAME}` : `${p.username}'s homepage on ${ctx.cfg.SITE_NAME}, a free old-web homepage host.`,
+    path: `/site/${p.username}`,
+    ogImage: p.shot ? `${ctx.cfg.BASE_URL}/shots/${p.username}.jpg` : undefined,
+  });
 };
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
@@ -167,7 +189,7 @@ ${starters.LIST.map((s) => `<label><input type="radio" name="starter" value="${s
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input type="text" id="website" name="website" tabindex="-1" autocomplete="off"></div>
 <label><input type="checkbox" name="agree" value="1" required> I am 13 or older and have read the <a href="/rules" target="_blank">rules</a> and <a href="/privacy" target="_blank">privacy notice</a></label>
 ${ctx.cfg.TURNSTILE_SITE_KEY ? `<div class="cf-turnstile" data-sitekey="${esc(ctx.cfg.TURNSTILE_SITE_KEY)}"></div>` : ''}
-<button>Roll out my pad</button></form></section>`, ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {});
+<button>Roll out my pad</button></form></section>`, { noindex: true, description: `Claim a free ${ctx.cfg.SITE_NAME} homepage: your own subdomain, ${ctx.cfg.QUOTA_MB} MB, a code editor with live preview, a guestbook and a hit counter.`, path: '/signup', ...(ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {}) });
 
 const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `
 <section class="box"><h2>Log in</h2>${msg(m)}
@@ -187,7 +209,7 @@ const reset = (ctx, m, token) => layout(ctx, 'Choose a new password', `
 <label for="password">New password (10 characters or more)</label>
 <input type="password" id="password" name="password" minlength="10" required autocomplete="new-password"><button>Save password</button></form></section>`);
 
-const notice = (ctx, title, html) => layout(ctx, title, `<section class="box"><h2>${esc(title)}</h2>${html}</section>`);
+const notice = (ctx, title, html) => layout(ctx, title, `<section class="box"><h2>${esc(title)}</h2>${html}</section>`, { noindex: true });
 
 // Drag-and-drop and many-file uploads: sends the files 20 at a time with a progress bar, then reloads the folder with the totals.
 // Without JavaScript the form above still posts normally (20 files at most).
@@ -461,7 +483,7 @@ ${c.GOVERNING_LAW ? `
 you accept it.</p>
 
 <h3>Contact</h3>
-<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`);
+<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`, { description: `The rules and terms for ${ctx.cfg.SITE_NAME}, a free homepage host: what you can publish, what we remove, and how copyright complaints work.`, path: '/rules' });
 };
 
 const privacy = (ctx) => layout(ctx, 'Privacy', `
@@ -479,7 +501,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <h3>Deleting it</h3>
 <p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
-<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`);
+<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy' });
 
 const upgradeBox = (ctx, u) => {
   if (!u) return '';
@@ -516,7 +538,7 @@ ${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>$
 ${upgradeBox(ctx, upgrade)}</section>`);
 
 // ---- pages served on member subdomains ----
-const bare = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
+const bare = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title>
 <style>body{margin:0;padding:12px;background:#fdfeff repeating-linear-gradient(45deg,transparent 0 21px,#d6eafa 21px 22px);color:#14264f;font:15px/1.4 "Comic Sans MS","Comic Neue",cursive}a{color:#0a3fc4}h1{font:700 22px "Comic Sans MS","Comic Neue",cursive;color:#0b4f9e;margin:0 0 8px}
 form{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}label{color:#0b4f9e;font-size:14px}input,textarea{font:15px "Courier New",monospace;background:#fff;color:#000;border:2px inset #2f8fd0;padding:4px;width:100%;box-sizing:border-box}
 button{font:700 14px "Comic Sans MS",cursive;background:#ffe14d;color:#14264f;border:3px outset #fff3a8;padding:3px 12px;align-self:flex-start;cursor:pointer}
