@@ -239,6 +239,24 @@ drop.addEventListener('drop',function(e){
 });
 })();</script>`;
 
+// the starter picker on the dashboard; the server asks before it replaces an index.html that is already there
+const starterForm = (ctx, button) => `<form class="stack" method="post" action="/dashboard/starter">${csrfField(ctx)}
+<fieldset class="starters"><legend>Pick a starter layout</legend>
+${starters.LIST.map((s, i) => `<label><input type="radio" name="starter" value="${s.id}"${i === 0 ? ' checked' : ''}> <b>${esc(s.name)}</b>: ${esc(s.blurb)} <a href="/starters/${s.id}" target="_blank">Peek</a></label>`).join('\n')}
+</fieldset><button>${button}</button></form>`;
+
+const starterConfirm = (ctx, id) => {
+  const s = starters.LIST.find((x) => x.id === id);
+  return layout(ctx, 'Replace your front page?', `
+<section class="box"><h2>Replace your front page?</h2>
+<p>This swaps your current <code>index.html</code> for a fresh copy of the <b>${esc(s.name)}</b> starter. Your old front page is gone for good after that.
+Other files are left alone.</p>
+<p>Want to keep it? <a href="/dashboard/download">Download your site</a> first, or <a href="/dashboard/move?path=index.html">rename index.html</a> to something like <code>old-index.html</code>, then come back.</p>
+<form class="stack" method="post" action="/dashboard/starter">${csrfField(ctx)}<input type="hidden" name="starter" value="${esc(s.id)}"><input type="hidden" name="confirm" value="1">
+<button class="danger">Yes, replace index.html</button></form>
+<p><a href="/dashboard">No, keep my page</a> | <a href="/starters/${esc(s.id)}" target="_blank">Peek at ${esc(s.name)}</a></p></section>`);
+};
+
 function dashboard(ctx, m, d) {
   const { cfg, user } = ctx;
   const url = cfg.siteUrl(user.username);
@@ -258,6 +276,9 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
 <p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${cfg.QUOTA_MB} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
+<p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
+${starterForm(ctx, 'Make my front page')}</div>` : ''}
 ${d.listed || user.banned ? '' : `<p class="note">Your site is online, but it shows up in the dog park, on the home page and in the webring only after your first edit${cfg.NEW_SITE_HOURS > 0 ? ` and once it is ${cfg.NEW_SITE_HOURS} hours old` : ''}. Make it yours!</p>`}
 <form class="stack" method="post" action="/dashboard/tagline">${csrfField(ctx)}<label for="tagline">One-line description for the site directory</label>
 <input type="text" id="tagline" name="tagline" maxlength="100" value="${esc(user.tagline)}"><button>Save description</button></form></section>
@@ -280,7 +301,11 @@ ${UPLOADER(ctx)}
 <form class="stack" method="get" action="/dashboard/edit"><label for="newpath">File path, for example <code>about.html</code> or <code>pics/index.html</code>. Folders are created for you.</label>
 <input type="text" id="newpath" name="path" value="${esc(d.dir ? d.dir + '/' : '')}" required><button>Create and edit</button></form></section>
 
-<section class="box"><h2>Widgets</h2><p>Paste these into your HTML.</p>
+${d.hasIndex && !user.banned ? `<section class="box"><h2>Start over with a starter</h2>
+<p>Want your front page back the way it started, or a different look? Pick a starter and it replaces your <code>index.html</code>. We ask before anything is overwritten, and your other files stay put.</p>
+${starterForm(ctx, 'Use this starter')}</section>
+
+` : ''}<section class="box"><h2>Widgets</h2><p>Paste these into your HTML.</p>
 <h3>Hit counter</h3><pre>&lt;img src="/_hw/counter.svg" alt="hit counter"&gt;</pre>
 <h3>Guestbook</h3><pre>&lt;iframe src="/_hw/guestbook" width="100%" height="420"&gt;&lt;/iframe&gt;</pre>
 <h3>Webring</h3><pre>&lt;a href="${esc(cfg.BASE_URL)}/webring/prev?from=${esc(user.username)}"&gt;&amp;lt;&amp;lt; Prev&lt;/a&gt; |
@@ -512,4 +537,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, editor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };

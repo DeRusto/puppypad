@@ -149,6 +149,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ Zip import: `/dashboard/import` unpacks a `.zip` (up to `ZIP_MAX_MB`) through the same name, type, quota and phishing checks as uploads; drops a wrapping folder and OS junk; refuses `../` names, links, encrypted entries and oversized files.
 - ✅ Rename or move any file or folder from the dashboard ("rename/move" on each row). Nothing is overwritten, a folder can't go inside itself, and a file renamed into a page (`.txt` → `.html`) gets the phishing check.
 - ✅ Starter layouts at signup: Sky Blue (the original), Shrine (sidebar), Notebook (diary) and Arcade (neon tiles), each with a "Peek" preview at `/starters/:id`. Every template opens with a `:root` block of colour, font and width variables so members can restyle it in one place; the style editor (§3.1) can build on those.
+- ✅ Starters after signup: the dashboard warns when `index.html` is missing (deleted or renamed) and offers every starter to rebuild it; with a front page in place, "Start over with a starter" replaces it only after a confirm page.
 - ✅ Log in with site name *or* email.
 - ✅ Admin audit log: `admin_log` records every take-down, restore, delete and closed report with the moderator's name; `/admin` shows the latest 100.
 - ✅ "Report this site" link on the default 404 and 410 pages (profile pages already had one).

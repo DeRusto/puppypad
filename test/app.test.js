@@ -291,6 +291,76 @@ test('starter previews render with stand-ins for the counter and guestbook', asy
   assert.equal((await req('get', '/starters/hasOwnProperty')).status, 404);
 });
 
+test('a missing front page is spotted, and any starter can bring one back', async () => {
+  const m = await member('phoenix');
+  const index = path.join(process.env.DATA_DIR, 'sites', 'phoenix', 'index.html');
+  const pick = (starter, extra = {}) => req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, starter, ...extra });
+  let dash = await req('get', '/dashboard').set('Cookie', m.cookie);
+  assert.doesNotMatch(dash.text, /no front page/);
+  assert.match(dash.text, /Start over with a starter/);
+
+  // an existing page is only replaced after a confirm
+  fs.writeFileSync(index, 'my own page');
+  let res = await pick('arcade');
+  assert.equal(res.status, 200);
+  assert.match(res.text, /Replace your front page\?/);
+  assert.equal(fs.readFileSync(index, 'utf8'), 'my own page');
+  res = await pick('arcade', { confirm: '1' });
+  assert.equal(res.status, 302);
+  assert.match(fs.readFileSync(index, 'utf8'), /phoenix/);
+  assert.doesNotMatch(fs.readFileSync(index, 'utf8'), /my own page|\{\{/);
+
+  // renamed away: the dashboard says so and offers every starter, and no confirm is needed
+  fs.renameSync(index, path.join(path.dirname(index), 'home.html'));
+  dash = await req('get', '/dashboard').set('Cookie', m.cookie);
+  assert.match(dash.text, /no front page/);
+  for (const id of ['sky', 'shrine', 'notebook', 'arcade']) assert.match(dash.text, new RegExp(`name="starter" value="${id}"`));
+  res = await pick('notebook');
+  assert.equal(res.status, 302);
+  assert.match(fs.readFileSync(index, 'utf8'), /phoenix's Notebook/);
+  assert.ok(fs.existsSync(path.join(path.dirname(index), 'home.html')));
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /no front page/);
+
+  // a starter is not an edit, so it does not list a new site
+  assert.equal(db.prepare("SELECT updates FROM users WHERE username = 'phoenix'").get().updates, 0);
+  assert.equal((await pick('../../etc/passwd', { confirm: '1' })).status, 400);
+  assert.equal((await req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ starter: 'sky', confirm: '1' })).status, 403);
+});
+
+test('restoring a starter respects the file cap and the storage quota, and a refusal changes nothing', async () => {
+  const m = await member('tightfit');
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'tightfit');
+  const index = path.join(dir, 'index.html');
+  const pick = (starter) => req('post', '/dashboard/starter').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, starter, confirm: '1' });
+  // over quota: a big file leaves no room for a new front page, and none is written
+  fs.unlinkSync(index);
+  fs.writeFileSync(path.join(dir, 'big.txt'), Buffer.alloc(1048576 - 100));
+  app.forgetUsage('tightfit');
+  let res = await pick('sky');
+  assert.equal(res.status, 400);
+  assert.match(res.text, /over your 1 MB limit/);
+  assert.ok(!fs.existsSync(index));
+  // replacing a page near quota is refused too, and the old page stays as it was
+  fs.writeFileSync(index, 'mine');
+  app.forgetUsage('tightfit');
+  res = await pick('arcade');
+  assert.equal(res.status, 400);
+  assert.equal(fs.readFileSync(index, 'utf8'), 'mine');
+  fs.unlinkSync(path.join(dir, 'big.txt'));
+  // at the file cap a missing front page can't be added, but a replacement still works
+  fs.unlinkSync(index);
+  for (let i = 0; i < 2000; i++) fs.writeFileSync(path.join(dir, `f${i}.txt`), 'x');
+  app.forgetUsage('tightfit');
+  res = await pick('sky');
+  assert.equal(res.status, 400);
+  assert.match(res.text, /2000 files/);
+  assert.ok(!fs.existsSync(index));
+  fs.renameSync(path.join(dir, 'f0.txt'), index);
+  app.forgetUsage('tightfit');
+  assert.equal((await pick('sky')).status, 302);
+  assert.match(fs.readFileSync(index, 'utf8'), /tightfit's Pad/);
+});
+
 test('guestbook and report IPs are erased after 90 days', () => {
   const old = Date.now() - 91 * 86400000;
   const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
