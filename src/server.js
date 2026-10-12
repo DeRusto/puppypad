@@ -364,7 +364,9 @@ main.get('/favicon.ico', asset('favicon.svg', 'image/svg+xml')); // shortcut: SV
 main.get('/favicon.svg', asset('favicon.svg', 'image/svg+xml'));
 main.get('/og.svg', asset('og.svg', 'image/svg+xml'));
 main.get('/robots.txt', (req, res) => res.type('text/plain').send(
-  `User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /login\nDisallow: /signup\nDisallow: /forgot\nDisallow: /reset\nDisallow: /feed\nDisallow: /internal/\n\nSitemap: ${cfg.BASE_URL}/sitemap.xml\n`));
+  // /login, /signup, /forgot, /reset and /feed stay crawlable on purpose: they carry noindex tags,
+  // which a crawler can only read if robots.txt lets it in. Only the auth-gated areas are disallowed.
+  `User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /internal/\n\nSitemap: ${cfg.BASE_URL}/sitemap.xml\n`));
 main.get('/sitemap.xml', (req, res) => {
   const urls = [['/', null], ['/browse', null], ['/rules', null], ['/privacy', null],
     ...db.prepare(`SELECT username, updated_at FROM users WHERE ${listed()} ORDER BY updated_at DESC`).all()
