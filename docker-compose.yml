@@ -5,11 +5,12 @@ x-logging: &default-logging
     max-file: "3"
 
 # Images come from GitHub's container registry, built by .github/workflows/release.yml for each
-# release; PUPPYPAD_VERSION in .env picks the release. docker-compose.override.yml (source tree only)
+# release; PUPPYPAD_VERSION in .env picks the release, and the installer pins each image by digest
+# with PUPPYPAD_{APP,SHOTS,CADDY}_IMAGE. docker-compose.override.yml (source tree only)
 # builds them locally instead.
 services:
   app:
-    image: ${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-app:${PUPPYPAD_VERSION:-dev}
+    image: ${PUPPYPAD_APP_IMAGE:-${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-app:${PUPPYPAD_VERSION:-dev}}
     restart: unless-stopped
     logging: *default-logging
     env_file: .env
@@ -23,7 +24,7 @@ services:
   # Takes the screenshots for the explore page. Kept apart from the app: it runs member pages
   # in a real browser, so it gets no volume and no secrets beyond its own token.
   shots:
-    image: ${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-shots:${PUPPYPAD_VERSION:-dev}
+    image: ${PUPPYPAD_SHOTS_IMAGE:-${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-shots:${PUPPYPAD_VERSION:-dev}}
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -38,7 +39,7 @@ services:
       - caddy
 
   caddy:
-    image: ${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-caddy:${PUPPYPAD_VERSION:-dev}
+    image: ${PUPPYPAD_CADDY_IMAGE:-${PUPPYPAD_IMAGE:-ghcr.io/derusto/puppypad}-caddy:${PUPPYPAD_VERSION:-dev}}
     restart: unless-stopped
     logging: *default-logging
     ports:

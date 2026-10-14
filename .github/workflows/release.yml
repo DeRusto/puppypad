@@ -44,11 +44,13 @@ jobs:
             docker build --label "org.opencontainers.image.source=$SOURCE" --label "org.opencontainers.image.version=$TAG" \
               -t "$image-$name:$TAG" "$dir"
             docker push "$image-$name:$TAG"
+            # the digest is what servers pull, so pushing the tag again later can't change a release
+            echo "$name=$(docker inspect --format '{{index .RepoDigests 0}}' "$image-$name:$TAG")" >> "$RUNNER_TEMP/IMAGES"
           done
       - name: Attach the deploy bundle
         env:
           TAG: ${{ github.event.release.tag_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          scripts/make-bundle.sh "$TAG" dist
+          scripts/make-bundle.sh "$TAG" dist "$RUNNER_TEMP/IMAGES"
           gh release upload "$TAG" dist/* --clobber
