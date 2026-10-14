@@ -629,6 +629,8 @@ function handleUpload(req, res, err) {
   const json = req.accepts(['html', 'json']) === 'json';
   const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
   if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
+  // the body can take a long time to arrive; a ban, reset or deletion meanwhile must stop the write
+  if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
   if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return fail('That folder name is not allowed.', 400);
@@ -657,6 +659,7 @@ async function importZip(req, res, err) {
   }
   const skipped = zip.skipped;
   try {
+    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out, banned or deleted while the zip arrived
     showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, zip.files, skipped), skipped, 'Imported'));
   } finally {
     dropTemp(zip.files);

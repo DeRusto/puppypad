@@ -476,6 +476,43 @@ test('the drag-and-drop uploader gets JSON back', async () => {
   assert.match(dash.text, /Skipped: b\.php\./);
 });
 
+// sends a multipart upload in two halves, running `between` once the server has started on it
+async function slowUpload(m, url, field, name, content, between) {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  const b = 'slowboundary';
+  const head = `--${b}\r\nContent-Disposition: form-data; name="_csrf"\r\n\r\n${m.csrf}\r\n--${b}\r\nContent-Disposition: form-data; name="${field}"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+  const tail = Buffer.concat([content, Buffer.from(`\r\n--${b}--\r\n`)]);
+  try {
+    return await new Promise((resolve, reject) => {
+      const r = require('http').request({ port: server.address().port, host: '127.0.0.1', method: 'POST', path: url, headers: {
+        Host: 'pad.test', Cookie: m.cookie, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': Buffer.byteLength(head) + tail.length,
+      } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
+      r.on('error', reject);
+      r.write(head);
+      setTimeout(() => { between(); r.end(tail); }, 100);
+    });
+  } finally {
+    server.close();
+  }
+}
+
+test('an upload or import still arriving when the member is signed out writes nothing', async () => {
+  const m = await member('latecomer');
+  const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'latecomer')").run();
+  const up = await slowUpload(m, '/dashboard/upload', 'files', 'late.html', Buffer.from('late'), signOut);
+  assert.equal(up.statusCode, 302);
+  assert.equal(up.headers.location, '/login');
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latecomer/late.html')), false);
+
+  const m2 = await member('latezip');
+  const zip = await makeZip([['late.html', 'late']]);
+  const del = () => db.prepare("DELETE FROM users WHERE username = 'latezip'").run();
+  const im = await slowUpload(m2, '/dashboard/import', 'zip', 'site.zip', zip, del);
+  assert.equal(im.statusCode, 302);
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latezip/late.html')), false);
+});
+
 test('log in with the site name or the email address', async () => {
   await member('twoways', 'TwoWays@Example.com');
   const login = (username, password = 'longpassword1') => req('post', '/login').type('form').send({ username, password });
