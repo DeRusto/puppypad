@@ -118,8 +118,7 @@ fi
 is_tag "$target" || { echo "not a release tag: $target"; exit 1; }
 # VERSION is written last, but an install wedged by an older installer can have the new VERSION with
 # the old images, so .env has to agree too
-was=$(env_val PUPPYPAD_VERSION)
-if [ "$old" = "$target" ] && [ "$was" = "$target" ]; then ensure_cron; echo "already on $target"; exit 0; fi
+if [ "$old" = "$target" ] && [ "$(env_val PUPPYPAD_VERSION)" = "$target" ]; then ensure_cron; echo "already on $target"; exit 0; fi
 
 echo "== downloading $target"
 new=.upgrade/new
@@ -130,6 +129,17 @@ fetch -o "$new/SHA256SUMS" "$web/$repo/releases/download/$target/SHA256SUMS"
 tar -xzf "$new/puppypad-$target.tar.gz" -C "$new/files" --no-same-owner
 [ "$(cat "$new/files/VERSION" 2>/dev/null)" = "$target" ] || { echo "the bundle isn't $target"; exit 1; }
 files=$(cd "$new/files" && find . -type f | sed 's|^\./||' | sort)
+
+# the release's own installer does the rest: a fix to how upgrades work then applies to the upgrade
+# that brings it, not only to the one after. Its copy came with the checksummed bundle; it downloads
+# and checks again, then finds itself identical and carries on. Once per run, so two releases can't
+# hand back and forth.
+if [ "${PUPPYPAD_HANDED_OFF:-}" != "$target" ] && ! cmp -s "$new/files/scripts/install.sh" scripts/install.sh; then
+  echo "== handing over to $target's installer"
+  copy=$(mktemp .upgrade/install-XXXXXX)
+  cp "$new/files/scripts/install.sh" "$copy"
+  PUPPYPAD_INSTALL_COPY=1 PUPPYPAD_HANDED_OFF=$target exec sh "$copy" "$target"
+fi
 
 # the images the release pushed, by digest (releases from v0.1.2 on). A tag can be pushed again; a
 # digest can't, so pulling by digest is what ties the code to the checksummed bundle. Older bundles
@@ -185,13 +195,20 @@ PUPPYPAD_VERSION=$target PUPPYPAD_APP_IMAGE=$app_img PUPPYPAD_SHOTS_IMAGE=$shots
 echo "== backing up before the upgrade"
 scripts/backup.sh
 
-# keep the files this release replaces, to put back on a rollback, and note the ones it adds
-prev=.upgrade/prev.tar
-existing=$(for f in $files; do [ -f "$f" ] && echo "$f"; done; true)
-added=$(for f in $files; do [ -f "$f" ] || echo "$f"; done; true)
-if [ -n "$existing" ]; then tar -cf "$prev" $existing; else tar -cf "$prev" -T /dev/null; fi
-
-was_app=$(env_val PUPPYPAD_APP_IMAGE) was_shots=$(env_val PUPPYPAD_SHOTS_IMAGE) was_caddy=$(env_val PUPPYPAD_CADDY_IMAGE)
+# keep what a rollback puts back: the files this release replaces, the ones it adds, and the .env
+# values it changes. prev.env is written last and removed once the upgrade is settled, so if it is
+# still here an earlier attempt died after switching, and what it kept is still the last working
+# state; saving again now would keep that attempt's half-done files instead.
+prev=.upgrade/prev.tar prevenv=.upgrade/prev.env
+if [ ! -f "$prevenv" ]; then
+  existing=$(for f in $files; do [ -f "$f" ] && echo "$f"; done; true)
+  if [ -n "$existing" ]; then tar -cf "$prev" $existing; else tar -cf "$prev" -T /dev/null; fi
+  for f in $files; do [ -f "$f" ] || echo "$f"; done > .upgrade/prev.added
+  for k in PUPPYPAD_VERSION PUPPYPAD_APP_IMAGE PUPPYPAD_SHOTS_IMAGE PUPPYPAD_CADDY_IMAGE; do env_val $k; done > "$prevenv.tmp"
+  mv -f "$prevenv.tmp" "$prevenv"
+fi
+added=$(cat .upgrade/prev.added)
+prev_env() { sed -n "$1p" "$prevenv"; }
 echo "== switching ${old:-the git checkout} -> $target"
 put_files
 set_env PUPPYPAD_VERSION "$target"
@@ -213,13 +230,16 @@ healthy() {
 }
 
 # the app answering isn't enough: Caddy or shots crash-looping (a Caddyfile the new Caddy rejects, say)
-# still passes `up -d` and /healthz. Every service has to stay running for a few checks in a row.
+# still passes `up -d` and /healthz. Every service has to be running for 15 seconds without a restart
+# in between (restart count and start time unchanged), so one that crashes and comes back between
+# two looks still counts as down.
+starts() { docker compose ps -q | xargs -r docker inspect -f '{{.Name}} {{.RestartCount}} {{.State.StartedAt}}' | sort; }
 all_running() {
   want=$(docker compose config --services | sort)
-  i=0
+  first=$(starts) i=0
   while [ $i -lt 3 ]; do
     sleep 5
-    if [ "$(docker compose ps --status running --services | sort)" != "$want" ]; then
+    if [ "$(docker compose ps --status running --services | sort)" != "$want" ] || [ "$(starts)" != "$first" ]; then
       echo "not every service stayed up:"; docker compose ps --all; return 1
     fi
     i=$((i + 1))
@@ -228,7 +248,7 @@ all_running() {
 
 if docker compose up -d --remove-orphans && healthy && all_running; then
   put_version
-  rm -rf "$new"
+  rm -rf "$new" "$prevenv"
   echo "== upgraded to $target"
   [ "$mode" = upgrade ] || echo "this folder now runs releases; the git checkout's other files are no longer used"
   exit 0
@@ -237,8 +257,9 @@ fi
 echo "== $target did not come up healthy; going back"
 tar -xf "$prev"
 for f in $added; do rm -f "$f"; done
-set_env PUPPYPAD_VERSION "$was"
-set_images "$was_app" "$was_shots" "$was_caddy"
+set_env PUPPYPAD_VERSION "$(prev_env 1)"
+set_images "$(prev_env 2)" "$(prev_env 3)" "$(prev_env 4)"
+rm -f "$prevenv" # back on the last working state, so the next attempt starts from here
 docker compose up -d --remove-orphans || true
 # the database stays as the new release left it: schema changes are new tables and columns, which
 # older code ignores. If a release ever needs more, the backup from before the upgrade is the newest archive in ./backups.

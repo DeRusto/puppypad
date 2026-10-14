@@ -57,7 +57,9 @@ your GitHub profile > Packages, or servers can't pull them.
 `scripts/install.sh` both installs and upgrades. In an install folder, `scripts/install.sh` moves to
 the newest release and `scripts/install.sh v1.2.3` to a given one (older ones too). An upgrade:
 
-1. downloads the release bundle and checks it against `SHA256SUMS`
+1. downloads the release bundle and checks it against `SHA256SUMS`, then hands over to the
+   release's own `install.sh` for the rest, so a fix to the installer counts from the upgrade
+   that ships it
 2. pulls the new images by the digests the bundle records, so pushing a tag again can't change what
    a release runs (nothing has changed yet if this fails)
 3. runs `scripts/backup.sh`
@@ -65,7 +67,8 @@ the newest release and `scripts/install.sh v1.2.3` to a given one (older ones to
    runs `docker compose up -d`
 5. waits for `/healthz` and for every container to stay running; if the new release doesn't come
    up, it puts the previous files and version back. `VERSION` changes only once this passes, so an
-   upgrade that is cut off partway is simply tried again.
+   upgrade that is cut off partway is simply tried again, and a retry that fails still goes back to
+   the last release that worked.
 
 Every download and pull has a time limit, so a stalled connection fails the upgrade instead of
 holding it up forever.

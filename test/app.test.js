@@ -482,15 +482,30 @@ async function slowUpload(m, url, field, name, content, between) {
   await new Promise((r) => server.once('listening', r));
   const b = 'slowboundary';
   const head = `--${b}\r\nContent-Disposition: form-data; name="_csrf"\r\n\r\n${m.csrf}\r\n--${b}\r\nContent-Disposition: form-data; name="${field}"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
-  const tail = Buffer.concat([content, Buffer.from(`\r\n--${b}--\r\n`)]);
+  // the first byte of the file goes with the headers: the parser opens the file only once it sees some of it
+  const first = Buffer.concat([Buffer.from(head), content.subarray(0, 1)]);
+  const tail = Buffer.concat([content.subarray(1), Buffer.from(`\r\n--${b}--\r\n`)]);
   try {
     return await new Promise((resolve, reject) => {
       const r = require('http').request({ port: server.address().port, host: '127.0.0.1', method: 'POST', path: url, headers: {
-        Host: 'pad.test', Cookie: m.cookie, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': Buffer.byteLength(head) + tail.length,
+        Host: 'pad.test', Cookie: m.cookie, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': first.length + tail.length,
       } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
       r.on('error', reject);
-      r.write(head);
-      setTimeout(() => { between(); r.end(tail); }, 100);
+      r.write(first);
+      // multer only opens its temp file once auth has let the request through, so wait for that file
+      // before pulling the rug: anything sooner would be turned away by auth, not by the check under test
+      const tmp = path.join(process.env.DATA_DIR, 'tmp');
+      const before = new Set(fs.readdirSync(tmp));
+      const started = Date.now();
+      const poll = setInterval(() => {
+        if (!fs.readdirSync(tmp).some((f) => !before.has(f))) {
+          if (Date.now() - started > 5000) { clearInterval(poll); r.destroy(new Error('the server never started on the upload')); }
+          return;
+        }
+        clearInterval(poll);
+        between();
+        r.end(tail);
+      }, 10);
     });
   } finally {
     server.close();
