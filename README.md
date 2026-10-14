@@ -57,11 +57,21 @@ your GitHub profile > Packages, or servers can't pull them.
 `scripts/install.sh` both installs and upgrades. In an install folder, `scripts/install.sh` moves to
 the newest release and `scripts/install.sh v1.2.3` to a given one (older ones too). An upgrade:
 
-1. downloads the release bundle and checks it against `SHA256SUMS`
-2. pulls the new images (nothing has changed yet if this fails)
+1. downloads the release bundle and checks it against `SHA256SUMS`, then hands over to the
+   release's own `install.sh` for the rest, so a fix to the installer counts from the upgrade
+   that ships it
+2. pulls the new images by the digests the bundle records, so pushing a tag again can't change what
+   a release runs (nothing has changed yet if this fails)
 3. runs `scripts/backup.sh`
-4. puts the release's files in place, sets `PUPPYPAD_VERSION` in `.env` and runs `docker compose up -d`
-5. waits for `/healthz`; if the new release doesn't come up, it puts the previous files and version back
+4. puts the release's files in place, sets `PUPPYPAD_VERSION` and the image digests in `.env` and
+   runs `docker compose up -d`
+5. waits for `/healthz` and for every container to stay running; if the new release doesn't come
+   up, it puts the previous files and version back. `VERSION` changes only once this passes, so an
+   upgrade that is cut off partway is simply tried again, and a retry that fails still goes back to
+   the last release that worked.
+
+Every download and pull has a time limit, so a stalled connection fails the upgrade instead of
+holding it up forever.
 
 A rollback leaves the database as the new release left it, which is fine while schema changes only
 add tables and columns. The backup from step 3 is the newest archive in `./backups` if one ever isn't.
