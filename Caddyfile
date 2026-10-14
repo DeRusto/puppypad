@@ -13,6 +13,13 @@
 	}
 	@internal path /internal/*
 	respond @internal 404
+	@sectxt path /.well-known/security.txt
+	header @sectxt Content-Type "text/plain; charset=utf-8"
+	respond @sectxt "Contact: mailto:{$ACME_EMAIL}
+Expires: 2027-10-14T00:00:00Z
+Preferred-Languages: en
+Canonical: https://{$BASE_DOMAIN}/.well-known/security.txt
+" 200
 	reverse_proxy app:3000
 }
 
