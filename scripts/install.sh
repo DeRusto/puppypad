@@ -206,6 +206,14 @@ if [ ! -f "$prevenv" ]; then
   for f in $files; do [ -f "$f" ] || echo "$f"; done > .upgrade/prev.added
   for k in PUPPYPAD_VERSION PUPPYPAD_APP_IMAGE PUPPYPAD_SHOTS_IMAGE PUPPYPAD_CADDY_IMAGE; do env_val $k; done > "$prevenv.tmp"
   mv -f "$prevenv.tmp" "$prevenv"
+else
+  # the attempt that died may have been for another release: cover whatever paths this one adds to
+  # the list (neither that attempt nor the working release touched them, so they can be saved now)
+  known=$({ tar -tf "$prev"; cat .upgrade/prev.added; } | sort -u)
+  for f in $files; do
+    echo "$known" | grep -qxF "$f" && continue
+    if [ -f "$f" ]; then tar -rf "$prev" "$f"; else echo "$f" >> .upgrade/prev.added; fi
+  done
 fi
 added=$(cat .upgrade/prev.added)
 prev_env() { sed -n "$1p" "$prevenv"; }
