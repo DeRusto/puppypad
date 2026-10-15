@@ -510,8 +510,9 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
 <p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy' });
 
-// polls /healthz and reloads only once the app answers, so the restart mid-upgrade doesn't strand the page on a browser error
-const follow = (ctx) => `<script nonce="${esc(ctx.nonce || '')}">(function f(){setTimeout(function(){fetch('/healthz').then(function(r){if(r.ok)location.replace('/admin');else f();},f);},5000);})();</script>`;
+// polls /admin in the background and navigates only once it shows the run finished, so the app restarting
+// mid-upgrade never strands the page on a browser error; data-follow marks a page that is still busy
+const follow = (ctx) => `<script data-follow nonce="${esc(ctx.nonce || '')}">(function f(){setTimeout(function(){fetch('/admin').then(function(r){return r.ok?r.text():'<script data-follow';}).then(function(t){if(t.indexOf('<script data-follow')<0)location.replace('/admin');else f();},f);},5000);})();</script>`;
 const upgradeBox = (ctx, u) => {
   if (!u) return '';
   const when = (t) => (t ? ago(t) : 'never');

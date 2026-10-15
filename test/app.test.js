@@ -988,7 +988,7 @@ test('admin upgrade button only asks the host watcher for the release it showed'
   assert.equal(fs.readFileSync(request, 'utf8'), 'upgrade v0.10.0\n');
   const following = (await req('get', '/admin?ok=Upgrade%20queued').set('Cookie', cookie)).text;
   assert.match(following, /Upgrade queued/);
-  assert.match(following, /refreshes itself[\s\S]*fetch\('\/healthz'\)/);
+  assert.match(following, /refreshes itself[\s\S]*<script data-follow/);
   assert.match(await post({ action: 'check' }), /already under way/);
   assert.equal(db.prepare("SELECT detail FROM admin_log WHERE action = 'upgrade'").get().detail, 'v0.9.0 -> v0.10.0');
 
