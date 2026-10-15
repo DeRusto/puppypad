@@ -1500,3 +1500,26 @@ test('a member renames their site: everything follows, the old name redirects an
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
   assert.equal((await req('get', '/', 'new-name.pad.test')).status, 404);
 });
+
+test('uploads can shrink big photos on the server, keeping name and type and dropping camera details', async () => {
+  const sharp = require('sharp');
+  const m = await member('shrinker');
+  const photo = await sharp({ create: { width: 2400, height: 1200, channels: 3, background: '#3a6' } }).jpeg({ quality: 100 }).withMetadata({ exif: { IFD0: { Make: 'PupCam' } } }).toBuffer();
+  const send = (name, data, shrink) => {
+    const r = req('post', '/dashboard/upload').set('Cookie', m.cookie).field('_csrf', m.csrf).field('dir', '');
+    if (shrink) r.field('shrink', '1');
+    return r.attach('files', data, name);
+  };
+  await send('big.jpg', photo, true);
+  await send('kept.jpg', photo, false);
+  await send('broken.jpg', Buffer.from('not really a jpeg'), true);
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'shrinker');
+  const big = await sharp(path.join(dir, 'big.jpg')).metadata();
+  assert.deepEqual([big.format, big.width, big.height, big.exif], ['jpeg', 1600, 800, undefined]);
+  assert.ok(fs.statSync(path.join(dir, 'big.jpg')).size < photo.length);
+  assert.equal((await sharp(path.join(dir, 'kept.jpg')).metadata()).width, 2400);
+  assert.equal(fs.readFileSync(path.join(dir, 'broken.jpg'), 'utf8'), 'not really a jpeg');
+  // the stored disk total matches what is really there
+  const onDisk = U.dirSize(dir).total;
+  assert.ok((await req('get', '/dashboard').set('Cookie', m.cookie)).text.includes(U.fmtBytes(onDisk)));
+});

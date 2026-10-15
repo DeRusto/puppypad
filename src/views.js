@@ -1,4 +1,4 @@
-const { esc, fmtBytes, TEXT_EXT, extOf } = require('./util');
+const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
 
@@ -241,7 +241,7 @@ var form=document.getElementById('upform'),drop=document.getElementById('drop'),
 if(!form||!window.FormData||!window.XMLHttpRequest)return;
 var max=Number(form.dataset.max),busy=false;
 function post(batch,sent,total,cb){
-  var fd=new FormData();fd.append('_csrf',form._csrf.value);fd.append('dir',form.dir.value);
+  var fd=new FormData();fd.append('_csrf',form._csrf.value);fd.append('dir',form.dir.value);if(form.shrink.checked)fd.append('shrink','1');
   batch.forEach(function(f){fd.append('files',f,f.name)});
   var x=new XMLHttpRequest();x.open('POST',form.action);x.setRequestHeader('Accept','application/json');
   x.upload.onprogress=function(e){if(e.lengthComputable){bar.value=(sent+e.loaded*(batch.reduce(function(n,f){return n+f.size},0)/e.total))/total}};
@@ -249,25 +249,8 @@ function post(batch,sent,total,cb){
   x.onerror=function(){cb({error:'Upload failed. Check your connection and try again.'})};
   x.send(fd);
 }
-// optional: big JPEG, PNG and WebP photos are scaled down to 1600px on their longest side before sending, keeping their name and type
-var shrinkBox=document.getElementById('shrink'),MAXPX=1600;
-if(shrinkBox&&window.createImageBitmap)shrinkBox.parentNode.hidden=false;
-function shrink(f,cb){
-  if(!shrinkBox||!shrinkBox.checked||!window.createImageBitmap||!/^image\\/(jpeg|png|webp)$/.test(f.type))return cb(f);
-  createImageBitmap(f).then(function(img){
-    var s=Math.min(1,MAXPX/Math.max(img.width,img.height));
-    if(s===1&&f.type==='image/png')return cb(f);
-    var c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
-    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-    c.toBlob(function(b){cb(b&&b.size<f.size?new File([b],f.name,{type:f.type}):f)},f.type,0.85);
-  },function(){cb(f)});
-}
 function send(list,pre){
   if(busy||!list.length)return;busy=true;
-  var done=[];note.textContent='Getting files ready...';
-  (function n(){if(done.length<list.length)return shrink(list[done.length],function(f){done.push(f);n()});upload(done,pre)})();
-}
-function upload(list,pre){
   var files=[],skipped=pre||[],saved=0;
   for(var i=0;i<list.length;i++){if(list[i].size>max)skipped.push(list[i].name+' (too big)');else files.push(list[i])}
   var total=files.reduce(function(n,f){return n+f.size},0)||1,sent=0,start=0;
@@ -356,7 +339,7 @@ ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is on
 <form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${cfg.MAX_FILE_MB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
 <div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
-<label hidden><input type="checkbox" id="shrink"> Shrink photos bigger than 1600 pixels across before uploading (smaller files load faster and save space)</label>
+<label><input type="checkbox" id="shrink" name="shrink" value="1"> Shrink photos bigger than ${SHRINK_PX} pixels across and drop their hidden camera details (smaller files load faster and save space)</label>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
 ${UPLOADER(ctx)}
 <h3>Import a zip</h3>

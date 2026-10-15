@@ -725,10 +725,10 @@ const savedMsg = (saved, skipped, verb) => ({
 const tmpStorage = multer.diskStorage({ destination: UPLOAD_TMP, filename: (req, file, cb) => cb(null, `up-${crypto.randomBytes(8).toString('hex')}`) });
 const upload = multer({ storage: tmpStorage, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
 // The plain form gets the dashboard back; the drag-and-drop uploader asks for JSON so it can send many batches and sum them up
-main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res) => upload(req, res, (err) => {
-  try { handleUpload(req, res, err); } finally { dropTemp(req.files || []); }
+main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next) => upload(req, res, (err) => {
+  handleUpload(req, res, err).catch(next).finally(() => dropTemp(req.files || []));
 }));
-function handleUpload(req, res, err) {
+async function handleUpload(req, res, err) {
   const json = req.accepts(['html', 'json']) === 'json';
   const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
   if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
@@ -739,6 +739,11 @@ function handleUpload(req, res, err) {
   if (dir === null) return fail('That folder name is not allowed.', 400);
   const skipped = [];
   const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), path: f.path, size: f.size }));
+  if (req.body.shrink === '1') {
+    for (const f of files) f.size = await U.shrinkImage(f.path, f.name);
+    // the shrinking took a while; a ban, reset or deletion meanwhile must still stop the write
+    if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
+  }
   const saved = saveFiles(req.ctx.user, dir, files, skipped);
   if (json) return res.json({ saved: saved.length, skipped });
   showDashboard(req, res, savedMsg(saved, skipped, 'Uploaded'));

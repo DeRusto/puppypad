@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const sharp = require('sharp');
+
+sharp.concurrency(1); // one core per image, so a batch of uploads can't starve every other site
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -110,6 +113,25 @@ async function brokenLinks(root) {
   return broken;
 }
 
+// Shrink a JPEG, PNG or WebP on disk to at most SHRINK_PX on its longest side, in place, keeping its type.
+// Turns photos upright and drops their metadata (camera, GPS). Keeps the original when the result isn't smaller
+// or the file isn't a readable image. GIFs are left alone so animations survive. Resolves to the new size.
+const SHRINK_PX = 1600;
+const SHRINK_TYPES = { jpg: 'jpeg', jpeg: 'jpeg', png: 'png', webp: 'webp' };
+async function shrinkImage(file, name) {
+  const type = SHRINK_TYPES[extOf(name)];
+  const before = fs.statSync(file).size;
+  if (!type) return before;
+  const out = `${file}.shrunk`;
+  try {
+    const info = await sharp(file).rotate().resize({ width: SHRINK_PX, height: SHRINK_PX, fit: 'inside', withoutEnlargement: true })
+      .toFormat(type, type === 'png' ? { compressionLevel: 9, palette: true } : { quality: 82 }).toFile(out);
+    if (info.size < before) { fs.renameSync(out, file); return info.size; }
+  } catch { /* not an image sharp can read: upload it as it is */ }
+  fs.rmSync(out, { force: true });
+  return before;
+}
+
 // tiny in-memory rate limiter: true = allowed
 const buckets = new Map();
 function limit(key, max, windowMs) {
@@ -143,4 +165,4 @@ function phishSignals(html) {
 
 const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, limit, fmtBytes, phishSignals };
+module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals };

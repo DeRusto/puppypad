@@ -178,7 +178,7 @@ signup. **Your step:** read both pages and make them match how you run things
   over it, files get a 429 until midnight), and media hotlinked from other domains is capped at 60 requests a minute per site.
   The dashboard shows the member their bandwidth used today against that cap, and `/admin` shows it per site.
 - ✅ "New page" starts from the member's starter layout, already linked to `puppypad.css`.
-- ✅ Image tools: optional resize and compress on upload (in the browser, before sending), and an image picker in the editor that inserts
+- ✅ Image tools: optional resize and compress on upload (on the server with sharp), and an image picker in the editor that inserts
   `<img>` with width and height.
 - ✅ Guestbook notifications: email the owner on new entries (instant, daily digest or off; daily by default).
 - Weekly digest email of updates from followed sites (opt-in).
