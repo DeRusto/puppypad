@@ -694,6 +694,43 @@ test('visitors can sign a guestbook and the entry shows', async () => {
   assert.match(page.text, /nice pad!/);
 });
 
+test('guestbook holds link entries and refuses blocked words', async () => {
+  const m = await member('modpad');
+  const owner = (path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  await owner('settings', { words: 'viagra' });
+  const sign = (message) => req('post', '/_hw/guestbook', 'modpad.pad.test').type('form').send({ name: 'V', message });
+  assert.equal((await sign('buy at http://spam.example')).status, 302);
+  assert.equal((await sign('cheap VIAGRA')).status, 400);
+  const page = await req('get', '/_hw/guestbook', 'modpad.pad.test');
+  assert.doesNotMatch(page.text, /spam\.example/);
+  const held = db.prepare("SELECT id, approved FROM guestbook WHERE message LIKE '%spam.example'").get();
+  assert.equal(held.approved, 0);
+  await owner('approve', { id: held.id });
+  assert.match((await req('get', '/_hw/guestbook', 'modpad.pad.test')).text, /spam\.example/);
+});
+
+test('guestbook owner can block an entry\'s IP, unblock it, and cannot touch other owners\' entries', async () => {
+  const m = await member('modown');
+  const other = await member('modother');
+  const sign = (site, message) => req('post', '/_hw/guestbook', `${site}.pad.test`).type('form').send({ name: 'V', message });
+  const post = (who, path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', who.cookie).type('form').send({ _csrf: who.csrf, ...body });
+  await sign('modown', 'hello');
+  await sign('modother', 'see http://x.example');
+  const mine = db.prepare("SELECT id FROM guestbook WHERE message = 'hello'").get().id;
+  const theirs = db.prepare("SELECT id FROM guestbook WHERE message LIKE '%x.example'").get().id;
+  await post(other, 'block-ip', { id: mine }); // not theirs: no effect
+  assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modother'").get().gb_ips, '');
+  await post(m, 'approve', { id: theirs }); // not mine: no effect
+  assert.equal(db.prepare('SELECT approved FROM guestbook WHERE id = ?').get(theirs).approved, 0);
+  await post(m, 'block-ip', { id: mine });
+  const ip = db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips;
+  assert.ok(ip);
+  await req('post', '/_hw/guestbook', 'modown.pad.test').set('X-Forwarded-For', ip).type('form').send({ name: 'V', message: 'again' }); // req() gives each call a fresh IP
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM guestbook WHERE message = 'again'").get().n, 0);
+  await post(m, 'unblock-ip', { ip });
+  assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips, '');
+});
+
 test('site file cap: new files stop at the cap, replacements still work, deletes free slots', async () => {
   const m = await member('filecap');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'filecap');

@@ -228,7 +228,9 @@ site.get('/_hw/counter.svg', (req, res) => {
   res.set('Cache-Control', 'no-store').type('image/svg+xml').send(V.counterSvg(hits));
 });
 
-const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
+const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
+const GB_LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz|top|click|link)\b/i; // shortcut: a TLD list, not a URL parser
+const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND approved = 1 ORDER BY id DESC LIMIT 50').all(id);
 site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id))));
 site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 40);
@@ -236,7 +238,11 @@ site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }
   if (req.body.website) return res.redirect('/_hw/guestbook'); // bot filled the hidden field
   if (!name || !message) return res.status(400).send(V.guestbook(gbRows(req.owner.id), 'Name and message are both required.'));
   if (!U.limit(`gb:${req.ip}`, 3, 600000)) return res.status(429).send(V.guestbook(gbRows(req.owner.id), 'Too many entries from you. Try again in ten minutes.'));
-  db.prepare('INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?,?,?,?,?)').run(req.owner.id, name, message, req.ip, now());
+  if (lines(req.owner.gb_ips).includes(req.ip)) return res.redirect('/_hw/guestbook'); // blocked: look like success
+  const text = `${name} ${message}`.toLowerCase();
+  if (lines(req.owner.gb_words).some((w) => text.includes(w.toLowerCase()))) return res.status(400).send(V.guestbook(gbRows(req.owner.id), 'Your entry contains a word the owner has blocked.'));
+  const approved = GB_LINK.test(text) ? 0 : 1; // entries with links wait for the owner
+  db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
   res.redirect('/_hw/guestbook');
 });
 
@@ -805,7 +811,26 @@ main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   res.redirect(`/dashboard?ok=${encodeURIComponent(hide ? 'Your site is hidden from browsing.' : 'Your site is back in the listings.')}`);
 });
 main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null,
-  db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id))));
+  db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id), lines(req.ctx.user.gb_ips))));
+main.post('/dashboard/guestbook/approve', auth, (req, res) => {
+  db.prepare('UPDATE guestbook SET approved = 1 WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  res.redirect('/dashboard/guestbook');
+});
+main.post('/dashboard/guestbook/settings', auth, (req, res) => {
+  db.prepare('UPDATE users SET gb_words = ? WHERE id = ?').run(lines(req.body.words).slice(0, 100).map((l) => l.slice(0, 60)).join('\n'), req.ctx.user.id);
+  res.redirect('/dashboard/guestbook');
+});
+const setIps = (id, ips) => db.prepare('UPDATE users SET gb_ips = ? WHERE id = ?').run(ips.slice(-200).join('\n'), id);
+main.post('/dashboard/guestbook/block-ip', auth, (req, res) => {
+  const e = db.prepare('SELECT ip FROM guestbook WHERE id = ? AND user_id = ?').get(Number(req.body.id) || 0, req.ctx.user.id);
+  const ips = lines(req.ctx.user.gb_ips);
+  if (e && e.ip && !ips.includes(e.ip)) setIps(req.ctx.user.id, [...ips, e.ip]);
+  res.redirect('/dashboard/guestbook');
+});
+main.post('/dashboard/guestbook/unblock-ip', auth, (req, res) => {
+  setIps(req.ctx.user.id, lines(req.ctx.user.gb_ips).filter((ip) => ip !== req.body.ip));
+  res.redirect('/dashboard/guestbook');
+});
 main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
   res.redirect('/dashboard/guestbook');
