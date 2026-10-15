@@ -1,4 +1,4 @@
-const { esc, fmtBytes, TEXT_EXT, extOf } = require('./util');
+const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
 
@@ -241,7 +241,7 @@ var form=document.getElementById('upform'),drop=document.getElementById('drop'),
 if(!form||!window.FormData||!window.XMLHttpRequest)return;
 var max=Number(form.dataset.max),busy=false;
 function post(batch,sent,total,cb){
-  var fd=new FormData();fd.append('_csrf',form._csrf.value);fd.append('dir',form.dir.value);
+  var fd=new FormData();fd.append('_csrf',form._csrf.value);fd.append('dir',form.dir.value);if(form.shrink.checked)fd.append('shrink','1');
   batch.forEach(function(f){fd.append('files',f,f.name)});
   var x=new XMLHttpRequest();x.open('POST',form.action);x.setRequestHeader('Accept','application/json');
   x.upload.onprogress=function(e){if(e.lengthComputable){bar.value=(sent+e.loaded*(batch.reduce(function(n,f){return n+f.size},0)/e.total))/total}};
@@ -320,7 +320,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -339,6 +339,7 @@ ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is on
 <form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${cfg.MAX_FILE_MB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
 <div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
+<label><input type="checkbox" id="shrink" name="shrink" value="1"> Shrink photos bigger than ${SHRINK_PX} pixels across and drop their hidden camera details (smaller files load faster and save space)</label>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
 ${UPLOADER(ctx)}
 <h3>Import a zip</h3>
@@ -370,10 +371,38 @@ ${starterForm(ctx, 'Use this starter')}</section>
 &lt;a href="${esc(cfg.BASE_URL)}/webring/next?from=${esc(user.username)}"&gt;Next &amp;gt;&amp;gt;&lt;/a&gt;</pre>
 <h3>Custom 404 page</h3><p>Upload a file named <code>not_found.html</code>.</p></section>
 
-<section class="box"><h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>
+${user.banned ? '' : `<section class="box"><h2>Rename my site</h2>
+${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
+    ? `<p>You renamed your site recently. You can rename it again on ${new Date(user.renamed_at + cfg.RENAME_DAYS * 86400000).toISOString().slice(0, 10)}.</p>`
+    : `<p>Pick a new name and your site moves to its new address, files, followers, guestbook and all. The old address redirects to the new one for 90 days, and nobody else can take it meanwhile. You can rename once every ${cfg.RENAME_DAYS} days.</p>
+<form class="stack" method="post" action="/dashboard/rename">${csrfField(ctx)}<label for="newname">New site name (3-30 lowercase letters, numbers or hyphens)</label>
+<input type="text" id="newname" name="username" required maxlength="30">
+<label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</section>
+
+`}<section class="box"><h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
 }
+
+const links = (ctx, broken) => layout(ctx, 'Broken links', `
+<section class="box"><h2>Broken links</h2>
+${broken.length ? `<p>These links and images in your pages point at files your site doesn't have. Fix the path, or upload the missing file.</p>
+<div class="scroll"><table><tr><th>Page</th><th>Points at</th></tr>${broken.slice(0, 500).map((b) => `<tr><td><a href="/dashboard/edit?path=${encodeURIComponent(b.file)}">${esc(b.file)}</a></td><td><code>${esc(b.link)}</code></td></tr>`).join('')}</table></div>
+${broken.length > 500 ? `<p class="note">...and ${broken.length - 500} more.</p>` : ''}` : '<p class="ok" role="status">No broken links. Every link and image in your pages points at a file you have.</p>'}
+<p class="note">Links to other websites aren't checked.</p>
+<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+
+const statTable = (head, rows, cell) => (rows.length ? `<div class="scroll"><table><tr><th>${head}</th><th>Views</th></tr>${rows.map((r) => `<tr><td>${cell(r)}</td><td class="num">${r.views}</td></tr>`).join('')}</table></div>` : '<p class="note">Nothing yet.</p>');
+const stats = (ctx, { days, pages, referrers }) => {
+  const url = ctx.cfg.siteUrl(ctx.user.username);
+  return layout(ctx, 'Visitor stats', `
+<section class="box"><h2>Visitor stats</h2>
+<p>Page views on your site over the last 30 days. We count them without cookies and without keeping anyone's address, and leave out search engine robots.</p>
+<h3>Views per day</h3>${statTable('Day (UTC)', days, (r) => esc(r.day))}
+<h3>Top pages</h3>${statTable('Page', pages, (r) => `<a href="${esc(url)}${esc(r.path)}" target="_blank">${esc(r.path)}</a>`)}
+<h3>Where visitors came from</h3>${statTable('Website', referrers, (r) => esc(r.host))}
+<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+};
 
 const CM = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
 // sha384 of each pinned file CM points at; if the version in CM ever changes, recompute these or the editor will not load
@@ -389,7 +418,7 @@ const CM_SRI = {
 };
 const sri = (p) => ` integrity="${CM_SRI[p]}" crossorigin="anonymous"`;
 const CM_MODE = { html: 'htmlmixed', htm: 'htmlmixed', svg: 'xml', xml: 'xml', css: 'css', js: 'javascript', json: { name: 'javascript', json: true }, md: 'markdown' };
-const editor = (ctx, m, { rel, content, isNew }) => {
+const editor = (ctx, m, { rel, content, isNew, images = [] }) => {
   const ext = extOf(rel);
   const isHtml = ext === 'html' || ext === 'htm';
   const dir = rel.split('/').slice(0, -1).join('/');
@@ -400,21 +429,32 @@ const editor = (ctx, m, { rel, content, isNew }) => {
 <form id="edform" method="post" action="/dashboard/save" style="display:flex;flex-direction:column;gap:8px">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
 <div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
+${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images at the cursor</label> <select id="imgpick"><option value="">Pick an image...</option>${images.map((i) => `<option>${esc(i)}</option>`).join('')}</select></div>` : ''}
 <div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a></div></form></section>
 <script src="${CM}/codemirror.min.js"${sri('codemirror.min.js')}></script><script src="${CM}/mode/xml/xml.min.js"${sri('mode/xml/xml.min.js')}></script><script src="${CM}/mode/javascript/javascript.min.js"${sri('mode/javascript/javascript.min.js')}></script>
 <script src="${CM}/mode/css/css.min.js"${sri('mode/css/css.min.js')}></script><script src="${CM}/mode/htmlmixed/htmlmixed.min.js"${sri('mode/htmlmixed/htmlmixed.min.js')}></script><script src="${CM}/mode/markdown/markdown.min.js"${sri('mode/markdown/markdown.min.js')}></script>
 <script>(function(){
 var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
 var base=${JSON.stringify(`<base href="${siteBase}">`).replace(/</g, '\\u003c')};
-var get=function(){return ta.value};
+var get=function(){return ta.value},cm=null;
 // the preview runs in a sandboxed frame with no access to your login; <base> makes your images and stylesheets resolve
 function draw(){if(frame)frame.srcdoc=base+get()}
 if(window.CodeMirror){
-  var cm=CodeMirror.fromTextArea(ta,{mode:${JSON.stringify(CM_MODE[ext] || 'text/plain')},theme:'material-darker',lineNumbers:true,lineWrapping:true,tabSize:2,indentUnit:2,
+  cm=CodeMirror.fromTextArea(ta,{mode:${JSON.stringify(CM_MODE[ext] || 'text/plain')},theme:'material-darker',lineNumbers:true,lineWrapping:true,tabSize:2,indentUnit:2,
     extraKeys:{'Ctrl-S':function(){form.requestSubmit()},'Cmd-S':function(){form.requestSubmit()}}});
   get=function(){return cm.getValue()};var t;cm.on('change',function(){clearTimeout(t);t=setTimeout(draw,400)});
 }else{var t2;ta.addEventListener('input',function(){clearTimeout(t2);t2=setTimeout(draw,400)})}
 draw();
+// the image picker writes an <img> with the picture's own width and height, so the page doesn't jump while it loads
+var pick=document.getElementById('imgpick'),root=${JSON.stringify(ctx.cfg.siteUrl(ctx.user.username)).replace(/</g, '\\u003c')};
+if(pick)pick.addEventListener('change',function(){
+  var src='/'+pick.value,img=new Image();pick.value='';if(src==='/')return;
+  // remember where the cursor was when the image was picked: typing while it loads must not move the insert
+  var at=cm?cm.setBookmark(cm.getCursor()):null,s0=ta.selectionStart,s1=ta.selectionEnd;
+  function put(w,h){var tag='<img src="'+src+'"'+(w?' width="'+w+'" height="'+h+'"':'')+' alt="">';
+    if(cm){var pos=at.find()||cm.getCursor();at.clear();cm.replaceRange(tag,pos);cm.focus()}else{ta.setRangeText(tag,s0,s1,'end');ta.focus();draw()}}
+  img.onload=function(){put(img.naturalWidth,img.naturalHeight)};img.onerror=function(){put()};img.src=root+src;
+});
 })();</script>`, { wide: true, head });
 };
 
@@ -566,6 +606,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <li><b>Your account:</b> site name, email address, and a scrambled (hashed) copy of your password. We use your email only for confirmation, password resets and messages about your site.</li>
 <li><b>Your site:</b> the files you upload, your description, your hit count, who you follow, and a screenshot of your front page for the directory.</li>
 <li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse. Guestbook and report addresses are erased after 90 days; your signup address is kept until you delete your account.</li>
+<li><b>Visitor counts:</b> each site counts its page views per day and the names of the websites visitors came from, without cookies or IP addresses. Only the site's owner sees them, and they are deleted after 30 days.</li>
 <li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
 </ul>
 <h3>Who else sees it</h3>
@@ -653,4 +694,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };

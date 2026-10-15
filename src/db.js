@@ -80,6 +80,21 @@ CREATE TABLE IF NOT EXISTS admin_log (
   detail TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
+-- visitor stats: no cookies or IPs, just counts per UTC day, kept 30 days
+CREATE TABLE IF NOT EXISTS page_views (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  path TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day, path)
+);
+CREATE TABLE IF NOT EXISTS referrers (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  host TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day, host)
+);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id);
 CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at);
@@ -88,12 +103,14 @@ CREATE INDEX IF NOT EXISTS idx_guestbook_user ON guestbook(user_id, id);
 
 // columns added after v0.1
 const cols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
-for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0'], ['tags', "TEXT NOT NULL DEFAULT ''"], ['gb_notify', "TEXT NOT NULL DEFAULT 'daily'"], ['gb_digest_at', 'INTEGER NOT NULL DEFAULT 0']]) {
+for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0'], ['tags', "TEXT NOT NULL DEFAULT ''"], ['gb_notify', "TEXT NOT NULL DEFAULT 'daily'"], ['gb_digest_at', 'INTEGER NOT NULL DEFAULT 0'], ['renamed_at', 'INTEGER NOT NULL DEFAULT 0']]) {
   if (!cols.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
 }
 // existing guestbooks start their first digest from now, not from every entry ever signed
 if (!cols.has('gb_digest_at')) db.prepare('UPDATE users SET gb_digest_at = ?').run(Date.now());
 if (!db.prepare('PRAGMA table_info(guestbook)').all().some((c) => c.name === 'approved')) db.exec('ALTER TABLE guestbook ADD COLUMN approved INTEGER NOT NULL DEFAULT 1');
+// a name left behind by a rename points at its site, so the old address redirects while the name is held
+if (!db.prepare('PRAGMA table_info(released_names)').all().some((c) => c.name === 'user_id')) db.exec('ALTER TABLE released_names ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
 // the files an update changed, newest first, one per line
 if (!db.prepare('PRAGMA table_info(events)').all().some((c) => c.name === 'files')) db.exec("ALTER TABLE events ADD COLUMN files TEXT NOT NULL DEFAULT ''");
 

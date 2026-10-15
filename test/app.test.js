@@ -1413,3 +1413,124 @@ test('guestbook emails: instant, a daily digest, or off; held entries say so', a
   await notify('bogus');
   assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
 });
+
+test('the link checker lists links and images that point at missing files of the site', async () => {
+  const m = await member('linkcheck');
+  await upload(m, 'about.html', '<p>about</p>');
+  await upload(m, 'cat.png', 'png');
+  await upload(m, 'index.html', `<a href="about.html">ok</a> <a href="/about">clean</a> <a href=about.html#top>anchor</a> <a href="./">home</a>
+<img src="cat.png"> <img data-src="lazy.png"> <img src='gone.png'> <a href="/nope/">dir</a> <a href="old.html?x=1">old</a>
+<a href="https://example.com/x.html">out</a> <a href="mailto:a@b.c">mail</a> <a href="#top">top</a> <img src="/_hw/counter.svg">`);
+  const res = await req('get', '/dashboard/links').set('Cookie', m.cookie);
+  assert.equal(res.status, 200);
+  const listed = [...res.text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
+  assert.deepEqual(listed, ['gone.png', '/nope/', 'old.html?x=1']);
+  await upload(m, 'index.html', '<a href="about.html">ok</a>');
+  assert.match((await req('get', '/dashboard/links').set('Cookie', m.cookie)).text, /No broken links/);
+});
+
+test('the editor offers the site images to insert into a page, and the uploader offers to shrink photos', async () => {
+  const m = await member('imgpick');
+  await upload(m, 'cat.png', 'png');
+  await upload(m, 'notes.txt', 'hi');
+  const page = await req('get', '/dashboard/edit?path=index.html').set('Cookie', m.cookie);
+  assert.match(page.text, /<select id="imgpick">.*<option>cat\.png<\/option>/);
+  assert.doesNotMatch(page.text, /<option>notes\.txt/);
+  assert.doesNotMatch((await req('get', '/dashboard/edit?path=notes.txt').set('Cookie', m.cookie)).text, /id="imgpick"/);
+  const dash = (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+  assert.match(dash, /id="shrink"/);
+  // the page scripts at least parse
+  for (const s of [...page.text.matchAll(/<script[^>]*>([^]*?)<\/script>/g), ...dash.matchAll(/<script[^>]*>([^]*?)<\/script>/g)]) new Function(s[1]); // eslint-disable-line no-new-func
+});
+
+test('visitor stats count page views and referring sites per day without cookies, for 30 days', async () => {
+  const m = await member('stats-pad');
+  await upload(m, 'about.html', '<p>about</p>');
+  await upload(m, 'cat.png', 'png');
+  const host = 'stats-pad.pad.test';
+  await req('get', '/', host).set('Referer', 'https://friend.example/links');
+  await req('get', '/about', host).set('Referer', 'http://stats-pad.pad.test/');
+  await req('get', '/about', host);
+  await req('get', '/cat.png', host).set('Referer', 'https://friend.example/');
+  await req('get', '/missing.html', host);
+  await req('get', '/', host).set('User-Agent', 'Googlebot/2.1');
+  const res = await req('get', '/dashboard/stats').set('Cookie', m.cookie);
+  assert.equal(res.status, 200);
+  const id = db.prepare('SELECT id FROM users WHERE username = ?').get('stats-pad').id;
+  assert.deepEqual(db.prepare('SELECT path, views FROM page_views WHERE user_id = ? ORDER BY path').all(id), [{ path: '/', views: 1 }, { path: '/about', views: 2 }]);
+  assert.deepEqual(db.prepare('SELECT host, views FROM referrers WHERE user_id = ?').all(id), [{ host: 'friend.example', views: 1 }]);
+  assert.match(res.text, /friend\.example/);
+  db.prepare("UPDATE page_views SET day = '2000-01-01' WHERE user_id = ? AND path = '/'").run(id);
+  app.housekeeping();
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM page_views WHERE user_id = ?').get(id).n, 1);
+});
+
+test('a member renames their site: everything follows, the old name redirects and is held, and renames wait RENAME_DAYS', async () => {
+  const m = await member('old-name');
+  await upload(m, 'about.html', '<p>about</p>');
+  const id = db.prepare('SELECT id FROM users WHERE username = ?').get('old-name').id;
+  const fan = await member('rename-fan');
+  await req('post', '/follow').set('Cookie', fan.cookie).type('form').send({ _csrf: fan.csrf, site: 'old-name' });
+  const rename = (username, password = 'longpassword1') => req('post', '/dashboard/rename').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username, password });
+
+  assert.match((await rename('new-name', 'wrongpassword')).text, /Wrong password/);
+  assert.match((await rename('rename-fan')).text, /That site name is taken/);
+  assert.match((await rename('admin')).text, /not available/);
+  const ok = await rename('new-name');
+  assert.equal(ok.status, 302);
+  assert.equal(db.prepare('SELECT username FROM users WHERE id = ?').get(id).username, 'new-name');
+  assert.equal((await req('get', '/about', 'new-name.pad.test')).status, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM follows WHERE followed_id = ?').get(id).n, 1);
+
+  const old = await req('get', '/about?x=1', 'old-name.pad.test');
+  assert.equal(old.status, 301);
+  assert.equal(old.headers.location, 'http://new-name.pad.test/about?x=1');
+  assert.equal((await req('get', '/site/old-name')).headers.location, '/site/new-name');
+  assert.equal((await req('get', '/site/old-name/feed.xml')).headers.location, '/site/new-name/feed.xml');
+  assert.match((await signup('old-name', 'squatter@example.com')).text, /That site name is taken/);
+
+  // too soon for another rename, but once the wait is over the member may take their old name back
+  assert.match((await rename('third-name')).text, /rename your site again in 30 days/);
+  db.prepare('UPDATE users SET renamed_at = 0 WHERE id = ?').run(id);
+  assert.equal((await rename('old-name')).status, 302);
+  assert.equal((await req('get', '/about', 'old-name.pad.test')).status, 200);
+  assert.equal((await req('get', '/', 'new-name.pad.test')).headers.location, 'http://old-name.pad.test/');
+
+  // once the site is gone, its old names stop redirecting
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  assert.equal((await req('get', '/', 'new-name.pad.test')).status, 404);
+});
+
+test('uploads can shrink big photos on the server, keeping name and type and dropping camera details', async () => {
+  const sharp = require('sharp');
+  const m = await member('shrinker');
+  const photo = await sharp({ create: { width: 2400, height: 1200, channels: 3, background: '#3a6' } }).jpeg({ quality: 100 }).withMetadata({ exif: { IFD0: { Make: 'PupCam' } } }).toBuffer();
+  const send = (name, data, shrink) => {
+    const r = req('post', '/dashboard/upload').set('Cookie', m.cookie).field('_csrf', m.csrf).field('dir', '');
+    if (shrink) r.field('shrink', '1');
+    return r.attach('files', data, name);
+  };
+  await send('big.jpg', photo, true);
+  await send('kept.jpg', photo, false);
+  await send('broken.jpg', Buffer.from('not really a jpeg'), true);
+  const dir = path.join(process.env.DATA_DIR, 'sites', 'shrinker');
+  const big = await sharp(path.join(dir, 'big.jpg')).metadata();
+  assert.deepEqual([big.format, big.width, big.height, big.exif], ['jpeg', 1600, 800, undefined]);
+  assert.ok(fs.statSync(path.join(dir, 'big.jpg')).size < photo.length);
+  assert.equal((await sharp(path.join(dir, 'kept.jpg')).metadata()).width, 2400);
+  assert.equal(fs.readFileSync(path.join(dir, 'broken.jpg'), 'utf8'), 'not really a jpeg');
+  // the stored disk total matches what is really there
+  const onDisk = U.dirSize(dir).total;
+  assert.ok((await req('get', '/dashboard').set('Cookie', m.cookie)).text.includes(U.fmtBytes(onDisk)));
+});
+
+test('the link checker follows <base href> and trailing slashes like the router', async () => {
+  const m = await member('linkbase');
+  await upload(m, 'about.html', '<p>about</p>');
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'pics/cat.png.txt', content: 'x' });
+  await upload(m, 'index.html', '<a href="/about/">slash</a> <a href="/about">clean</a>');
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'page.html', content: '<base href="/pics/"><a href="cat.png.txt">ok</a> <a href="dog.txt">gone</a>' });
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'away.html', content: '<base href="https://elsewhere.example/"><img src="x.png">' });
+  const listed = [...(await req('get', '/dashboard/links').set('Cookie', m.cookie)).text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
+  assert.deepEqual(listed.sort(), ['/about/', 'dog.txt']);
+});

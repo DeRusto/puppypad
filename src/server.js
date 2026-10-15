@@ -29,6 +29,7 @@ const cfg = {
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
   BANDWIDTH_MB: Number(env.BANDWIDTH_MB || 1024), // per site per UTC day
+  RENAME_DAYS: Number(env.RENAME_DAYS || 30), // a member renames their site at most once this often
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
@@ -47,6 +48,8 @@ const now = () => Date.now();
 const today = () => new Date().toISOString().slice(0, 10); // UTC
 const bwToday = (u) => (u.bw_day === today() ? u.bw_bytes : 0);
 const HOTLINK_MEDIA = /\.(png|jpe?g|gif|webp|ico|bmp|svg|midi?|mp3|ogg|wav)$/i;
+const BOT_UA = /bot|crawl|spider|slurp|preview|headless/i; // shortcut: a word list, not a bot database
+const STATS_DAYS = 30;
 const HOTLINK_PER_MIN = 60; // media requests a minute per site from pages on other domains
 
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
@@ -138,6 +141,9 @@ const siteDir = (name) => path.join(SITES_DIR, name);
 db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
 const quotaMB = (user) => Math.max(user.quota_mb || 0, cfg.QUOTA_MB);
 
+// the current name of the site that gave up `name` in a rename, while that name is still held
+const renamedTo = (name) => db.prepare(`SELECT u.username FROM released_names r JOIN users u ON u.id = r.user_id WHERE r.name = ? AND r.released_at > ? AND ${LIVE}`).get(String(name), now() - NAME_HOLD)?.username;
+
 function makeToken(userId, kind, ttl) {
   const t = U.newToken();
   db.prepare('DELETE FROM tokens WHERE user_id = ? AND kind = ?').run(userId, kind);
@@ -157,8 +163,12 @@ const tokenLive = (t, kind) => {
 };
 // Password hashing yields to other requests, so by the time it finishes a reset may have replaced the password
 // and logged every session out. Signed-in actions check that nothing like that happened before they act.
-const stillCurrent = (req, user) => q.userById.get(user.id)?.pw_hash === user.pw_hash &&
-  (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
+// A rename meanwhile counts too (renamed_at changes with every one): the request would act on the old name's folder.
+const stillCurrent = (req, user) => {
+  const cur = q.userById.get(user.id);
+  return !!cur && cur.pw_hash === user.pw_hash && cur.renamed_at === user.renamed_at &&
+    (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
+};
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
 function startSession(res, userId) {
@@ -233,6 +243,9 @@ const reportLink = (name) => `<p><small><a href="${cfg.BASE_URL}/report?site=${e
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
   if (!owner || !owner.verified) {
+    const to = renamedTo(req.siteName);
+    // a day's cache, not forever: once the hold ends someone else may take the old name
+    if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, cfg.siteUrl(to) + req.originalUrl);
     return res.status(404).send(V.sitePage(cfg, 'This pad is empty', `<p>The name <b>${U.esc(req.siteName)}</b> is not a site on ${U.esc(cfg.SITE_NAME)}. <a href="${cfg.BASE_URL}/signup">Roll out a pad of your own.</a></p>`));
   }
   if (owner.banned) return res.status(410).send(V.sitePage(cfg, 'This pad got rolled up', `<p>A moderator removed this site for breaking the house rules.</p>${reportLink(owner.username)}`));
@@ -281,11 +294,24 @@ site.use((req, res) => {
     return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
       .send(V.sitePage(cfg, 'This pad is resting', '<p>This site used up its bandwidth for today. It comes back at midnight UTC.</p>'));
   }
+  let refHost = '';
+  try { refHost = new URL(req.get('referer')).hostname; } catch {}
+  let page = false; // set once the request resolves to a page
   // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
   res.on('finish', () => {
     const bytes = Number(res.get('Content-Length')) || 0;
     if (req.method === 'GET' && bytes) {
       db.prepare('UPDATE users SET bw_bytes = (CASE WHEN bw_day = @day THEN bw_bytes ELSE 0 END) + @bytes, bw_day = @day WHERE id = @id').run({ day: today(), bytes, id: req.owner.id });
+    }
+    // visitor stats: pages only, crawlers left out, and only the name of the website a visitor came from
+    // a 304 is a returning visitor whose browser kept the page
+    if (req.method === 'GET' && page && (res.statusCode === 200 || res.statusCode === 304) && !BOT_UA.test(req.get('user-agent') || '')) {
+      const at = { id: req.owner.id, day: today() };
+      // a throw here would escape every handler and stop the server; the site may have been deleted while this page went out
+      try {
+        db.prepare('INSERT INTO page_views (user_id, day, path, views) VALUES (@id, @day, @path, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, path: req.path.slice(0, 200) });
+        if (refHost && refHost !== req.hostname) db.prepare('INSERT INTO referrers (user_id, day, host, views) VALUES (@id, @day, @host, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, host: refHost.slice(0, 200) });
+      } catch (e) { if (q.userById.get(req.owner.id)) console.error('visitor stats failed:', e.message); }
     }
   });
   const root = siteDir(req.owner.username);
@@ -296,8 +322,6 @@ site.use((req, res) => {
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
-  let refHost = '';
-  try { refHost = new URL(req.get('referer')).hostname; } catch {}
   const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`);
   if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
     return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
@@ -314,6 +338,7 @@ site.use((req, res) => {
       if (req.path.endsWith('/') || path.extname(full)) return notFound();
       full += '.html';
     }
+    page = /\.html?$/i.test(full);
     res.set('Cache-Control', 'public, max-age=60');
     res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
   });
@@ -455,7 +480,11 @@ main.get('/browse', (req, res) => {
 });
 function showProfile(req, res, name, m, status = 200) {
   const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
-  if (!p) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
+  if (!p) {
+    const to = renamedTo(String(name).toLowerCase());
+    if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}`);
+    return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
+  }
   const me = req.ctx.user;
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   res.status(status).send(V.profile(req.ctx, m, {
@@ -493,7 +522,10 @@ main.get('/feed.xml', (req, res) => atom(res, {
 }));
 main.get('/site/:name/feed.xml', (req, res) => {
   const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
-  if (!p) return res.sendStatus(404);
+  if (!p) {
+    const to = renamedTo(String(req.params.name).toLowerCase());
+    return to ? res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}/feed.xml`) : res.sendStatus(404);
+  }
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   atom(res, {
     title: `${p.username} on ${cfg.SITE_NAME}`, path: `/site/${p.username}/feed.xml`, link: cfg.siteUrl(p.username) + '/',
@@ -508,7 +540,8 @@ const randomSite = (where) => (req, res) => {
 main.get('/random', randomSite(listed));
 main.get('/webring/random', randomSite(inRing));
 const webring = (next) => (req, res) => {
-  const from = q.userByName.get(String(req.query.from || '').toLowerCase());
+  const fromName = String(req.query.from || '').toLowerCase();
+  const from = q.userByName.get(fromName) || q.userByName.get(renamedTo(fromName) || ''); // old webring snippets still name the site's old name
   const id = from ? from.id : 0;
   const ring = inRing();
   const r = next
@@ -699,10 +732,10 @@ const savedMsg = (saved, skipped, verb) => ({
 const tmpStorage = multer.diskStorage({ destination: UPLOAD_TMP, filename: (req, file, cb) => cb(null, `up-${crypto.randomBytes(8).toString('hex')}`) });
 const upload = multer({ storage: tmpStorage, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
 // The plain form gets the dashboard back; the drag-and-drop uploader asks for JSON so it can send many batches and sum them up
-main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res) => upload(req, res, (err) => {
-  try { handleUpload(req, res, err); } finally { dropTemp(req.files || []); }
+main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next) => upload(req, res, (err) => {
+  handleUpload(req, res, err).catch(next).finally(() => dropTemp(req.files || []));
 }));
-function handleUpload(req, res, err) {
+async function handleUpload(req, res, err) {
   const json = req.accepts(['html', 'json']) === 'json';
   const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
   if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
@@ -713,6 +746,11 @@ function handleUpload(req, res, err) {
   if (dir === null) return fail('That folder name is not allowed.', 400);
   const skipped = [];
   const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), path: f.path, size: f.size }));
+  if (req.body.shrink === '1') {
+    for (const f of files) f.size = await U.shrinkImage(f.path, f.name);
+    // the shrinking took a while; a ban, reset or deletion meanwhile must still stop the write
+    if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
+  }
   const saved = saveFiles(req.ctx.user, dir, files, skipped);
   if (json) return res.json({ saved: saved.length, skipped });
   showDashboard(req, res, savedMsg(saved, skipped, 'Uploaded'));
@@ -754,14 +792,17 @@ main.get('/dashboard/download', auth, (req, res) => {
   zip.pipe(res);
 });
 
-main.get('/dashboard/edit', auth, canEdit, (req, res) => {
+// the member's pictures for the editor's image picker
+const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+const siteImages = async (user, rel) => (/\.html?$/i.test(rel) ? (await U.listFiles(siteDir(user.username))).filter((f) => IMAGE.test(f)).sort() : []);
+main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   const rel = U.safeRel(req.query.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
   if (!full) return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   // a new page starts as a copy of the member's starter layout, already using their puppypad.css
   const blank = /\.html?$/i.test(rel) ? style.link(starters.render(req.ctx.user.starter, req.ctx.user.username, cfg)) : '';
-  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists }));
+  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists, images: await siteImages(req.ctx.user, rel) }));
 });
 // write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
 function saveText(user, full, content) {
@@ -779,7 +820,7 @@ function saveText(user, full, content) {
   usageCache.set(user.username, { total: used.total - old + size, count: used.count + (exists ? 0 : 1) });
   return null;
 }
-main.post('/dashboard/save', auth, canEdit, (req, res) => {
+main.post('/dashboard/save', auth, canEdit, async (req, res) => {
   const user = req.ctx.user;
   const rel = U.safeRel(req.body.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(user, rel);
@@ -787,10 +828,11 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
   const isNew = !(fs.existsSync(full) && fs.statSync(full).isFile());
   const err = saveText(user, full, content);
-  if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew }));
+  const images = await siteImages(user, rel);
+  if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew, images }));
   autoFlag(user, rel, content);
   markUpdated(user.id, [rel]);
-  res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
+  res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false, images }));
 });
 // the style editor writes puppypad.css; it never touches a page without asking
 const readText = (full) => { try { return fs.readFileSync(full, 'utf8'); } catch { return null; } };
@@ -910,6 +952,19 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   const parent = to.split('/').slice(0, -1).join('/');
   res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
 });
+main.get('/dashboard/links', auth, async (req, res) => {
+  if (!U.limit(`links:${req.ctx.user.id}`, 30, 3600000)) return showDashboard(req, res, { err: 'That is a lot of link checks. Try again in an hour.' }, 429);
+  res.send(V.links(req.ctx, await U.brokenLinks(siteDir(req.ctx.user.username))));
+});
+const statsSince = () => new Date(now() - (STATS_DAYS - 1) * DAY).toISOString().slice(0, 10);
+main.get('/dashboard/stats', auth, (req, res) => {
+  const at = { id: req.ctx.user.id, since: statsSince() };
+  res.send(V.stats(req.ctx, {
+    days: db.prepare('SELECT day, SUM(views) views FROM page_views WHERE user_id = @id AND day >= @since GROUP BY day ORDER BY day DESC').all(at),
+    pages: db.prepare('SELECT path, SUM(views) views FROM page_views WHERE user_id = @id AND day >= @since GROUP BY path ORDER BY views DESC, path LIMIT 30').all(at),
+    referrers: db.prepare('SELECT host, SUM(views) views FROM referrers WHERE user_id = @id AND day >= @since GROUP BY host ORDER BY views DESC, host LIMIT 30').all(at),
+  }));
+});
 main.post('/dashboard/tagline', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET tagline = ? WHERE id = ?').run(String(req.body.tagline || '').trim().slice(0, 100), req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('Description saved.')}`);
@@ -940,7 +995,8 @@ main.post('/dashboard/guestbook/notify', auth, (req, res) => {
   // the digest restarts from now, so switching from instant never repeats entries already mailed
   // saving the same setting again keeps entries already waiting for the digest
   if (GB_NOTIFY.includes(req.body.notify)) {
-    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now(), id: req.ctx.user.id });
+    // one ms back, so an entry signed in the same millisecond as the switch still makes the digest (it counts entries after gb_digest_at)
+    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now() - 1, id: req.ctx.user.id });
   }
   res.redirect('/dashboard/guestbook');
 });
@@ -1006,6 +1062,40 @@ main.get('/account/email/confirm', (req, res) => {
   sendMail(user.email, `Your ${cfg.SITE_NAME} email was changed`,
     `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
   done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
+});
+// a new site name: the folder, screenshot and open reports follow, and the old name is held for 90 days, redirecting here
+main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
+  const user = req.ctx.user;
+  const name = String(req.body.username || '').trim().toLowerCase();
+  const fail = (err, code = 400) => showDashboard(req, res, { err }, code);
+  const wait = user.renamed_at + cfg.RENAME_DAYS * DAY - now();
+  if (wait > 0) return fail(`You can rename your site again in ${Math.ceil(wait / DAY)} day${Math.ceil(wait / DAY) === 1 ? '' : 's'}.`);
+  if (name === user.username) return fail('That is already your site name.');
+  if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
+  if (!U.limit(`rename:${user.id}`, 5, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Wrong password. Nothing was changed.');
+  if (!stillCurrent(req, user)) return res.redirect('/login');
+  // a member may take back a name they gave up themselves
+  const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
+  if (q.userByName.get(name) || (held && held.user_id !== user.id)) return fail('That site name is taken.');
+  const t = now();
+  try {
+    fs.mkdirSync(siteDir(user.username), { recursive: true });
+    db.transaction(() => {
+      db.prepare('UPDATE users SET username = ?, renamed_at = ?, shot_dirty = 1 WHERE id = ?').run(name, t, user.id);
+      db.prepare('DELETE FROM released_names WHERE name = ?').run(name);
+      db.prepare('INSERT OR REPLACE INTO released_names (name, released_at, user_id) VALUES (?, ?, ?)').run(user.username, t, user.id);
+      db.prepare('UPDATE reports SET site = ? WHERE site = ?').run(name, user.username);
+      fs.renameSync(siteDir(user.username), siteDir(name)); // last, so a failed move rolls the rows back
+    })();
+  } catch (err) {
+    if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); // a signup took it meanwhile
+    console.error('rename failed:', err.message);
+    return fail('Something went wrong renaming your site. Nothing was changed.', 500);
+  }
+  try { fs.renameSync(shotPath(user.username), shotPath(name)); } catch { /* none yet; shot_dirty brings one */ }
+  if (usageCache.has(user.username)) { usageCache.set(name, usageCache.get(user.username)); usageCache.delete(user.username); }
+  res.redirect(`/dashboard?ok=${encodeURIComponent(`Your site is now ${cfg.siteUrl(name)}. The old address redirects there for 90 days. Pages that spell out the old address or name need editing by hand.`)}`);
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
@@ -1126,6 +1216,9 @@ const housekeeping = () => {
     db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
     db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+    const statsFrom = statsSince();
+    db.prepare('DELETE FROM page_views WHERE day < ?').run(statsFrom);
+    db.prepare('DELETE FROM referrers WHERE day < ?').run(statsFrom);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
     // daily guestbook digests: at most one a day per site, only when someone signed since the last
     for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
