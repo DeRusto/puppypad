@@ -175,6 +175,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
   with no cookies.
 - Bandwidth guard: a daily byte cap per site, and throttling of media hotlinked from other domains.
+  The dashboard shows the member their bandwidth used this month against the allowance.
 - "New page" starts from the member's starter layout, already linked to `puppypad.css`.
 - Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
   `<img>` with width and height.
@@ -183,12 +184,26 @@ signup. **Your step:** read both pages and make them match how you run things
 - Staff picks and a "site of the week" on the home page (admin flag on `users`).
 - Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
 - Admin search and stats: find a member by name, email or IP; signups per day; disk and bandwidth per site.
+- More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
+  80 GB VPS holds about 100 members at a full 500 MB, so add a volume and keep the 80% disk alert (§5).
+- Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can
+  delete them. Same rate limits and honeypot as the guestbook.
+- Likes and comments on feed updates ("so-and-so updated their site").
+- The feed names the files an update changed and links to them (today an event only says "update").
+- Notifications: an in-site list of new followers, comments and likes, with optional email for each.
+- Block a member: hides their comments, likes and follows from you.
+- HTTP API with a per-member API key: upload, delete, list files and site info. The CLI and deploy
+  Action in Phase C are thin clients over it.
 
 **Phase C — growth (later)**
 - File version history (keep the last N versions per file under `data/history`).
 - Custom domains: the member adds a CNAME, the app verifies a TXT record, and the existing
   `/internal/tls-check` + on-demand TLS path issues the certificate.
-- CLI/WebDAV or Git push for members who prefer local editors.
+- CLI/WebDAV or Git push for members who prefer local editors. The CLI and a GitHub deploy Action
+  use the Phase B HTTP API.
+- Several sites under one login, switched between on the dashboard. Needs the schema to split
+  accounts from sites (today one `users` row is both), so decide before the member count grows.
+- Further storage increases beyond 500 MB, once members and supporter income can pay for the hardware.
 - Optional supporter tier: see §3.2.
 - "Log out everywhere" button on the profile page (password change and reset already do this).
 - Optional two-factor login (TOTP), mainly for admins and supporters with custom domains.
@@ -249,7 +264,9 @@ PuppyPad stays free. Supporters pay to cover the server and get extras that cost
 never features taken away from free members.
 
 **Perks (draft)**
-- Bigger quota and file limit (for example 500 MB and 25 MB, versus 50 MB and 5 MB free).
+- Bigger quota and file limit than free members (free is 500 MB once the Phase B raise lands; set the
+  supporter numbers when the tier launches).
+- Any file type, past the free allowlist (still served with `nosniff` and checked by the phishing flags).
 - Custom domain (Phase C) is supporter-only, since each one is a certificate and support load.
 - Longer file version history once that exists (Phase C).
 - Cosmetic flair wherever their site is listed:
@@ -343,4 +360,5 @@ worker comfortably.
    `.svg` saves and uploads, catches password fields and titles built by script, and flags known
    crypto-miner scripts. Submit the Public Suffix List entry (§2.4) soon after launch.
 3. **Quota:** keep 50 MB per member and 5 MB per file for launch. Raise later with `QUOTA_MB` /
-   `MAX_FILE_MB` if disk use allows.
+   `MAX_FILE_MB` if disk use allows. *2026-10-15:* the next step is 500 MB (Phase B); anything beyond
+   that waits for a user base and income to pay for the hardware.
