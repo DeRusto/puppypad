@@ -12,7 +12,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,
 .box{background-color:var(--pad);background-image:repeating-linear-gradient(45deg,transparent 0 21px,#d6eafa 21px 22px),repeating-linear-gradient(-45deg,transparent 0 21px,#d6eafa 21px 22px);border:4px ridge var(--edge);padding:12px;min-width:0;overflow-wrap:anywhere}
 header.box{text-align:center}
 h1{font:700 clamp(32px,9vw,56px)/1.05 "Comic Sans MS","Comic Neue","Chalkboard SE",cursive;margin:0;color:var(--blue);text-align:center;
-background:radial-gradient(ellipse 46% 60% at 50% 62%,var(--pee) 0 60%,transparent 62%)}
+background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20640%20110'%20preserveAspectRatio='none'%3E%3Cpath%20fill='%23ffe14d'%20d='M30%2058C26%2038%2052%2026%2088%2028C104%2014%20142%2012%20168%2020C196%208%20246%2010%20268%2020C298%208%20344%2012%20364%2024C398%2014%20436%2020%20452%2034C492%2030%20522%2044%20518%2064C524%2084%20496%2096%20462%2094C434%20106%20376%20106%20350%2096C318%20108%20254%20108%20228%2097C192%20107%20128%20105%20104%2094C68%20100%2038%2090%2034%2074C26%2068%2027%2064%2030%2058Z'/%3E%3Cellipse%20fill='%23ffffff'%20opacity='.35'%20cx='180'%20cy='40'%20rx='90'%20ry='9'%20transform='rotate(-3%20180%2040)'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='540'%20cy='82'%20rx='12'%20ry='5'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='14'%20cy='80'%20rx='8'%20ry='4'/%3E%3C/svg%3E") no-repeat center 58%/58% 118%}
 h1 a,h1 a:visited,h1 a:hover{color:inherit;text-decoration:none;background:none}
 .tagline{font-style:italic;color:var(--soft);margin:2px 0 8px}
 h2{font:700 24px "Comic Sans MS","Comic Neue",cursive;color:var(--blue);margin:0 0 8px}
@@ -61,6 +61,10 @@ footer{text-align:center;font-size:13px}
 .drop{display:flex;flex-direction:column;gap:6px;border:3px dashed var(--edge);padding:12px;background:#fff}.drop.over{background:var(--pee)}
 progress{width:100%;max-width:460px}
 iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#fff}
+.pup{float:right;width:180px;height:auto;margin:0 0 8px 12px}
+.pup.left{float:left;margin:0 12px 8px 0}
+@media (min-width:561px) and (max-width:820px){.pup{width:120px}}
+@media (max-width:560px){.pup,.pup.left{float:none;display:block;margin:0 auto 8px}}
 `;
 
 function layout(ctx, title, body, opts = {}) {
@@ -116,11 +120,11 @@ ${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}
   : `<p>The pad is clean. Make the first mess.</p>`);
 
 const home = (ctx, { recent, newest, total }) => layout(ctx, 'Home', `
-<section class="box"><h2>Your own pad on the web</h2>
+<section class="box"><img class="pup" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"><img class="pup left" src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"><h2>Your own pad on the web</h2>
 <p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
-<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p></section>
-<section class="box"><h2>Fresh accidents <small>(recently updated)</small></h2>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
-<section class="box"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}</section>`, {
+<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p><div style="clear:both"></div></section>
+<section class="box"><img class="pup" src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"><h2>Fresh accidents <small>(recently updated)</small></h2><div style="clear:right"></div>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
+<section class="box"><img class="pup" src="/img/pup-guestbook.webp" alt="Cartoon puppy with a pencil next to an open guestbook" width="180" height="114" loading="lazy"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}<div style="clear:both"></div></section>`, {
   fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
   description: `${ctx.cfg.SITE_NAME} is a free homepage host. Get yourname.${ctx.cfg.BASE_HOST}, ${ctx.cfg.QUOTA_MB} MB, a built-in editor, guestbook and hit counter. No templates, no algorithm \u2014 write your own HTML. Accidents welcome.`,
   path: '/',
