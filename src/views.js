@@ -401,15 +401,15 @@ const move = (ctx, m, { from, to, dir }) => {
 <p><a href="/dashboard?dir=${encodeURIComponent(back)}">Back to files</a></p></section>`);
 };
 
-const guestbookAdmin = (ctx, m, rows) => layout(ctx, 'Guestbook entries', `
+const guestbookAdmin = (ctx, m, rows, blocked = []) => layout(ctx, 'Guestbook entries', `
 <section class="box"><h2>Guestbook entries</h2>${msg(m)}<p><a href="/dashboard">Back to my site</a></p>
 <div class="scroll"><table><tr><th>When</th><th>Name</th><th>Message</th><th></th></tr>
-${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">delete</button></form></td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
+${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
 </table></div>
-<h3>Moderation</h3><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused. Posts from a blocked IP are silently dropped. One per line.</p>
+<h3>Moderation</h3><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused (one per line). Posts from a blocked IP are silently dropped; visitor IPs are only kept for 90 days.</p>
+<p>Blocked IPs: ${blocked.map((ip) => `${esc(ip)} <form class="inline" method="post" action="/dashboard/guestbook/unblock-ip">${csrfField(ctx)}<input type="hidden" name="ip" value="${esc(ip)}"><button class="link">unblock</button></form>`).join(', ') || 'none'}</p>
 <form class="stack" method="post" action="/dashboard/guestbook/settings">${csrfField(ctx)}
 <label for="gw">Blocked words</label><textarea id="gw" name="words" rows="4">${esc(ctx.user.gb_words)}</textarea>
-<label for="gi">Blocked IPs</label><textarea id="gi" name="ips" rows="4">${esc(ctx.user.gb_ips)}</textarea>
 <button>Save</button></form></section>`);
 
 const report = (ctx, m, v = {}) => layout(ctx, 'Report a site', `

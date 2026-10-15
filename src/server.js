@@ -811,14 +811,24 @@ main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   res.redirect(`/dashboard?ok=${encodeURIComponent(hide ? 'Your site is hidden from browsing.' : 'Your site is back in the listings.')}`);
 });
 main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null,
-  db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id))));
+  db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id), lines(req.ctx.user.gb_ips))));
 main.post('/dashboard/guestbook/approve', auth, (req, res) => {
   db.prepare('UPDATE guestbook SET approved = 1 WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/settings', auth, (req, res) => {
-  const clean = (t) => lines(t).slice(0, 100).map((l) => l.slice(0, 60)).join('\n');
-  db.prepare('UPDATE users SET gb_words = ?, gb_ips = ? WHERE id = ?').run(clean(req.body.words), clean(req.body.ips), req.ctx.user.id);
+  db.prepare('UPDATE users SET gb_words = ? WHERE id = ?').run(lines(req.body.words).slice(0, 100).map((l) => l.slice(0, 60)).join('\n'), req.ctx.user.id);
+  res.redirect('/dashboard/guestbook');
+});
+const setIps = (id, ips) => db.prepare('UPDATE users SET gb_ips = ? WHERE id = ?').run(ips.slice(-200).join('\n'), id);
+main.post('/dashboard/guestbook/block-ip', auth, (req, res) => {
+  const e = db.prepare('SELECT ip FROM guestbook WHERE id = ? AND user_id = ?').get(Number(req.body.id) || 0, req.ctx.user.id);
+  const ips = lines(req.ctx.user.gb_ips);
+  if (e && e.ip && !ips.includes(e.ip)) setIps(req.ctx.user.id, [...ips, e.ip]);
+  res.redirect('/dashboard/guestbook');
+});
+main.post('/dashboard/guestbook/unblock-ip', auth, (req, res) => {
+  setIps(req.ctx.user.id, lines(req.ctx.user.gb_ips).filter((ip) => ip !== req.body.ip));
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/delete', auth, (req, res) => {
