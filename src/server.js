@@ -24,7 +24,7 @@ const cfg = {
   OPERATOR: env.OPERATOR || '',
   GOVERNING_LAW: env.GOVERNING_LAW || '',
   DMCA_AGENT: env.DMCA_AGENT || '',
-  QUOTA_MB: Number(env.QUOTA_MB || 50),
+  QUOTA_MB: Number(env.QUOTA_MB || 500),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
   BANDWIDTH_MB: Number(env.BANDWIDTH_MB || 1024), // per site per UTC day
@@ -166,16 +166,18 @@ function deleteAccount(user, rows = deleteAccountRows) {
   fs.rmSync(shotPath(user.username), { force: true });
   usageCache.delete(user.username);
 }
-// A site's bytes and file count. Walking the whole folder on every dashboard view and upload stalls every other site,
-// so the result is kept and updated by the writes made here; the short expiry catches changes made outside the app (a restore)
+// A site's bytes and file count, kept rather than walked per request: walking a 500 MB folder stalls every other site.
+// The writes made here keep it current, and refreshUsage() rewalks every site in the background to catch changes made outside the app (a restore)
 const usageCache = new Map();
-const USAGE_TTL = 60000;
 function usage(name) {
-  const hit = usageCache.get(name);
-  if (hit && now() - hit.at < USAGE_TTL) return hit;
-  const fresh = { ...U.dirSize(siteDir(name)), at: now() };
-  usageCache.set(name, fresh);
-  return fresh;
+  if (!usageCache.has(name)) usageCache.set(name, U.dirSize(siteDir(name))); // only before the first refresh reaches this site
+  return usageCache.get(name);
+}
+async function refreshUsage() {
+  for (const { username } of db.prepare('SELECT username FROM users').all()) {
+    try { usageCache.set(username, U.dirSize(siteDir(username))); } catch { usageCache.delete(username); } // changed while walked: the next look rewalks
+    await new Promise(setImmediate); // one site at a time, so requests get in between
+  }
 }
 // resolve a member path inside their folder, or null
 function resolveIn(user, rel) {
@@ -639,9 +641,8 @@ function saveFiles(user, dir, files, skipped) {
     }
     used += bytes - old;
     if (!exists) count++;
-    // record each write as it lands, so a later failure in the batch can't leave the totals short;
-    // `at` stays the time of the last real walk, so the expiry still catches changes made outside the app
-    usageCache.set(user.username, { total: used, count, at: size.at });
+    // record each write as it lands, so a later failure in the batch can't leave the totals short
+    usageCache.set(user.username, { total: used, count });
     // only pages and scripts are scanned, so only they are read back
     if (SCANNED.test(rel)) autoFlag(user, rel, f.data ? f.data.toString('utf8') : fs.readFileSync(full, 'utf8'));
     saved.push(rel);
@@ -740,7 +741,7 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   } catch {
     return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
   }
-  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1), at: dirSize.at });
+  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1) });
   autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
@@ -763,7 +764,7 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   } catch {
     return showDashboard(req, res, { err: 'Could not write index.html: a folder with that name is in the way.' }, 400);
   }
-  usageCache.delete(user.username);
+  usageCache.set(user.username, { total: dirSize.total - old + Buffer.byteLength(content), count: dirSize.count + (exists ? 0 : 1) });
   // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
   db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(user.id);
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
@@ -773,8 +774,10 @@ main.post('/dashboard/delete', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.body.path);
   const full = rel && resolveIn(req.ctx.user, rel);
   if (full && fs.existsSync(full) && fs.statSync(full).isFile()) {
+    const { size } = fs.statSync(full);
+    const used = usage(req.ctx.user.username);
     fs.unlinkSync(full);
-    usageCache.delete(req.ctx.user.username);
+    usageCache.set(req.ctx.user.username, { total: used.total - size, count: used.count - 1 });
     const root = siteDir(req.ctx.user.username);
     for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
     markUpdated(req.ctx.user.id);
@@ -1033,12 +1036,16 @@ const housekeeping = () => {
   } catch (e) { console.error('housekeeping failed:', e.message); }
 };
 setInterval(housekeeping, 3600000).unref();
+const refreshAll = () => refreshUsage().catch((e) => console.error('disk totals refresh failed:', e.message));
+setInterval(refreshAll, 3600000).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
 app.forgetUsage = (name) => usageCache.delete(name); // for tests that put files on disk behind the app's back
+app.refreshUsage = refreshUsage;
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);
   app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
+  refreshAll(); // so the first /admin view after a restart reads stored totals
 }

@@ -928,6 +928,22 @@ test('the space-used line stays right through uploads, edits, replacements and d
   U.dirSize = realWalk;
 });
 
+test('disk totals come from the background refresh, not from walking folders on each request', async () => {
+  const m = await member('outside');
+  const shown = async () => (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/in (\d+) file/)[1];
+  const before = await shown();
+  fs.writeFileSync(path.join(process.env.DATA_DIR, 'sites', 'outside', 'restored.txt'), 'x'); // a restore, behind the app's back
+  const realWalk = U.dirSize;
+  let walks = 0;
+  U.dirSize = (...a) => { walks++; return realWalk(...a); };
+  try {
+    assert.equal(await shown(), before);
+    assert.equal(walks, 0);
+    await app.refreshUsage();
+    assert.equal(await shown(), String(Number(before) + 1));
+  } finally { U.dirSize = realWalk; }
+});
+
 test('password hashing does not block: hashes are made and checked asynchronously', async () => {
   let yielded = false;
   setImmediate(() => { yielded = true; });
