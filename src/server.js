@@ -754,14 +754,17 @@ main.get('/dashboard/download', auth, (req, res) => {
   zip.pipe(res);
 });
 
-main.get('/dashboard/edit', auth, canEdit, (req, res) => {
+// the member's pictures for the editor's image picker
+const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+const siteImages = async (user, rel) => (/\.html?$/i.test(rel) ? (await U.listFiles(siteDir(user.username))).filter((f) => IMAGE.test(f)).sort() : []);
+main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   const rel = U.safeRel(req.query.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
   if (!full) return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   // a new page starts as a copy of the member's starter layout, already using their puppypad.css
   const blank = /\.html?$/i.test(rel) ? style.link(starters.render(req.ctx.user.starter, req.ctx.user.username, cfg)) : '';
-  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists }));
+  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists, images: await siteImages(req.ctx.user, rel) }));
 });
 // write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
 function saveText(user, full, content) {
@@ -779,7 +782,7 @@ function saveText(user, full, content) {
   usageCache.set(user.username, { total: used.total - old + size, count: used.count + (exists ? 0 : 1) });
   return null;
 }
-main.post('/dashboard/save', auth, canEdit, (req, res) => {
+main.post('/dashboard/save', auth, canEdit, async (req, res) => {
   const user = req.ctx.user;
   const rel = U.safeRel(req.body.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(user, rel);
@@ -787,10 +790,11 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
   const isNew = !(fs.existsSync(full) && fs.statSync(full).isFile());
   const err = saveText(user, full, content);
-  if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew }));
+  const images = await siteImages(user, rel);
+  if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew, images }));
   autoFlag(user, rel, content);
   markUpdated(user.id, [rel]);
-  res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
+  res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false, images }));
 });
 // the style editor writes puppypad.css; it never touches a page without asking
 const readText = (full) => { try { return fs.readFileSync(full, 'utf8'); } catch { return null; } };

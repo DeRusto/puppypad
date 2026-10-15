@@ -249,8 +249,25 @@ function post(batch,sent,total,cb){
   x.onerror=function(){cb({error:'Upload failed. Check your connection and try again.'})};
   x.send(fd);
 }
+// optional: big JPEG, PNG and WebP photos are scaled down to 1600px on their longest side before sending, keeping their name and type
+var shrinkBox=document.getElementById('shrink'),MAXPX=1600;
+if(shrinkBox&&window.createImageBitmap)shrinkBox.parentNode.hidden=false;
+function shrink(f,cb){
+  if(!shrinkBox||!shrinkBox.checked||!window.createImageBitmap||!/^image\\/(jpeg|png|webp)$/.test(f.type))return cb(f);
+  createImageBitmap(f).then(function(img){
+    var s=Math.min(1,MAXPX/Math.max(img.width,img.height));
+    if(s===1&&f.type==='image/png')return cb(f);
+    var c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    c.toBlob(function(b){cb(b&&b.size<f.size?new File([b],f.name,{type:f.type}):f)},f.type,0.85);
+  },function(){cb(f)});
+}
 function send(list,pre){
   if(busy||!list.length)return;busy=true;
+  var done=[];note.textContent='Getting files ready...';
+  (function n(){if(done.length<list.length)return shrink(list[done.length],function(f){done.push(f);n()});upload(done,pre)})();
+}
+function upload(list,pre){
   var files=[],skipped=pre||[],saved=0;
   for(var i=0;i<list.length;i++){if(list[i].size>max)skipped.push(list[i].name+' (too big)');else files.push(list[i])}
   var total=files.reduce(function(n,f){return n+f.size},0)||1,sent=0,start=0;
@@ -339,6 +356,7 @@ ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is on
 <form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${cfg.MAX_FILE_MB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
 <div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
+<label hidden><input type="checkbox" id="shrink"> Shrink photos bigger than 1600 pixels across before uploading (smaller files load faster and save space)</label>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
 ${UPLOADER(ctx)}
 <h3>Import a zip</h3>
@@ -397,7 +415,7 @@ const CM_SRI = {
 };
 const sri = (p) => ` integrity="${CM_SRI[p]}" crossorigin="anonymous"`;
 const CM_MODE = { html: 'htmlmixed', htm: 'htmlmixed', svg: 'xml', xml: 'xml', css: 'css', js: 'javascript', json: { name: 'javascript', json: true }, md: 'markdown' };
-const editor = (ctx, m, { rel, content, isNew }) => {
+const editor = (ctx, m, { rel, content, isNew, images = [] }) => {
   const ext = extOf(rel);
   const isHtml = ext === 'html' || ext === 'htm';
   const dir = rel.split('/').slice(0, -1).join('/');
@@ -408,21 +426,30 @@ const editor = (ctx, m, { rel, content, isNew }) => {
 <form id="edform" method="post" action="/dashboard/save" style="display:flex;flex-direction:column;gap:8px">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
 <div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
+${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images at the cursor</label> <select id="imgpick"><option value="">Pick an image...</option>${images.map((i) => `<option>${esc(i)}</option>`).join('')}</select></div>` : ''}
 <div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a></div></form></section>
 <script src="${CM}/codemirror.min.js"${sri('codemirror.min.js')}></script><script src="${CM}/mode/xml/xml.min.js"${sri('mode/xml/xml.min.js')}></script><script src="${CM}/mode/javascript/javascript.min.js"${sri('mode/javascript/javascript.min.js')}></script>
 <script src="${CM}/mode/css/css.min.js"${sri('mode/css/css.min.js')}></script><script src="${CM}/mode/htmlmixed/htmlmixed.min.js"${sri('mode/htmlmixed/htmlmixed.min.js')}></script><script src="${CM}/mode/markdown/markdown.min.js"${sri('mode/markdown/markdown.min.js')}></script>
 <script>(function(){
 var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
 var base=${JSON.stringify(`<base href="${siteBase}">`).replace(/</g, '\\u003c')};
-var get=function(){return ta.value};
+var get=function(){return ta.value},cm=null;
 // the preview runs in a sandboxed frame with no access to your login; <base> makes your images and stylesheets resolve
 function draw(){if(frame)frame.srcdoc=base+get()}
 if(window.CodeMirror){
-  var cm=CodeMirror.fromTextArea(ta,{mode:${JSON.stringify(CM_MODE[ext] || 'text/plain')},theme:'material-darker',lineNumbers:true,lineWrapping:true,tabSize:2,indentUnit:2,
+  cm=CodeMirror.fromTextArea(ta,{mode:${JSON.stringify(CM_MODE[ext] || 'text/plain')},theme:'material-darker',lineNumbers:true,lineWrapping:true,tabSize:2,indentUnit:2,
     extraKeys:{'Ctrl-S':function(){form.requestSubmit()},'Cmd-S':function(){form.requestSubmit()}}});
   get=function(){return cm.getValue()};var t;cm.on('change',function(){clearTimeout(t);t=setTimeout(draw,400)});
 }else{var t2;ta.addEventListener('input',function(){clearTimeout(t2);t2=setTimeout(draw,400)})}
 draw();
+// the image picker writes an <img> with the picture's own width and height, so the page doesn't jump while it loads
+var pick=document.getElementById('imgpick'),root=${JSON.stringify(ctx.cfg.siteUrl(ctx.user.username)).replace(/</g, '\\u003c')};
+if(pick)pick.addEventListener('change',function(){
+  var src='/'+pick.value,img=new Image();pick.value='';if(src==='/')return;
+  function put(w,h){var tag='<img src="'+src+'"'+(w?' width="'+w+'" height="'+h+'"':'')+' alt="">';
+    if(cm){cm.replaceSelection(tag);cm.focus()}else{ta.setRangeText(tag,ta.selectionStart,ta.selectionEnd,'end');ta.focus();draw()}}
+  img.onload=function(){put(img.naturalWidth,img.naturalHeight)};img.onerror=function(){put()};img.src=root+src;
+});
 })();</script>`, { wide: true, head });
 };
 

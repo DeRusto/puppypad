@@ -1428,3 +1428,17 @@ test('the link checker lists links and images that point at missing files of the
   await upload(m, 'index.html', '<a href="about.html">ok</a>');
   assert.match((await req('get', '/dashboard/links').set('Cookie', m.cookie)).text, /No broken links/);
 });
+
+test('the editor offers the site images to insert into a page, and the uploader offers to shrink photos', async () => {
+  const m = await member('imgpick');
+  await upload(m, 'cat.png', 'png');
+  await upload(m, 'notes.txt', 'hi');
+  const page = await req('get', '/dashboard/edit?path=index.html').set('Cookie', m.cookie);
+  assert.match(page.text, /<select id="imgpick">.*<option>cat\.png<\/option>/);
+  assert.doesNotMatch(page.text, /<option>notes\.txt/);
+  assert.doesNotMatch((await req('get', '/dashboard/edit?path=notes.txt').set('Cookie', m.cookie)).text, /id="imgpick"/);
+  const dash = (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+  assert.match(dash, /id="shrink"/);
+  // the page scripts at least parse
+  for (const s of [...page.text.matchAll(/<script[^>]*>([^]*?)<\/script>/g), ...dash.matchAll(/<script[^>]*>([^]*?)<\/script>/g)]) new Function(s[1]); // eslint-disable-line no-new-func
+});
