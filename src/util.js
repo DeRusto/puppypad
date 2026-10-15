@@ -46,6 +46,20 @@ function safeRel(p, { file = true } = {}) {
   return parts.join('/');
 }
 
+// the same totals without holding up the server: each read and stat runs off the main thread
+async function dirSizeAsync(dir) {
+  let total = 0;
+  let count = 0;
+  const walk = async (d) => {
+    for (const e of await fs.promises.readdir(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.isFile()) { total += (await fs.promises.stat(full)).size; count++; }
+    }
+  };
+  if (fs.existsSync(dir)) await walk(dir);
+  return { total, count };
+}
 function dirSize(dir) {
   let total = 0;
   let count = 0;
@@ -93,4 +107,4 @@ function phishSignals(html) {
 
 const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, limit, fmtBytes, phishSignals };
+module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, limit, fmtBytes, phishSignals };

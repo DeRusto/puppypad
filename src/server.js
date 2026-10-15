@@ -9,6 +9,7 @@ const U = require('./util');
 const V = require('./views');
 const { readZip, writeZip } = require('./zip');
 const starters = require('./starters');
+const style = require('./style');
 const upgrade = require('./upgrade');
 
 // ---------- config ----------
@@ -24,7 +25,7 @@ const cfg = {
   OPERATOR: env.OPERATOR || '',
   GOVERNING_LAW: env.GOVERNING_LAW || '',
   DMCA_AGENT: env.DMCA_AGENT || '',
-  QUOTA_MB: Number(env.QUOTA_MB || 50),
+  QUOTA_MB: Number(env.QUOTA_MB || 500),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
   BANDWIDTH_MB: Number(env.BANDWIDTH_MB || 1024), // per site per UTC day
@@ -166,16 +167,22 @@ function deleteAccount(user, rows = deleteAccountRows) {
   fs.rmSync(shotPath(user.username), { force: true });
   usageCache.delete(user.username);
 }
-// A site's bytes and file count. Walking the whole folder on every dashboard view and upload stalls every other site,
-// so the result is kept and updated by the writes made here; the short expiry catches changes made outside the app (a restore)
+// A site's bytes and file count, kept rather than walked per request: walking a 500 MB folder stalls every other site.
+// The writes made here keep it current, and refreshUsage() rewalks every site in the background to catch changes made outside the app (a restore)
 const usageCache = new Map();
-const USAGE_TTL = 60000;
 function usage(name) {
-  const hit = usageCache.get(name);
-  if (hit && now() - hit.at < USAGE_TTL) return hit;
-  const fresh = { ...U.dirSize(siteDir(name)), at: now() };
-  usageCache.set(name, fresh);
-  return fresh;
+  if (!usageCache.has(name)) usageCache.set(name, U.dirSize(siteDir(name))); // only before the first refresh reaches this site
+  return usageCache.get(name);
+}
+async function refreshUsage() {
+  for (const { username } of db.prepare('SELECT username FROM users').all()) {
+    const before = usageCache.get(username);
+    try {
+      const fresh = await U.dirSizeAsync(siteDir(username));
+      // a write during the walk already stored newer totals, which the walk may have missed
+      if (usageCache.get(username) === before) usageCache.set(username, fresh);
+    } catch { usageCache.delete(username); } // changed while walked: the next look rewalks
+  }
 }
 // resolve a member path inside their folder, or null
 function resolveIn(user, rel) {
@@ -300,7 +307,7 @@ main.use((req, res, next) => { res.set('X-Frame-Options', 'DENY').set('Referrer-
 // Content-Security-Policy for the main site only: member sites run whatever their owners write, and get none.
 // The editor is left out too. Its live preview is an about:srcdoc frame, which inherits the page's policy, so any
 // policy there would also block the member's own scripts, images and <base> in the preview.
-const EDITOR_PATHS = new Set(['/dashboard/edit', '/dashboard/save']);
+const EDITOR_PATHS = new Set(['/dashboard/edit', '/dashboard/save', '/dashboard/style']);
 const csp = (nonce) => [
   "default-src 'self'",
   `script-src 'self' 'nonce-${nonce}' https://challenges.cloudflare.com`, // Turnstile on the signup form
@@ -505,8 +512,8 @@ main.post('/signup', async (req, res) => {
   const t = now();
   let id;
   try {
-    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-      .run(username, email, pwHash, req.ip, t, t).lastInsertRowid;
+    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, starter, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
+      .run(username, email, pwHash, req.ip, starter, t, t).lastInsertRowid;
   } catch (err) {
     // a twin signup for the same name or email landed while the human check ran, so the checks above are stale;
     // anything that is not a constraint violation (a locked or full db) is a server error, not a conflict
@@ -639,9 +646,8 @@ function saveFiles(user, dir, files, skipped) {
     }
     used += bytes - old;
     if (!exists) count++;
-    // record each write as it lands, so a later failure in the batch can't leave the totals short;
-    // `at` stays the time of the last real walk, so the expiry still catches changes made outside the app
-    usageCache.set(user.username, { total: used, count, at: size.at });
+    // record each write as it lands, so a later failure in the batch can't leave the totals short
+    usageCache.set(user.username, { total: used, count });
     // only pages and scripts are scanned, so only they are read back
     if (SCANNED.test(rel)) autoFlag(user, rel, f.data ? f.data.toString('utf8') : fs.readFileSync(full, 'utf8'));
     saved.push(rel);
@@ -717,33 +723,76 @@ main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
   if (!full) return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
-  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : '', isNew: !exists }));
+  // a new page starts as a copy of the member's starter layout, already using their puppypad.css
+  const blank = /\.html?$/i.test(rel) ? style.link(starters.render(req.ctx.user.starter, req.ctx.user.username, cfg)) : '';
+  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists }));
 });
+// write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
+function saveText(user, full, content) {
+  const size = Buffer.byteLength(content);
+  const exists = fs.existsSync(full) && fs.statSync(full).isFile();
+  const old = exists ? fs.statSync(full).size : 0;
+  const used = usage(user.username);
+  if (!exists && used.count >= MAX_FILES) return `your site already has ${MAX_FILES} files, the most we keep`;
+  if (used.total - old + size > cfg.QUOTA_MB * 1048576) return `this would go over your ${cfg.QUOTA_MB} MB limit`;
+  try {
+    writeAtomic(full, content);
+  } catch {
+    return 'a file or folder with that name is in the way';
+  }
+  usageCache.set(user.username, { total: used.total - old + size, count: used.count + (exists ? 0 : 1) });
+  return null;
+}
 main.post('/dashboard/save', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   const rel = U.safeRel(req.body.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(user, rel);
   if (!full) return res.status(400).send(V.notice(req.ctx, 'Cannot save', '<p>That file path is not allowed. <a href="/dashboard">Back to my site.</a></p>'));
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
-  const size = Buffer.byteLength(content);
-  const exists = fs.existsSync(full) && fs.statSync(full).isFile();
-  const old = exists ? fs.statSync(full).size : 0;
-  const dirSize = usage(user.username);
-  if (!exists && dirSize.count >= MAX_FILES) {
-    return res.status(400).send(V.editor(req.ctx, { err: `Not saved: your site already has ${MAX_FILES} files, the most we keep.` }, { rel, content, isNew: true }));
-  }
-  if (dirSize.total - old + size > cfg.QUOTA_MB * 1048576) {
-    return res.status(400).send(V.editor(req.ctx, { err: `Not saved: this would go over your ${cfg.QUOTA_MB} MB limit.` }, { rel, content, isNew: !old }));
-  }
-  try {
-    writeAtomic(full, content);
-  } catch {
-    return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
-  }
-  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1), at: dirSize.at });
+  const isNew = !(fs.existsSync(full) && fs.statSync(full).isFile());
+  const err = saveText(user, full, content);
+  if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew }));
   autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
+});
+// the style editor writes puppypad.css; it never touches a page without asking
+const readText = (full) => { try { return fs.readFileSync(full, 'utf8'); } catch { return null; } };
+main.get('/dashboard/style', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const root = siteDir(user.username);
+  const css = readText(path.join(root, 'puppypad.css'));
+  const index = readText(path.join(root, 'index.html'));
+  const preset = Object.hasOwn(style.PRESETS, req.query.preset) ? style.PRESETS[req.query.preset] : null;
+  const m = req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null;
+  res.send(V.styleEditor(req.ctx, m, {
+    s: style.clean(preset) || style.parse(css) || style.clean(style.PRESETS.sky),
+    page: index ?? starters.render(user.starter, user.username, cfg),
+    tail: style.tail(css),
+    offerLink: css !== null && index !== null && !style.hasLink(index),
+  }));
+});
+main.post('/dashboard/style', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const s = style.clean(req.body);
+  if (!s) return res.redirect(`/dashboard/style?err=${encodeURIComponent('Pick each setting from the form.')}`);
+  const full = path.join(siteDir(user.username), 'puppypad.css');
+  const err = saveText(user, full, style.merge(readText(full), s));
+  if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
+  markUpdated(user.id);
+  res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
+});
+main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const full = path.join(siteDir(user.username), 'index.html');
+  const html = readText(full);
+  if (html === null || style.hasLink(html)) return res.redirect('/dashboard/style');
+  const content = style.link(html);
+  const err = saveText(user, full, content);
+  if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not linked: ${err}.`)}`);
+  autoFlag(user, 'index.html', content);
+  markUpdated(user.id);
+  res.redirect(`/dashboard/style?ok=${encodeURIComponent('Your front page now uses puppypad.css.')}`);
 });
 // put a starter layout back as the front page: straight away when there is none, after a confirm when it would replace one
 main.post('/dashboard/starter', auth, canEdit, (req, res) => {
@@ -763,9 +812,9 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   } catch {
     return showDashboard(req, res, { err: 'Could not write index.html: a folder with that name is in the way.' }, 400);
   }
-  usageCache.delete(user.username);
+  usageCache.set(user.username, { total: dirSize.total - old + Buffer.byteLength(content), count: dirSize.count + (exists ? 0 : 1) });
   // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
-  db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(user.id);
+  db.prepare('UPDATE users SET shot_dirty = 1, starter = ? WHERE id = ?').run(req.body.starter, user.id);
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
   res.redirect(`/dashboard?ok=${encodeURIComponent(`${exists ? 'Replaced' : 'Made'} your front page (index.html) from the ${name} starter.`)}`);
 });
@@ -773,8 +822,10 @@ main.post('/dashboard/delete', auth, canEdit, (req, res) => {
   const rel = U.safeRel(req.body.path);
   const full = rel && resolveIn(req.ctx.user, rel);
   if (full && fs.existsSync(full) && fs.statSync(full).isFile()) {
+    const { size } = fs.statSync(full);
+    const used = usage(req.ctx.user.username);
     fs.unlinkSync(full);
-    usageCache.delete(req.ctx.user.username);
+    usageCache.set(req.ctx.user.username, { total: used.total - size, count: used.count - 1 });
     const root = siteDir(req.ctx.user.username);
     for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
     markUpdated(req.ctx.user.id);
@@ -814,6 +865,7 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   } catch {
     return fail('Not moved: a file is in the way of that path.');
   }
+  usageCache.set(user.username, { ...usage(user.username) }); // same totals, new entry: a refresh walking mid-move may have counted it twice or not at all
   const root = siteDir(user.username);
   for (let d = path.dirname(src); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
   // a .txt renamed to .html becomes a page, so it gets the same phishing check a saved page does
@@ -1033,12 +1085,16 @@ const housekeeping = () => {
   } catch (e) { console.error('housekeeping failed:', e.message); }
 };
 setInterval(housekeeping, 3600000).unref();
+const refreshAll = () => refreshUsage().catch((e) => console.error('disk totals refresh failed:', e.message));
+setInterval(refreshAll, 3600000).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
 app.forgetUsage = (name) => usageCache.delete(name); // for tests that put files on disk behind the app's back
+app.refreshUsage = refreshUsage;
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);
   app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
+  refreshAll(); // so the first /admin view after a restart reads stored totals
 }

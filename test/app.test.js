@@ -928,6 +928,128 @@ test('the space-used line stays right through uploads, edits, replacements and d
   U.dirSize = realWalk;
 });
 
+test('disk totals come from the background refresh, not from walking folders on each request', async () => {
+  const m = await member('outside');
+  const shown = async () => (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/in (\d+) file/)[1];
+  const before = await shown();
+  fs.writeFileSync(path.join(process.env.DATA_DIR, 'sites', 'outside', 'restored.txt'), 'x'); // a restore, behind the app's back
+  const realWalk = U.dirSize;
+  let walks = 0;
+  U.dirSize = (...a) => { walks++; return realWalk(...a); };
+  try {
+    assert.equal(await shown(), before);
+    assert.equal(walks, 0);
+    await app.refreshUsage();
+    assert.equal(await shown(), String(Number(before) + 1));
+    assert.equal(walks, 0); // the refresh walks off the main thread, not with the blocking walker
+
+    // an upload that lands while the refresh is walking is not undone by the walk's older totals
+    const realAsync = U.dirSizeAsync;
+    let release;
+    // only this site's walk is held, until the upload has landed
+    U.dirSizeAsync = async (dir) => { const stale = await realAsync(dir); if (dir.endsWith('outside')) await new Promise((r) => { release = r; }); return stale; };
+    try {
+      const refreshing = app.refreshUsage();
+      while (!release) await new Promise(setImmediate);
+      await upload(m, 'during.txt', 'x');
+      release();
+      await refreshing;
+    } finally { U.dirSizeAsync = realAsync; }
+    assert.equal(await shown(), String(Number(before) + 2));
+
+    // a move while the refresh walks may be counted twice or missed, so that walk's totals are dropped too
+    release = null;
+    U.dirSizeAsync = async (dir) => { if (dir.endsWith('outside')) await new Promise((r) => { release = r; }); return dir.endsWith('outside') ? { total: 0, count: 0 } : realAsync(dir); };
+    try {
+      const refreshing = app.refreshUsage();
+      while (!release) await new Promise(setImmediate);
+      await req('post', '/dashboard/move').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, from: 'during.txt', to: 'moved.txt' });
+      release();
+      await refreshing;
+    } finally { U.dirSizeAsync = realAsync; }
+    assert.equal(await shown(), String(Number(before) + 2));
+  } finally { U.dirSize = realWalk; }
+});
+
+test('the style editor writes puppypad.css, reads it back, keeps hand-written CSS and links it into the front page once asked', async () => {
+  const m = await member('stylish');
+  const root = path.join(process.env.DATA_DIR, 'sites', 'stylish');
+  const css = path.join(root, 'puppypad.css');
+  const page = async (q = '') => (await req('get', `/dashboard/style${q}`).set('Cookie', m.cookie)).text;
+  const save = (s) => req('post', '/dashboard/style').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...s });
+  const style = require('../src/style');
+  const night = { ...style.PRESETS.night };
+  delete night.name;
+
+  let text = await page();
+  assert.match(text, /<option selected>Comic Sans<\/option>/); // the sky preset until something is saved
+  assert.doesNotMatch(text, /Add it to index.html/);
+  assert.match(await page('?preset=night'), /value="#14141f"/);
+
+  assert.equal((await save(night)).status, 302);
+  assert.deepEqual(style.parse(fs.readFileSync(css, 'utf8')), night);
+  text = await page();
+  assert.match(text, /<option selected>solid<\/option>/);
+  assert.match(text, /Add it to index.html/);
+
+  // hand-written CSS below the block survives a save
+  fs.appendFileSync(css, '\nh1 { color: hotpink; }\n');
+  app.forgetUsage('stylish');
+  await save({ ...night, font: 'Georgia' });
+  assert.match(fs.readFileSync(css, 'utf8'), /--font: Georgia.*\n[^]*h1 \{ color: hotpink; \}/);
+  assert.equal(fs.readFileSync(css, 'utf8').match(/puppypad-style:/g).length, 2); // one block: its opening and closing comments
+
+  // anything not on the form's lists is refused, and nothing is written
+  const before = fs.readFileSync(css, 'utf8');
+  for (const bad of [{ font: 'x;}</style>' }, { page: 'red' }, { width: '99999' }, { cursor: 'url(evil)' }]) {
+    assert.match(decodeURIComponent((await save({ ...night, ...bad })).headers.location), /err=Pick each setting/);
+  }
+  assert.equal(fs.readFileSync(css, 'utf8'), before);
+
+  await req('post', '/dashboard/style/link').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.match(index, /<\/style>\n<link rel="stylesheet" href="\/puppypad.css">/);
+  await req('post', '/dashboard/style/link').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), index); // only once
+  assert.doesNotMatch(await page(), /Add it to index.html/);
+});
+
+test('a puppypad.css written by hand is kept whole below the new block', () => {
+  const style = require('../src/style');
+  const s = style.clean(style.PRESETS.pastel);
+  const out = style.merge('body { margin: 0; }\n', s);
+  assert.ok(out.startsWith('/* puppypad-style: '));
+  assert.ok(out.endsWith('*/\nbody { margin: 0; }\n'));
+  assert.deepEqual(style.parse(out), s);
+  assert.equal(style.merge(out, s), out); // saving the same settings again changes nothing
+  assert.equal(style.parse('/* puppypad-style: {"page":"red"} */'), null);
+  assert.equal(style.tail(`${out}h1 { color: red; }`), '\nbody { margin: 0; }\nh1 { color: red; }'); // the preview puts it after the new block, as the saved file does
+  // only a real, active <link> counts, and the new one goes after every style block
+  assert.equal(style.hasLink('<a href="/puppypad.css">css</a><!-- <link rel="stylesheet" href="/puppypad.css"> -->'), false);
+  assert.equal(style.hasLink('<link rel="stylesheet" href="puppypad.css">'), true);
+  assert.equal(style.hasLink('<link rel="preload" href="/puppypad.css" as="style">'), false);
+  assert.equal(style.hasLink('<link rel="stylesheet" href="/puppypad.css.bak">'), false);
+  assert.equal(style.tail('body { margin: 0; }'), '\nbody { margin: 0; }'); // a file with no block previews whole, as it is saved
+  assert.equal(style.clean({ ...s, page: [s.page] }), null); // a repeated field is refused, not thrown on
+  assert.equal(style.link('<head><style>a{}</style><style>b{}</style></head>'), '<head><style>a{}</style><style>b{}</style><link rel="stylesheet" href="/puppypad.css">\n</head>');
+});
+
+test('a new page starts from the member\'s starter layout, linked to puppypad.css', async () => {
+  await req('post', '/signup').type('form').send({ username: 'scribe', email: 'scribe@example.com', password: 'longpassword1', agree: '1', starter: 'notebook' });
+  const res = await req('get', `/verify?token=${lastLink('verify')}`);
+  const cookie = res.headers['set-cookie'][0].split(';')[0];
+  const csrf = (await req('get', '/dashboard').set('Cookie', cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  const fresh = async (p) => (await req('get', `/dashboard/edit?path=${p}`).set('Cookie', cookie)).text;
+  let text = await fresh('about.html');
+  assert.match(text, /--desk/); // the notebook layout
+  assert.match(text, /&lt;\/style&gt;\n&lt;link rel=&quot;stylesheet&quot; href=&quot;\/puppypad.css&quot;&gt;/);
+  assert.doesNotMatch(await fresh('notes.txt'), /--desk/); // only pages get a layout
+  await req('post', '/dashboard/starter').set('Cookie', cookie).type('form').send({ _csrf: csrf, starter: 'arcade', confirm: '1' });
+  text = await fresh('more.html');
+  assert.match(text, /--tile-min/); // follows the starter picked since
+  assert.doesNotMatch(await fresh('index.html'), /puppypad\.css/); // an existing page opens as it is
+});
+
 test('password hashing does not block: hashes are made and checked asynchronously', async () => {
   let yielded = false;
   setImmediate(() => { yielded = true; });

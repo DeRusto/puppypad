@@ -6,12 +6,13 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 
 - Signup with email confirmation, login, password reset, email change (confirmed by link), account deletion (a deleted site's name is held for 90 days)
 - Four starter layouts to pick from at signup (`templates/`), each restyled from one block of colour and font variables; the dashboard spots a missing `index.html` and can put any starter back as the front page (asking first if one is there)
-- Per-member folder with drag-and-drop uploads (many files at once, with a progress bar), zip import (unpacks a whole site, with the same name, type and quota checks), folders (rename or move any file or folder), text editor, quota (50 MB), file-type allowlist, and a one-click download of the whole site as a zip
+- Per-member folder with drag-and-drop uploads (many files at once, with a progress bar), zip import (unpacks a whole site, with the same name, type and quota checks), folders (rename or move any file or folder), text editor, quota (500 MB), file-type allowlist, and a one-click download of the whole site as a zip
 - Member sites served on their own subdomain, with custom `not_found.html` and clean URLs (`/about` serves `about.html`)
 - Widgets: `/_hw/counter.svg`, `/_hw/guestbook` (owner can delete entries), webring prev/next/random (members join the ring from the dashboard)
 - Explore page with a screenshot of every site (new sites join it after their first edit and once they are `NEW_SITE_HOURS` old, 24 by default), sortable by recently updated, newest, most followed, most visited
 - Follows, a personal feed of updates from sites you follow, and a profile page per site (`/site/name`); a member can hide their site from all of these and from search engines
-- Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files
+- Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files; a new page starts from the member's starter layout
+- Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and a live preview; it writes `puppypad.css` and keeps any CSS written below its block
 - Moderation: public report form (linked from default 404/410 pages), `/admin` queue, take down / restore / delete, signup IPs, and a log of every moderator action
 - Log in with site name or email; `/healthz` for an uptime monitor
 - Abuse brakes: rate limits on signup, login, reports and guestbooks; honeypot fields; unconfirmed accounts purged after 3 days
@@ -139,7 +140,7 @@ Screenshots locally: `cd shots && npm install`, then run `APP_URL=http://localho
 - **Phishing**: saving or uploading an HTML page with a password field, a card-number field or a big brand name in its title puts the site in the `/admin` queue as an "Auto-flag" report and emails `ABUSE_EMAIL`. The site stays online until a moderator looks.
 - **Public Suffix List**: see `docs/public-suffix-list.md`.
 - **Screenshots**: the `shots` container opens every member page in headless Chromium. It blocks requests to IP addresses and internal hostnames, but for defense in depth also firewall that container from your private network and the cloud metadata address (169.254.169.254).
-- **Disk**: worst case is members x `QUOTA_MB`. Size the VPS disk or lower the quota.
+- **Disk**: worst case is members x `QUOTA_MB` (500 MB by default, so an 80 GB disk holds about 100 full sites). Add a volume before signups grow past that, keep a disk alert at 80%, or lower the quota.
 
 ## License
 
