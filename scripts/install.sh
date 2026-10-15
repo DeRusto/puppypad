@@ -221,6 +221,8 @@ echo "== switching ${old:-the git checkout} -> $target"
 put_files
 set_env PUPPYPAD_VERSION "$target"
 set_images "$app_img" "$shots_img" "$caddy_img"
+# .env keeps the quota an older .env.example wrote, so move the old 50 MB default to the current one
+if [ "$(env_val QUOTA_MB)" = 50 ]; then set_env QUOTA_MB 500; fi
 ensure_cron
 ensure_upgrade_dir
 
