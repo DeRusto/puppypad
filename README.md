@@ -20,7 +20,8 @@ deleted site's name is held for 90 days.
 - Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and
   a live preview. It writes `puppypad.css` and leaves any CSS below its block alone.
 - Limits from `.env`: `QUOTA_MB` of space per member (500 by default), `MAX_FILE_MB` per file,
-  `ZIP_MAX_MB` per import, `BANDWIDTH_MB` served per day, and a file-type allowlist. Raising
+  `ZIP_MAX_MB` per import and `BANDWIDTH_MB` served per day. File types follow a fixed allowlist
+  (`src/util.js`). Raising
   `QUOTA_MB` grows every site; lowering it only applies to new signups.
 
 **Serving.** Each site is served on its own subdomain, with clean URLs (`/about` serves `about.html`)
@@ -29,9 +30,9 @@ and an optional custom `not_found.html`. Built-in widgets: `/_hw/counter.svg`, `
 
 **Community.** The Explore page shows a screenshot of every site, sortable by recently updated,
 newest, most followed and most visited. Members can follow sites and read a feed of their updates,
-and every site has a profile page (`/site/name`). A new site appears in these after its first edit,
-once it is `NEW_SITE_HOURS` old (24 by default). A member can hide their site from all of them and
-from search engines.
+and every site has a profile page (`/site/name`). A new site joins Explore, the home page, the
+webring and `/random` after its first edit, once it is `NEW_SITE_HOURS` old (24 by default). A
+member can hide their site from all of these and from search engines.
 
 **Moderation.** A public report form (linked from the default 404/410 pages), an `/admin` queue,
 take down / restore / delete, signup IPs and a log of every moderator action. HTML that looks like
