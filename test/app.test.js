@@ -695,14 +695,18 @@ test('visitors can sign a guestbook and the entry shows', async () => {
 });
 
 test('guestbook holds link entries and refuses blocked words', async () => {
-  await member('modpad');
-  db.prepare("UPDATE users SET gb_words = 'viagra' WHERE username = 'modpad'").run();
+  const m = await member('modpad');
+  const owner = (path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  await owner('settings', { words: 'viagra' });
   const sign = (message) => req('post', '/_hw/guestbook', 'modpad.pad.test').type('form').send({ name: 'V', message });
   assert.equal((await sign('buy at http://spam.example')).status, 302);
   assert.equal((await sign('cheap VIAGRA')).status, 400);
   const page = await req('get', '/_hw/guestbook', 'modpad.pad.test');
   assert.doesNotMatch(page.text, /spam\.example/);
-  assert.equal(db.prepare("SELECT approved FROM guestbook WHERE message LIKE '%spam.example'").get().approved, 0);
+  const held = db.prepare("SELECT id, approved FROM guestbook WHERE message LIKE '%spam.example'").get();
+  assert.equal(held.approved, 0);
+  await owner('approve', { id: held.id });
+  assert.match((await req('get', '/_hw/guestbook', 'modpad.pad.test')).text, /spam\.example/);
 });
 
 test('guestbook owner can block an entry\'s IP, unblock it, and cannot touch other owners\' entries', async () => {
