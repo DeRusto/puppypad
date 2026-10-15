@@ -12,7 +12,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,
 .box{background-color:var(--pad);background-image:repeating-linear-gradient(45deg,transparent 0 21px,#d6eafa 21px 22px),repeating-linear-gradient(-45deg,transparent 0 21px,#d6eafa 21px 22px);border:4px ridge var(--edge);padding:12px;min-width:0;overflow-wrap:anywhere}
 header.box{text-align:center}
 h1{font:700 clamp(32px,9vw,56px)/1.05 "Comic Sans MS","Comic Neue","Chalkboard SE",cursive;margin:0;color:var(--blue);text-align:center;
-background:radial-gradient(ellipse 46% 60% at 50% 62%,var(--pee) 0 60%,transparent 62%)}
+background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20640%20110'%20preserveAspectRatio='none'%3E%3Cpath%20fill='%23ffe14d'%20d='M30%2058C26%2038%2052%2026%2088%2028C104%2014%20142%2012%20168%2020C196%208%20246%2010%20268%2020C298%208%20344%2012%20364%2024C398%2014%20436%2020%20452%2034C492%2030%20522%2044%20518%2064C524%2084%20496%2096%20462%2094C434%20106%20376%20106%20350%2096C318%20108%20254%20108%20228%2097C192%20107%20128%20105%20104%2094C68%20100%2038%2090%2034%2074C26%2068%2027%2064%2030%2058Z'/%3E%3Cellipse%20fill='%23ffffff'%20opacity='.35'%20cx='180'%20cy='40'%20rx='90'%20ry='9'%20transform='rotate(-3%20180%2040)'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='540'%20cy='82'%20rx='12'%20ry='5'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='14'%20cy='80'%20rx='8'%20ry='4'/%3E%3C/svg%3E") no-repeat center 58%/58% 118%}
 h1 a,h1 a:visited,h1 a:hover{color:inherit;text-decoration:none;background:none}
 .tagline{font-style:italic;color:var(--soft);margin:2px 0 8px}
 h2{font:700 24px "Comic Sans MS","Comic Neue",cursive;color:var(--blue);margin:0 0 8px}
