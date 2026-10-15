@@ -764,6 +764,7 @@ main.get('/dashboard/style', auth, canEdit, (req, res) => {
   res.send(V.styleEditor(req.ctx, m, {
     s: style.clean(preset) || style.parse(css) || style.clean(style.PRESETS.sky),
     page: index ?? starters.render(user.starter, user.username, cfg),
+    tail: style.tail(css),
     offerLink: css !== null && index !== null && !style.hasLink(index),
   }));
 });

@@ -996,6 +996,11 @@ test('a puppypad.css written by hand is kept whole below the new block', () => {
   assert.deepEqual(style.parse(out), s);
   assert.equal(style.merge(out, s), out); // saving the same settings again changes nothing
   assert.equal(style.parse('/* puppypad-style: {"page":"red"} */'), null);
+  assert.equal(style.tail(`${out}h1 { color: red; }`), '\nbody { margin: 0; }\nh1 { color: red; }'); // the preview puts it after the new block, as the saved file does
+  // only a real, active <link> counts, and the new one goes after every style block
+  assert.equal(style.hasLink('<a href="/puppypad.css">css</a><!-- <link rel="stylesheet" href="/puppypad.css"> -->'), false);
+  assert.equal(style.hasLink('<link rel="stylesheet" href="puppypad.css">'), true);
+  assert.equal(style.link('<head><style>a{}</style><style>b{}</style></head>'), '<head><style>a{}</style><style>b{}</style><link rel="stylesheet" href="/puppypad.css">\n</head>');
 });
 
 test('a new page starts from the member\'s starter layout, linked to puppypad.css', async () => {

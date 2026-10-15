@@ -398,7 +398,7 @@ draw();
 })();</script>`, { wide: true, head });
 };
 
-const styleEditor = (ctx, m, { s, page, offerLink }) => {
+const styleEditor = (ctx, m, { s, page, tail, offerLink }) => {
   const opts = (list, cur) => list.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
   const colour = (k, label) => `<label for="st-${k}">${label}</label><input type="color" id="st-${k}" name="${k}" value="${esc(s[k])}">`;
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
@@ -417,11 +417,11 @@ ${colour('page', 'Page colour')}${colour('text', 'Text colour')}${colour('link',
 <div><label for="preview">Live preview of your front page (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div></div></section>
 <script>(function(){
 var form=document.getElementById('stform'),frame=document.getElementById('preview');
-var page=${json(`<base href="${ctx.cfg.siteUrl(ctx.user.username)}/">`)}+${json(page)},fonts=${json(style.FONTS)};
+var page=${json(`<base href="${ctx.cfg.siteUrl(ctx.user.username)}/">`)}+${json(page)},fonts=${json(style.FONTS)},tail=${json(tail)};
 var block=${style.block.toString()};
-// the preview runs in a sandboxed frame with no access to your login; the new styles go last, so they win over the saved ones
+// the preview runs in a sandboxed frame with no access to your login; the new block and your own CSS below it go last, as on the saved page
 function draw(){var s={};for(var i=0;i<form.elements.length;i++){var e=form.elements[i];if(e.name)s[e.name]=e.value}
-  frame.srcdoc=page+'<style>'+block(s,fonts).replace(/<\\//g,'')+'</style>'}
+  frame.srcdoc=page+'<style>'+(block(s,fonts)+tail).replace(/<\\//g,'')+'</style>'}
 form.addEventListener('input',draw);draw();
 })();</script>`, { wide: true });
 };

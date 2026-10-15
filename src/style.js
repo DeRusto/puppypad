@@ -58,13 +58,15 @@ function merge(old, s) {
 }
 
 const LINK = '<link rel="stylesheet" href="/puppypad.css">';
-const hasLink = (html) => /href=["']?\/?puppypad\.css/i.test(html);
-// the page with the stylesheet linked after its <style>, so it wins over the page's own rules
+const hasLink = (html) => /<link[^>]*href=["']?\/?puppypad\.css/i.test(html.replace(/<!--[^]*?-->/g, ''));
+// the page with the stylesheet linked after its styles (at the end of <head>), so it wins over the page's own rules
 function link(html) {
-  const style = html.search(/<\/style>/i);
-  if (style >= 0) return `${html.slice(0, style + 8)}\n${LINK}${html.slice(style + 8)}`;
   const head = html.search(/<\/head>/i);
-  return head >= 0 ? `${html.slice(0, head)}${LINK}\n${html.slice(head)}` : `${LINK}\n${html}`;
+  if (head >= 0) return `${html.slice(0, head)}${LINK}\n${html.slice(head)}`;
+  const style = html.toLowerCase().lastIndexOf('</style>');
+  return style >= 0 ? `${html.slice(0, style + 8)}\n${LINK}${html.slice(style + 8)}` : `${LINK}\n${html}`;
 }
+// what the member wrote below the generated block, which comes after it on the live page too
+const tail = (css) => (css && parse(css) && css.includes(END) ? css.slice(css.indexOf(END) + END.length) : '');
 
-module.exports = { FONTS, BORDERS, CURSORS, COLOURS, PRESETS, clean, block, parse, merge, hasLink, link };
+module.exports = { FONTS, BORDERS, CURSORS, COLOURS, PRESETS, clean, block, parse, merge, tail, hasLink, link };
