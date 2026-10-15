@@ -510,6 +510,8 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
 <p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy' });
 
+// polls /healthz and reloads only once the app answers, so the restart mid-upgrade doesn't strand the page on a browser error
+const follow = (ctx) => `<script nonce="${esc(ctx.nonce || '')}">(function f(){setTimeout(function(){fetch('/healthz').then(function(r){if(r.ok)location.replace('/admin');else f();},f);},5000);})();</script>`;
 const upgradeBox = (ctx, u) => {
   if (!u) return '';
   const when = (t) => (t ? ago(t) : 'never');
@@ -518,7 +520,7 @@ const upgradeBox = (ctx, u) => {
   if (!u.watcher) {
     return `<h3>Server version</h3><p>The upgrade watcher is not running on the server${u.seenAt ? ` (last seen ${ago(u.seenAt)})` : ''}. scripts/install.sh adds it to cron; see "Upgrades" in the README.</p>`;
   }
-  const status = busy ? `<p><strong>${u.status === 'running' ? 'Upgrading now.' : 'Waiting for the server to pick this up.'}</strong> Reload to follow it.</p>`
+  const status = busy ? `<p><strong>${u.status === 'running' ? 'Upgrading now.' : 'Waiting for the server to pick this up.'}</strong> This page refreshes itself until it finishes.</p>${follow(ctx)}`
     : u.status === 'failed' ? `<p class="err">The last upgrade failed ${when(u.finishedAt)}: ${esc(u.message)}</p>`
     : u.status === 'ok' ? `<p class="ok">Last upgrade finished ${when(u.finishedAt)}.</p>` : '';
   const release = u.url ? `<a href="${esc(u.url)}" target="_blank" rel="noopener">${esc(u.latest)}</a>` : esc(u.latest);

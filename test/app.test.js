@@ -964,12 +964,13 @@ test('admin upgrade button only asks the host watcher for the release it showed'
   const cookie = login.headers['set-cookie'][0].split(';')[0];
   const page = () => req('get', '/admin').set('Cookie', cookie);
   const csrf = (await page()).text.match(/name="_csrf" value="([^"]+)"/)[1];
-  const post = (body) => req('post', '/admin/upgrade').set('Cookie', cookie).type('form').send({ _csrf: csrf, ...body });
+  // answers redirect back to /admin, so a reload never re-sends the form; this returns the message they carry
+  const post = async (body) => decodeURIComponent((await req('post', '/admin/upgrade').set('Cookie', cookie).type('form').send({ _csrf: csrf, ...body })).headers.location);
   const dir = path.join(process.env.DATA_DIR, 'upgrade');
   const request = path.join(dir, 'request');
 
   assert.match((await page()).text, /upgrade watcher is not running/);
-  assert.match((await post({ action: 'check' })).text, /not running/);
+  assert.match(await post({ action: 'check' }), /^\/admin\?err=.*not running/);
   assert.ok(!fs.existsSync(request));
 
   const now = Math.floor(Date.now() / 1000);
@@ -980,12 +981,15 @@ test('admin upgrade button only asks the host watcher for the release it showed'
   assert.match(shown, /Add &lt;b&gt;things&lt;\/b&gt;/);
   assert.match(shown, /upgrade to v0\.10\.0/);
 
-  assert.match((await post({ action: 'upgrade', target: 'v0.11.0' })).text, /no longer the newest/);
-  assert.match((await post({ action: 'upgrade', target: 'v0.10.0; rm -rf /' })).text, /no longer the newest/);
+  assert.match(await post({ action: 'upgrade', target: 'v0.11.0' }), /no longer the newest/);
+  assert.match(await post({ action: 'upgrade', target: 'v0.10.0; rm -rf /' }), /no longer the newest/);
   assert.ok(!fs.existsSync(request));
-  await post({ action: 'upgrade', target: 'v0.10.0' });
+  assert.match(await post({ action: 'upgrade', target: 'v0.10.0' }), /^\/admin\?ok=Upgrade queued/);
   assert.equal(fs.readFileSync(request, 'utf8'), 'upgrade v0.10.0\n');
-  assert.match((await post({ action: 'check' })).text, /already under way/);
+  const following = (await req('get', '/admin?ok=Upgrade%20queued').set('Cookie', cookie)).text;
+  assert.match(following, /Upgrade queued/);
+  assert.match(following, /refreshes itself[\s\S]*fetch\('\/healthz'\)/);
+  assert.match(await post({ action: 'check' }), /already under way/);
   assert.equal(db.prepare("SELECT detail FROM admin_log WHERE action = 'upgrade'").get().detail, 'v0.9.0 -> v0.10.0');
 
   const other = await member('upgrade-nosy');
