@@ -257,12 +257,7 @@ site.use((req, res) => {
     return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
       .send(V.sitePage(cfg, 'This pad is resting', '<p>This site used up its bandwidth for today. It comes back at midnight UTC.</p>'));
   }
-  let refHost = '';
-  try { refHost = new URL(req.get('referer')).hostname; } catch {}
-  const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`);
-  if (hotlinked && HOTLINK_MEDIA.test(req.path) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
-    return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
-  }
+  // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
   res.on('finish', () => {
     const bytes = Number(res.get('Content-Length')) || 0;
     if (req.method === 'GET' && bytes) {
@@ -277,6 +272,12 @@ site.use((req, res) => {
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
+  let refHost = '';
+  try { refHost = new URL(req.get('referer')).hostname; } catch {}
+  const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`);
+  if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
+    return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
+  }
   if (rel.includes('\0') || rel.split('/').some((s) => s === '..' || s.startsWith('.'))) return notFound();
   let full = path.join(root, rel);
   if (!full.startsWith(root)) return notFound();

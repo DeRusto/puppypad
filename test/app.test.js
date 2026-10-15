@@ -1167,6 +1167,7 @@ test('bandwidth guard: daily cap per site, hotlinked media throttled, usage on d
   const get = (file, referer) => req('get', file, host).set('Referer', referer);
   for (let i = 0; i < 60; i++) assert.equal((await get('/dog.png', 'https://elsewhere.example/page')).status, 200);
   assert.equal((await get('/dog.png', 'https://elsewhere.example/page')).status, 429);
+  assert.equal((await get('/dog.pn%67', 'https://elsewhere.example/page')).status, 429); // encoded name is the same file
   assert.equal((await get('/dog.png', 'http://friend.pad.test/')).status, 200);
   assert.equal((await get('/', 'https://elsewhere.example/page')).status, 200);
   assert.equal((await req('get', '/dog.png', host)).status, 200);
