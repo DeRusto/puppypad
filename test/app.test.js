@@ -1053,3 +1053,28 @@ test('the webring holds only sites that joined it', async () => {
   await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '0' });
   assert.equal((await req('get', '/webring/random')).headers.location.includes('ringer'), false);
 });
+
+test('a hidden site stays off listings, feeds and the ring, and asks not to be indexed', async () => {
+  const a = await member('shyone');
+  const f = await member('fanone');
+  db.prepare('UPDATE users SET created_at = ?, updates = 1, webring = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, 'shyone');
+  await req('post', '/follow').set('Cookie', f.cookie).type('form').send({ _csrf: f.csrf, site: 'shyone' });
+  await req('post', '/dashboard/save').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, path: 'index.html', content: 'hi' });
+  assert.match((await req('get', '/browse')).text, /shyone/);
+  assert.match((await req('get', '/feed').set('Cookie', f.cookie)).text, /shyone/);
+  await req('post', '/dashboard/hidden').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, hidden: '1' });
+  assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Show my site again/);
+  assert.doesNotMatch((await req('get', '/browse')).text, /shyone/);
+  assert.doesNotMatch((await req('get', '/sitemap.xml')).text, /shyone/);
+  assert.doesNotMatch((await req('get', '/feed').set('Cookie', f.cookie)).text, /shyone/);
+  for (let i = 0; i < 5; i++) assert.doesNotMatch((await req('get', '/webring/random')).headers.location, /shyone/);
+  const page = await req('get', '/', 'shyone.pad.test');
+  assert.equal(page.status, 200);
+  assert.equal(page.headers['x-robots-tag'], 'noindex');
+  const profile = await req('get', '/site/shyone');
+  assert.equal(profile.status, 200);
+  assert.equal(profile.headers['x-robots-tag'], 'noindex');
+  await req('post', '/dashboard/hidden').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, hidden: '0' });
+  assert.match((await req('get', '/browse')).text, /shyone/);
+  assert.equal((await req('get', '/', 'shyone.pad.test')).headers['x-robots-tag'], undefined);
+});

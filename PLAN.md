@@ -168,8 +168,8 @@ signup. **Your step:** read both pages and make them match how you run things
 - Guestbook moderation: hold entries containing links for owner approval.
 - RSS/Atom feed per site and for the global "recently updated" list.
 - Rename my site: once every N days; the old name goes into the 90-day hold and redirects to the new one.
-- Hide from browse: a per-site switch that keeps it off `/browse`, the feed and the webring and sends
-  `X-Robots-Tag: noindex`.
+- ✅ Hide from browse: a dashboard switch (`users.hidden`) keeps the site off `/browse`, the home page, the
+  sitemap, `/random`, followers' feeds and the webring, and sends `X-Robots-Tag: noindex` on the site and its profile.
 - Broken link checker: the dashboard lists links and `src` attributes in the member's HTML that point
   at their own files that don't exist.
 - Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
