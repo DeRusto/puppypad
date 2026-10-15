@@ -127,6 +127,9 @@ const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
 const listed = () => `${LIVE} AND hidden = 0 AND updates > 0 AND created_at <= ${listedSince()}`;
 const isListed = (u) => !!(u.verified && !u.banned && !u.hidden && u.updates > 0 && u.created_at <= listedSince());
 const siteDir = (name) => path.join(SITES_DIR, name);
+// Each member keeps the largest QUOTA_MB they have had: raising it in .env grows every site, lowering it only affects new signups
+db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
+const quotaMB = (user) => Math.max(user.quota_mb || 0, cfg.QUOTA_MB);
 
 function makeToken(userId, kind, ttl) {
   const t = U.newToken();
@@ -512,8 +515,8 @@ main.post('/signup', async (req, res) => {
   const t = now();
   let id;
   try {
-    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, starter, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-      .run(username, email, pwHash, req.ip, starter, t, t).lastInsertRowid;
+    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)')
+      .run(username, email, pwHash, req.ip, starter, cfg.QUOTA_MB, t, t).lastInsertRowid;
   } catch (err) {
     // a twin signup for the same name or email landed while the human check ran, so the checks above are stale;
     // anything that is not a constraint violation (a locked or full db) is a server error, not a conflict
@@ -598,7 +601,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: quotaMB(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user) }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -636,7 +639,7 @@ function saveFiles(user, dir, files, skipped) {
     const old = exists && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
     if (!exists && count >= MAX_FILES) { skipped.push(`${f.name} (too many files: ${MAX_FILES} max)`); continue; }
     const bytes = f.data ? f.data.length : f.size;
-    if (used - old + bytes > cfg.QUOTA_MB * 1048576) { skipped.push(`${f.name} (over your ${cfg.QUOTA_MB} MB limit)`); continue; }
+    if (used - old + bytes > quotaMB(user) * 1048576) { skipped.push(`${f.name} (over your ${quotaMB(user)} MB limit)`); continue; }
     try {
       if (f.data) writeAtomic(full, f.data);
       else { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.renameSync(f.path, full); } // a rename replaces the old file in one step
@@ -734,7 +737,7 @@ function saveText(user, full, content) {
   const old = exists ? fs.statSync(full).size : 0;
   const used = usage(user.username);
   if (!exists && used.count >= MAX_FILES) return `your site already has ${MAX_FILES} files, the most we keep`;
-  if (used.total - old + size > cfg.QUOTA_MB * 1048576) return `this would go over your ${cfg.QUOTA_MB} MB limit`;
+  if (used.total - old + size > quotaMB(user) * 1048576) return `this would go over your ${quotaMB(user)} MB limit`;
   try {
     writeAtomic(full, content);
   } catch {
@@ -806,7 +809,7 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   const dirSize = usage(user.username);
   const old = exists ? fs.statSync(full).size : 0;
   if (!exists && dirSize.count >= MAX_FILES) return showDashboard(req, res, { err: `Your site already has ${MAX_FILES} files, the most we keep. Delete one first.` }, 400);
-  if (dirSize.total - old + Buffer.byteLength(content) > cfg.QUOTA_MB * 1048576) return showDashboard(req, res, { err: `That would go over your ${cfg.QUOTA_MB} MB limit. Free up some space first.` }, 400);
+  if (dirSize.total - old + Buffer.byteLength(content) > quotaMB(user) * 1048576) return showDashboard(req, res, { err: `That would go over your ${quotaMB(user)} MB limit. Free up some space first.` }, 400);
   try {
     writeAtomic(full, content);
   } catch {
