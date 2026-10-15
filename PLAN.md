@@ -187,6 +187,7 @@ signup. **Your step:** read both pages and make them match how you run things
   lists signups per day for 14 days, and shows each listed site's disk use. Bandwidth per site comes with the bandwidth guard.
 - More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
   80 GB VPS holds about 100 members at a full 500 MB, so add a volume and keep the 80% disk alert (§5).
+  Move site disk totals (`usage()`) to a background job first, so `/admin` and the dashboard stop walking big folders on each request.
 - Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can
   delete them. Same rate limits and honeypot as the guestbook.
 - Likes and comments on feed updates ("so-and-so updated their site").
