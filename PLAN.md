@@ -183,7 +183,8 @@ signup. **Your step:** read both pages and make them match how you run things
 - Weekly digest email of updates from followed sites (opt-in).
 - Staff picks and a "site of the week" on the home page (admin flag on `users`).
 - Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
-- Admin search and stats: find a member by name, email or IP; signups per day; disk and bandwidth per site.
+- ✅ Admin search and stats: `/admin` finds members by part of their name or email or by exact signup IP,
+  lists signups per day for 14 days, and shows each listed site's disk use. Bandwidth per site comes with the bandwidth guard.
 - More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
   80 GB VPS holds about 100 members at a full 500 MB, so add a volume and keep the 80% disk alert (§5).
 - Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can

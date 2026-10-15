@@ -604,6 +604,19 @@ test('admin actions land in the moderation log', async () => {
   assert.match(page.text, /repeat spam/);
 });
 
+test('admin finds members by name, email or signup IP, and shows signups per day', async () => {
+  const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
+  const cookie = login.headers['set-cookie'][0].split(';')[0];
+  await member('findme');
+  db.prepare("UPDATE users SET signup_ip = '203.0.113.9' WHERE username = 'findme'").run();
+  const find = async (q) => (await req('get', `/admin?q=${encodeURIComponent(q)}`).set('Cookie', cookie)).text;
+  for (const q of ['FINDM', 'findme@', '203.0.113.9']) assert.match(await find(q), />findme<\/a>/, q);
+  assert.doesNotMatch(await find('203.0.113'), /203\.0\.113\.9/); // IPs match whole, not in part
+  assert.match(await find('100%'), /No members found/);
+  const page = (await req('get', '/admin').set('Cookie', cookie)).text;
+  assert.match(page, new RegExp(`<td>${new Date().toISOString().slice(0, 10)}</td><td class="num">\\d+</td>`));
+});
+
 test('rename and move files and folders', async () => {
   const m = await member('shuffler');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'shuffler');
