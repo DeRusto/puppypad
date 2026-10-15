@@ -337,7 +337,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -400,6 +400,18 @@ ${broken.length ? `<p>These links and images in your pages point at files your s
 ${broken.length > 500 ? `<p class="note">...and ${broken.length - 500} more.</p>` : ''}` : '<p class="ok" role="status">No broken links. Every link and image in your pages points at a file you have.</p>'}
 <p class="note">Links to other websites aren't checked.</p>
 <p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+
+const statTable = (head, rows, cell) => (rows.length ? `<div class="scroll"><table><tr><th>${head}</th><th>Views</th></tr>${rows.map((r) => `<tr><td>${cell(r)}</td><td class="num">${r.views}</td></tr>`).join('')}</table></div>` : '<p class="note">Nothing yet.</p>');
+const stats = (ctx, { days, pages, referrers }) => {
+  const url = ctx.cfg.siteUrl(ctx.user.username);
+  return layout(ctx, 'Visitor stats', `
+<section class="box"><h2>Visitor stats</h2>
+<p>Page views on your site over the last 30 days. We count them without cookies and without keeping anyone's address, and leave out search engine robots.</p>
+<h3>Views per day</h3>${statTable('Day (UTC)', days, (r) => esc(r.day))}
+<h3>Top pages</h3>${statTable('Page', pages, (r) => `<a href="${esc(url)}${esc(r.path)}" target="_blank">${esc(r.path)}</a>`)}
+<h3>Where visitors came from</h3>${statTable('Website', referrers, (r) => esc(r.host))}
+<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+};
 
 const CM = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
 // sha384 of each pinned file CM points at; if the version in CM ever changes, recompute these or the editor will not load
@@ -601,6 +613,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <li><b>Your account:</b> site name, email address, and a scrambled (hashed) copy of your password. We use your email only for confirmation, password resets and messages about your site.</li>
 <li><b>Your site:</b> the files you upload, your description, your hit count, who you follow, and a screenshot of your front page for the directory.</li>
 <li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse. Guestbook and report addresses are erased after 90 days; your signup address is kept until you delete your account.</li>
+<li><b>Visitor counts:</b> each site counts its page views per day and the names of the websites visitors came from, without cookies or IP addresses. Only the site's owner sees them, and they are deleted after 30 days.</li>
 <li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
 </ul>
 <h3>Who else sees it</h3>
@@ -688,4 +701,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };

@@ -47,6 +47,8 @@ const now = () => Date.now();
 const today = () => new Date().toISOString().slice(0, 10); // UTC
 const bwToday = (u) => (u.bw_day === today() ? u.bw_bytes : 0);
 const HOTLINK_MEDIA = /\.(png|jpe?g|gif|webp|ico|bmp|svg|midi?|mp3|ogg|wav)$/i;
+const BOT_UA = /bot|crawl|spider|slurp|preview|headless/i; // shortcut: a word list, not a bot database
+const STATS_DAYS = 30;
 const HOTLINK_PER_MIN = 60; // media requests a minute per site from pages on other domains
 
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
@@ -281,11 +283,21 @@ site.use((req, res) => {
     return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
       .send(V.sitePage(cfg, 'This pad is resting', '<p>This site used up its bandwidth for today. It comes back at midnight UTC.</p>'));
   }
+  let refHost = '';
+  try { refHost = new URL(req.get('referer')).hostname; } catch {}
+  let page = false; // set once the request resolves to a page
   // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
   res.on('finish', () => {
     const bytes = Number(res.get('Content-Length')) || 0;
     if (req.method === 'GET' && bytes) {
       db.prepare('UPDATE users SET bw_bytes = (CASE WHEN bw_day = @day THEN bw_bytes ELSE 0 END) + @bytes, bw_day = @day WHERE id = @id').run({ day: today(), bytes, id: req.owner.id });
+    }
+    // visitor stats: pages only, crawlers left out, and only the name of the website a visitor came from
+    // a 304 is a returning visitor whose browser kept the page
+    if (req.method === 'GET' && page && (res.statusCode === 200 || res.statusCode === 304) && !BOT_UA.test(req.get('user-agent') || '')) {
+      const at = { id: req.owner.id, day: today() };
+      db.prepare('INSERT INTO page_views (user_id, day, path, views) VALUES (@id, @day, @path, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, path: req.path.slice(0, 200) });
+      if (refHost && refHost !== req.hostname) db.prepare('INSERT INTO referrers (user_id, day, host, views) VALUES (@id, @day, @host, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, host: refHost.slice(0, 200) });
     }
   });
   const root = siteDir(req.owner.username);
@@ -296,8 +308,6 @@ site.use((req, res) => {
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
-  let refHost = '';
-  try { refHost = new URL(req.get('referer')).hostname; } catch {}
   const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`);
   if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
     return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
@@ -314,6 +324,7 @@ site.use((req, res) => {
       if (req.path.endsWith('/') || path.extname(full)) return notFound();
       full += '.html';
     }
+    page = /\.html?$/i.test(full);
     res.set('Cache-Control', 'public, max-age=60');
     res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
   });
@@ -918,6 +929,15 @@ main.get('/dashboard/links', auth, async (req, res) => {
   if (!U.limit(`links:${req.ctx.user.id}`, 30, 3600000)) return showDashboard(req, res, { err: 'That is a lot of link checks. Try again in an hour.' }, 429);
   res.send(V.links(req.ctx, await U.brokenLinks(siteDir(req.ctx.user.username))));
 });
+const statsSince = () => new Date(now() - (STATS_DAYS - 1) * DAY).toISOString().slice(0, 10);
+main.get('/dashboard/stats', auth, (req, res) => {
+  const at = { id: req.ctx.user.id, since: statsSince() };
+  res.send(V.stats(req.ctx, {
+    days: db.prepare('SELECT day, SUM(views) views FROM page_views WHERE user_id = @id AND day >= @since GROUP BY day ORDER BY day DESC').all(at),
+    pages: db.prepare('SELECT path, SUM(views) views FROM page_views WHERE user_id = @id AND day >= @since GROUP BY path ORDER BY views DESC, path LIMIT 30').all(at),
+    referrers: db.prepare('SELECT host, SUM(views) views FROM referrers WHERE user_id = @id AND day >= @since GROUP BY host ORDER BY views DESC, host LIMIT 30').all(at),
+  }));
+});
 main.post('/dashboard/tagline', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET tagline = ? WHERE id = ?').run(String(req.body.tagline || '').trim().slice(0, 100), req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('Description saved.')}`);
@@ -1134,6 +1154,9 @@ const housekeeping = () => {
     db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
     db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+    const statsFrom = statsSince();
+    db.prepare('DELETE FROM page_views WHERE day < ?').run(statsFrom);
+    db.prepare('DELETE FROM referrers WHERE day < ?').run(statsFrom);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
     // daily guestbook digests: at most one a day per site, only when someone signed since the last
     for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {

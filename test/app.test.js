@@ -1442,3 +1442,25 @@ test('the editor offers the site images to insert into a page, and the uploader 
   // the page scripts at least parse
   for (const s of [...page.text.matchAll(/<script[^>]*>([^]*?)<\/script>/g), ...dash.matchAll(/<script[^>]*>([^]*?)<\/script>/g)]) new Function(s[1]); // eslint-disable-line no-new-func
 });
+
+test('visitor stats count page views and referring sites per day without cookies, for 30 days', async () => {
+  const m = await member('stats-pad');
+  await upload(m, 'about.html', '<p>about</p>');
+  await upload(m, 'cat.png', 'png');
+  const host = 'stats-pad.pad.test';
+  await req('get', '/', host).set('Referer', 'https://friend.example/links');
+  await req('get', '/about', host).set('Referer', 'http://stats-pad.pad.test/');
+  await req('get', '/about', host);
+  await req('get', '/cat.png', host).set('Referer', 'https://friend.example/');
+  await req('get', '/missing.html', host);
+  await req('get', '/', host).set('User-Agent', 'Googlebot/2.1');
+  const res = await req('get', '/dashboard/stats').set('Cookie', m.cookie);
+  assert.equal(res.status, 200);
+  const id = db.prepare('SELECT id FROM users WHERE username = ?').get('stats-pad').id;
+  assert.deepEqual(db.prepare('SELECT path, views FROM page_views WHERE user_id = ? ORDER BY path').all(id), [{ path: '/', views: 1 }, { path: '/about', views: 2 }]);
+  assert.deepEqual(db.prepare('SELECT host, views FROM referrers WHERE user_id = ?').all(id), [{ host: 'friend.example', views: 1 }]);
+  assert.match(res.text, /friend\.example/);
+  db.prepare("UPDATE page_views SET day = '2000-01-01' WHERE user_id = ? AND path = '/'").run(id);
+  app.housekeeping();
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM page_views WHERE user_id = ?').get(id).n, 1);
+});

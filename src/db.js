@@ -80,6 +80,21 @@ CREATE TABLE IF NOT EXISTS admin_log (
   detail TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
+-- visitor stats: no cookies or IPs, just counts per UTC day, kept 30 days
+CREATE TABLE IF NOT EXISTS page_views (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  path TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day, path)
+);
+CREATE TABLE IF NOT EXISTS referrers (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  host TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day, host)
+);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id);
 CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at);
