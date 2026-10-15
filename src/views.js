@@ -449,8 +449,10 @@ draw();
 var pick=document.getElementById('imgpick'),root=${JSON.stringify(ctx.cfg.siteUrl(ctx.user.username)).replace(/</g, '\\u003c')};
 if(pick)pick.addEventListener('change',function(){
   var src='/'+pick.value,img=new Image();pick.value='';if(src==='/')return;
+  // remember where the cursor was when the image was picked: typing while it loads must not move the insert
+  var at=cm?cm.setBookmark(cm.getCursor()):null,s0=ta.selectionStart,s1=ta.selectionEnd;
   function put(w,h){var tag='<img src="'+src+'"'+(w?' width="'+w+'" height="'+h+'"':'')+' alt="">';
-    if(cm){cm.replaceSelection(tag);cm.focus()}else{ta.setRangeText(tag,ta.selectionStart,ta.selectionEnd,'end');ta.focus();draw()}}
+    if(cm){var pos=at.find()||cm.getCursor();at.clear();cm.replaceRange(tag,pos);cm.focus()}else{ta.setRangeText(tag,s0,s1,'end');ta.focus();draw()}}
   img.onload=function(){put(img.naturalWidth,img.naturalHeight)};img.onerror=function(){put()};img.src=root+src;
 });
 })();</script>`, { wide: true, head });

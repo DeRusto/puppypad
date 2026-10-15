@@ -96,17 +96,29 @@ async function brokenLinks(root) {
   const files = await listFiles(root);
   const have = new Set(files);
   const dirs = new Set(files.flatMap((f) => f.split('/').slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join('/'))));
-  const served = (p) => have.has(p) || ((p === '' || dirs.has(p)) && have.has(p ? `${p}/index.html` : 'index.html')) || (!path.posix.extname(p) && have.has(`${p}.html`));
+  // like the router: a folder serves its index.html, and only a path without a trailing slash or extension falls back to .html
+  const served = (p, slash) => (!slash && have.has(p)) || ((p === '' || dirs.has(p)) && have.has(p ? `${p}/index.html` : 'index.html')) || (!slash && !path.posix.extname(p) && have.has(`${p}.html`));
   const broken = [];
   for (const file of files.filter((f) => /\.html?$/i.test(f))) {
-    const html = await fs.promises.readFile(path.join(root, file), 'utf8');
+    let html = await fs.promises.readFile(path.join(root, file), 'utf8');
+    // a <base href> moves where the page's relative links point, as in the browser; it is no link itself
+    const baseTag = html.match(/<base\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/i);
+    let base = new URL(`http://x/${file}`);
+    try { if (baseTag) base = new URL((baseTag[1] ?? baseTag[2] ?? baseTag[3]).trim(), base); } catch { /* invalid: the browser ignores it too */ }
+    html = html.replace(/<base\b[^>]*>/gi, '');
     for (const m of html.matchAll(LINK_ATTR)) {
       const link = (m[1] ?? m[2] ?? m[3]).trim();
       // other sites, mail and script links, in-page anchors and the /_hw/ widgets are not files to check
       if (!link || link.startsWith('#') || link.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(link) || link.includes('{')) continue;
-      let p;
-      try { p = decodeURIComponent(new URL(link, `http://x/${file}`).pathname).slice(1).replace(/\/$/, ''); } catch { p = null; }
-      if (p !== null && (p === '_hw' || p.startsWith('_hw/') || served(p))) continue;
+      let p = null;
+      let slash = false;
+      try {
+        const u = new URL(link, base);
+        if (u.host !== 'x') continue; // the base points at another site
+        slash = u.pathname.length > 1 && u.pathname.endsWith('/');
+        p = decodeURIComponent(u.pathname).slice(1).replace(/\/$/, '');
+      } catch { /* malformed: reported below */ }
+      if (p !== null && (p === '_hw' || p.startsWith('_hw/') || served(p, slash))) continue;
       broken.push({ file, link });
     }
   }

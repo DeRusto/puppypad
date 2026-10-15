@@ -163,8 +163,12 @@ const tokenLive = (t, kind) => {
 };
 // Password hashing yields to other requests, so by the time it finishes a reset may have replaced the password
 // and logged every session out. Signed-in actions check that nothing like that happened before they act.
-const stillCurrent = (req, user) => q.userById.get(user.id)?.pw_hash === user.pw_hash &&
-  (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
+// A rename meanwhile counts too (renamed_at changes with every one): the request would act on the old name's folder.
+const stillCurrent = (req, user) => {
+  const cur = q.userById.get(user.id);
+  return !!cur && cur.pw_hash === user.pw_hash && cur.renamed_at === user.renamed_at &&
+    (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
+};
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
 function startSession(res, userId) {
@@ -303,8 +307,11 @@ site.use((req, res) => {
     // a 304 is a returning visitor whose browser kept the page
     if (req.method === 'GET' && page && (res.statusCode === 200 || res.statusCode === 304) && !BOT_UA.test(req.get('user-agent') || '')) {
       const at = { id: req.owner.id, day: today() };
-      db.prepare('INSERT INTO page_views (user_id, day, path, views) VALUES (@id, @day, @path, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, path: req.path.slice(0, 200) });
-      if (refHost && refHost !== req.hostname) db.prepare('INSERT INTO referrers (user_id, day, host, views) VALUES (@id, @day, @host, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, host: refHost.slice(0, 200) });
+      // a throw here would escape every handler and stop the server; the site may have been deleted while this page went out
+      try {
+        db.prepare('INSERT INTO page_views (user_id, day, path, views) VALUES (@id, @day, @path, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, path: req.path.slice(0, 200) });
+        if (refHost && refHost !== req.hostname) db.prepare('INSERT INTO referrers (user_id, day, host, views) VALUES (@id, @day, @host, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, host: refHost.slice(0, 200) });
+      } catch (e) { if (q.userById.get(req.owner.id)) console.error('visitor stats failed:', e.message); }
     }
   });
   const root = siteDir(req.owner.username);
@@ -475,7 +482,7 @@ function showProfile(req, res, name, m, status = 200) {
   const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
   if (!p) {
     const to = renamedTo(String(name).toLowerCase());
-    if (to) return res.redirect(301, `/site/${to}`);
+    if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}`);
     return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
   }
   const me = req.ctx.user;
@@ -517,7 +524,7 @@ main.get('/site/:name/feed.xml', (req, res) => {
   const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
   if (!p) {
     const to = renamedTo(String(req.params.name).toLowerCase());
-    return to ? res.redirect(301, `/site/${to}/feed.xml`) : res.sendStatus(404);
+    return to ? res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}/feed.xml`) : res.sendStatus(404);
   }
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   atom(res, {

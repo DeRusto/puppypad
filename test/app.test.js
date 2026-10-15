@@ -1523,3 +1523,14 @@ test('uploads can shrink big photos on the server, keeping name and type and dro
   const onDisk = U.dirSize(dir).total;
   assert.ok((await req('get', '/dashboard').set('Cookie', m.cookie)).text.includes(U.fmtBytes(onDisk)));
 });
+
+test('the link checker follows <base href> and trailing slashes like the router', async () => {
+  const m = await member('linkbase');
+  await upload(m, 'about.html', '<p>about</p>');
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'pics/cat.png.txt', content: 'x' });
+  await upload(m, 'index.html', '<a href="/about/">slash</a> <a href="/about">clean</a>');
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'page.html', content: '<base href="/pics/"><a href="cat.png.txt">ok</a> <a href="dog.txt">gone</a>' });
+  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'away.html', content: '<base href="https://elsewhere.example/"><img src="x.png">' });
+  const listed = [...(await req('get', '/dashboard/links').set('Cookie', m.cookie)).text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
+  assert.deepEqual(listed.sort(), ['/about/', 'dog.txt']);
+});
