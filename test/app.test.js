@@ -721,7 +721,7 @@ test('guestbook owner can block an entry\'s IP, unblock it, and cannot touch oth
   await post(m, 'block-ip', { id: mine });
   const ip = db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips;
   assert.ok(ip);
-  await sign('modown', 'again');
+  await req('post', '/_hw/guestbook', 'modown.pad.test').set('X-Forwarded-For', ip).type('form').send({ name: 'V', message: 'again' }); // req() gives each call a fresh IP
   assert.equal(db.prepare("SELECT COUNT(*) n FROM guestbook WHERE message = 'again'").get().n, 0);
   await post(m, 'unblock-ip', { ip });
   assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips, '');
