@@ -988,7 +988,8 @@ main.post('/dashboard/guestbook/notify', auth, (req, res) => {
   // the digest restarts from now, so switching from instant never repeats entries already mailed
   // saving the same setting again keeps entries already waiting for the digest
   if (GB_NOTIFY.includes(req.body.notify)) {
-    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now(), id: req.ctx.user.id });
+    // one ms back, so an entry signed in the same millisecond as the switch still makes the digest (it counts entries after gb_digest_at)
+    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now() - 1, id: req.ctx.user.id });
   }
   res.redirect('/dashboard/guestbook');
 });
