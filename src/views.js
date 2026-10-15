@@ -61,6 +61,9 @@ footer{text-align:center;font-size:13px}
 .drop{display:flex;flex-direction:column;gap:6px;border:3px dashed var(--edge);padding:12px;background:#fff}.drop.over{background:var(--pee)}
 progress{width:100%;max-width:460px}
 iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#fff}
+.pup{float:right;width:180px;height:auto;margin:0 0 8px 12px}
+.pup.left{float:left;margin:0 12px 8px 0}
+@media (max-width:560px){.pup,.pup.left{float:none;display:block;margin:0 auto 8px}}
 `;
 
 function layout(ctx, title, body, opts = {}) {
@@ -116,11 +119,11 @@ ${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}
   : `<p>The pad is clean. Make the first mess.</p>`);
 
 const home = (ctx, { recent, newest, total }) => layout(ctx, 'Home', `
-<section class="box"><h2>Your own pad on the web</h2>
+<section class="box"><img class="pup" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"><img class="pup left" src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"><h2>Your own pad on the web</h2>
 <p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
-<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p></section>
-<section class="box"><h2>Fresh accidents <small>(recently updated)</small></h2>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
-<section class="box"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}</section>`, {
+<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p><div style="clear:both"></div></section>
+<section class="box"><img class="pup" src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"><h2>Fresh accidents <small>(recently updated)</small></h2><div style="clear:right"></div>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
+<section class="box"><img class="pup" src="/img/pup-guestbook.webp" alt="Cartoon puppy with a pencil next to an open guestbook" width="180" height="114" loading="lazy"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}<div style="clear:both"></div></section>`, {
   fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
   description: `${ctx.cfg.SITE_NAME} is a free homepage host. Get yourname.${ctx.cfg.BASE_HOST}, ${ctx.cfg.QUOTA_MB} MB, a built-in editor, guestbook and hit counter. No templates, no algorithm \u2014 write your own HTML. Accidents welcome.`,
   path: '/',
