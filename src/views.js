@@ -297,7 +297,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${cfg.QUOTA_MB} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${cfg.QUOTA_MB} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -548,8 +548,8 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
 <h3>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h3>
 <form class="inline" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label> <input type="search" id="q" name="q" value="${esc(q)}"> <button>Search</button>${q ? ' <a href="/admin">clear</a>' : ''}</form>
-<div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th></tr>
-${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td></tr>`).join('') || '<tr><td colspan="6">No members found.</td></tr>'}</table></div>
+<div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th></tr>
+${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td></tr>`).join('') || '<tr><td colspan="7">No members found.</td></tr>'}</table></div>
 <h3>Signups per day</h3><div class="scroll"><table><tr><th>Day (UTC)</th><th>Signups</th></tr>
 ${signups.map((d) => `<tr><td>${d.day}</td><td class="num">${d.n}</td></tr>`).join('') || '<tr><td colspan="2">None in the last 14 days.</td></tr>'}</table></div>
 <h3>Moderation log</h3><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>

@@ -27,6 +27,7 @@ const cfg = {
   QUOTA_MB: Number(env.QUOTA_MB || 50),
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
+  BANDWIDTH_MB: Number(env.BANDWIDTH_MB || 1024), // per site per UTC day
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
@@ -42,6 +43,10 @@ const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long
 const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
 const IP_KEEP = 90 * DAY; // guestbook and report IPs are erased after this; the privacy page promises it
 const now = () => Date.now();
+const today = () => new Date().toISOString().slice(0, 10); // UTC
+const bwToday = (u) => (u.bw_day === today() ? u.bw_bytes : 0);
+const HOTLINK_MEDIA = /\.(png|jpe?g|gif|webp|ico|bmp|svg|midi?|mp3|ogg|wav)$/i;
+const HOTLINK_PER_MIN = 60; // media requests a minute per site from pages on other domains
 
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
   host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), secure: Number(env.SMTP_PORT) === 465,
@@ -248,6 +253,17 @@ site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }
 
 site.use((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return res.status(405).type('text').send('Method not allowed');
+  if (bwToday(req.owner) >= cfg.BANDWIDTH_MB * 1048576) {
+    return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
+      .send(V.sitePage(cfg, 'This pad is resting', '<p>This site used up its bandwidth for today. It comes back at midnight UTC.</p>'));
+  }
+  // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
+  res.on('finish', () => {
+    const bytes = Number(res.get('Content-Length')) || 0;
+    if (req.method === 'GET' && bytes) {
+      db.prepare('UPDATE users SET bw_bytes = (CASE WHEN bw_day = @day THEN bw_bytes ELSE 0 END) + @bytes, bw_day = @day WHERE id = @id').run({ day: today(), bytes, id: req.owner.id });
+    }
+  });
   const root = siteDir(req.owner.username);
   const notFound = () => {
     const custom = path.join(root, 'not_found.html');
@@ -256,6 +272,12 @@ site.use((req, res) => {
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
+  let refHost = '';
+  try { refHost = new URL(req.get('referer')).hostname; } catch {}
+  const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`);
+  if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
+    return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
+  }
   if (rel.includes('\0') || rel.split('/').some((s) => s === '..' || s.startsWith('.'))) return notFound();
   let full = path.join(root, rel);
   if (!full.startsWith(root)) return notFound();
@@ -565,7 +587,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), listed: isListed(user), hasIndex: hasIndex(user) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user) }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -916,7 +938,7 @@ const showAdmin = (req, res, m) => {
     q,
     reports: db.prepare("SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all(),
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, disk: usage(u.username).total })),
+    users: users.map((u) => ({ ...u, disk: usage(u.username).total, bandwidth: bwToday(u) })),
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
