@@ -892,23 +892,25 @@ const showAdmin = (req, res, m) => res.send(V.admin(req.ctx, m, {
   },
   upgrade: upgrade.readState(DATA_DIR),
 }));
-main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res));
+// ?ok= and ?err= carry the result of an upgrade request, redirected so a reload never re-sends the form
+main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
 // asks scripts/upgrade-watch.sh on the host to look for a new version or install one (see src/upgrade.js)
 main.post('/admin/upgrade', auth, adminOnly, (req, res) => {
+  const back = (kind, text) => res.redirect(`/admin?${kind}=${encodeURIComponent(text)}`);
   const st = upgrade.readState(DATA_DIR);
-  if (!st.watcher) return showAdmin(req, res, { err: 'The upgrade watcher is not running on the server. See "Upgrades" in the README.' });
-  if (st.request || st.status === 'queued' || st.status === 'running') return showAdmin(req, res, { err: 'An upgrade or check is already under way.' });
+  if (!st.watcher) return back('err', 'The upgrade watcher is not running on the server. See "Upgrades" in the README.');
+  if (st.request || st.status === 'queued' || st.status === 'running') return back('err', 'An upgrade or check is already under way.');
   if (req.body.action === 'check') {
     upgrade.writeRequest(DATA_DIR, 'check');
-    return showAdmin(req, res, { ok: 'Checking for a new release. Reload this page in a minute.' });
+    return back('ok', 'Checking for a new release.');
   }
   if (req.body.action === 'upgrade') {
     const target = String(req.body.target || '');
     // only the release this page showed, so nobody installs something they didn't see listed
-    if (!upgrade.TAG.test(target) || target !== st.latest || !st.behind) return showAdmin(req, res, { err: 'That release is no longer the newest one. Check again.' });
+    if (!upgrade.TAG.test(target) || target !== st.latest || !st.behind) return back('err', 'That release is no longer the newest one. Check again.');
     upgrade.writeRequest(DATA_DIR, `upgrade ${target}`);
     adminLog(req, 'upgrade', '', `${st.current || 'unknown'} -> ${target}`);
-    return showAdmin(req, res, { ok: 'Upgrade queued. The server backs up the database, then switches to the new release; the site blips for a few seconds. Reload this page to follow it.' });
+    return back('ok', 'Upgrade queued. The server backs up the database, then switches to the new release; the site blips for a few seconds.');
   }
   res.redirect('/admin');
 });
