@@ -14,9 +14,10 @@ deleted site's name is held for 90 days.
 - Four starter layouts (`templates/`), picked at signup and each styled from one block of colour and
   font variables. If `index.html` goes missing, the dashboard offers to put a starter back.
 - File manager: drag-and-drop uploads with a progress bar, folders, rename and move, zip import, and
-  a one-click download of the whole site as a zip.
+  a one-click download of the whole site as a zip. Uploads can shrink big photos in the browser
+  first, and the dashboard lists links and images that point at missing files.
 - Code editor (CodeMirror, from cdnjs) with a sandboxed live preview. New pages start from the
-  member's starter layout.
+  member's starter layout. An image picker inserts `<img>` with the picture's width and height.
 - Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and
   a live preview. It writes `puppypad.css` and leaves any CSS below its block alone.
 - Limits from `.env`: `QUOTA_MB` of space per member (500 by default), `MAX_FILE_MB` per file,
@@ -25,7 +26,9 @@ deleted site's name is held for 90 days.
   `QUOTA_MB` grows every site; lowering it only applies to new signups.
 
 **Serving.** Each site is served on its own subdomain, with clean URLs (`/about` serves `about.html`)
-and an optional custom `not_found.html`. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
+and an optional custom `not_found.html`. Members see views per page per day and the sites visitors
+came from for the last 30 days, counted without cookies or IP addresses. A member can rename their
+site once every `RENAME_DAYS` (30 by default); the old address redirects for the 90 days it is held. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
 (the owner can delete entries, and is emailed about new ones right away, in a daily digest or not at
 all) and webring prev/next/random links.
 

@@ -167,18 +167,18 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ Tags on profiles (`users.tags`, up to 5) and a search on `/browse` by site name or tag.
 - Guestbook moderation: hold entries containing links for owner approval.
 - ✅ Atom feed per site (`/site/name/feed.xml`) and for the global "recently updated" list (`/feed.xml`).
-- Rename my site: once every N days; the old name goes into the 90-day hold and redirects to the new one.
+- ✅ Rename my site: once every N days (`RENAME_DAYS`); the old name goes into the 90-day hold and redirects to the new one.
 - ✅ Hide from browse: a dashboard switch (`users.hidden`) keeps the site off `/browse`, the home page, the
   sitemap, `/random`, followers' feeds and the webring, and sends `X-Robots-Tag: noindex` on the site and its profile.
-- Broken link checker: the dashboard lists links and `src` attributes in the member's HTML that point
+- ✅ Broken link checker: the dashboard lists links and `src` attributes in the member's HTML that point
   at their own files that don't exist.
-- Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
+- ✅ Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
   with no cookies.
 - ✅ Bandwidth guard: a daily byte cap per site (`BANDWIDTH_MB`, counted per UTC day in `users.bw_day`/`bw_bytes`;
   over it, files get a 429 until midnight), and media hotlinked from other domains is capped at 60 requests a minute per site.
   The dashboard shows the member their bandwidth used today against that cap, and `/admin` shows it per site.
 - ✅ "New page" starts from the member's starter layout, already linked to `puppypad.css`.
-- Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
+- ✅ Image tools: optional resize and compress on upload (in the browser, before sending), and an image picker in the editor that inserts
   `<img>` with width and height.
 - ✅ Guestbook notifications: email the owner on new entries (instant, daily digest or off; daily by default).
 - Weekly digest email of updates from followed sites (opt-in).

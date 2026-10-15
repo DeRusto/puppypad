@@ -29,6 +29,7 @@ const cfg = {
   MAX_FILE_MB: Number(env.MAX_FILE_MB || 5),
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
   BANDWIDTH_MB: Number(env.BANDWIDTH_MB || 1024), // per site per UTC day
+  RENAME_DAYS: Number(env.RENAME_DAYS || 30), // a member renames their site at most once this often
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
@@ -140,6 +141,9 @@ const siteDir = (name) => path.join(SITES_DIR, name);
 db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
 const quotaMB = (user) => Math.max(user.quota_mb || 0, cfg.QUOTA_MB);
 
+// the current name of the site that gave up `name` in a rename, while that name is still held
+const renamedTo = (name) => db.prepare(`SELECT u.username FROM released_names r JOIN users u ON u.id = r.user_id WHERE r.name = ? AND r.released_at > ? AND ${LIVE}`).get(String(name), now() - NAME_HOLD)?.username;
+
 function makeToken(userId, kind, ttl) {
   const t = U.newToken();
   db.prepare('DELETE FROM tokens WHERE user_id = ? AND kind = ?').run(userId, kind);
@@ -235,6 +239,9 @@ const reportLink = (name) => `<p><small><a href="${cfg.BASE_URL}/report?site=${e
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
   if (!owner || !owner.verified) {
+    const to = renamedTo(req.siteName);
+    // a day's cache, not forever: once the hold ends someone else may take the old name
+    if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, cfg.siteUrl(to) + req.originalUrl);
     return res.status(404).send(V.sitePage(cfg, 'This pad is empty', `<p>The name <b>${U.esc(req.siteName)}</b> is not a site on ${U.esc(cfg.SITE_NAME)}. <a href="${cfg.BASE_URL}/signup">Roll out a pad of your own.</a></p>`));
   }
   if (owner.banned) return res.status(410).send(V.sitePage(cfg, 'This pad got rolled up', `<p>A moderator removed this site for breaking the house rules.</p>${reportLink(owner.username)}`));
@@ -466,7 +473,11 @@ main.get('/browse', (req, res) => {
 });
 function showProfile(req, res, name, m, status = 200) {
   const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
-  if (!p) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
+  if (!p) {
+    const to = renamedTo(String(name).toLowerCase());
+    if (to) return res.redirect(301, `/site/${to}`);
+    return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
+  }
   const me = req.ctx.user;
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   res.status(status).send(V.profile(req.ctx, m, {
@@ -504,7 +515,10 @@ main.get('/feed.xml', (req, res) => atom(res, {
 }));
 main.get('/site/:name/feed.xml', (req, res) => {
   const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
-  if (!p) return res.sendStatus(404);
+  if (!p) {
+    const to = renamedTo(String(req.params.name).toLowerCase());
+    return to ? res.redirect(301, `/site/${to}/feed.xml`) : res.sendStatus(404);
+  }
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   atom(res, {
     title: `${p.username} on ${cfg.SITE_NAME}`, path: `/site/${p.username}/feed.xml`, link: cfg.siteUrl(p.username) + '/',
@@ -519,7 +533,8 @@ const randomSite = (where) => (req, res) => {
 main.get('/random', randomSite(listed));
 main.get('/webring/random', randomSite(inRing));
 const webring = (next) => (req, res) => {
-  const from = q.userByName.get(String(req.query.from || '').toLowerCase());
+  const fromName = String(req.query.from || '').toLowerCase();
+  const from = q.userByName.get(fromName) || q.userByName.get(renamedTo(fromName) || ''); // old webring snippets still name the site's old name
   const id = from ? from.id : 0;
   const ring = inRing();
   const r = next
@@ -1034,6 +1049,40 @@ main.get('/account/email/confirm', (req, res) => {
   sendMail(user.email, `Your ${cfg.SITE_NAME} email was changed`,
     `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
   done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
+});
+// a new site name: the folder, screenshot and open reports follow, and the old name is held for 90 days, redirecting here
+main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
+  const user = req.ctx.user;
+  const name = String(req.body.username || '').trim().toLowerCase();
+  const fail = (err, code = 400) => showDashboard(req, res, { err }, code);
+  const wait = user.renamed_at + cfg.RENAME_DAYS * DAY - now();
+  if (wait > 0) return fail(`You can rename your site again in ${Math.ceil(wait / DAY)} day${Math.ceil(wait / DAY) === 1 ? '' : 's'}.`);
+  if (name === user.username) return fail('That is already your site name.');
+  if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
+  if (!U.limit(`rename:${user.id}`, 5, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Wrong password. Nothing was changed.');
+  if (!stillCurrent(req, user)) return res.redirect('/login');
+  // a member may take back a name they gave up themselves
+  const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
+  if (q.userByName.get(name) || (held && held.user_id !== user.id)) return fail('That site name is taken.');
+  const t = now();
+  try {
+    fs.mkdirSync(siteDir(user.username), { recursive: true });
+    db.transaction(() => {
+      db.prepare('UPDATE users SET username = ?, renamed_at = ?, shot_dirty = 1 WHERE id = ?').run(name, t, user.id);
+      db.prepare('DELETE FROM released_names WHERE name = ?').run(name);
+      db.prepare('INSERT OR REPLACE INTO released_names (name, released_at, user_id) VALUES (?, ?, ?)').run(user.username, t, user.id);
+      db.prepare('UPDATE reports SET site = ? WHERE site = ?').run(name, user.username);
+      fs.renameSync(siteDir(user.username), siteDir(name)); // last, so a failed move rolls the rows back
+    })();
+  } catch (err) {
+    if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); // a signup took it meanwhile
+    console.error('rename failed:', err.message);
+    return fail('Something went wrong renaming your site. Nothing was changed.', 500);
+  }
+  try { fs.renameSync(shotPath(user.username), shotPath(name)); } catch { /* none yet; shot_dirty brings one */ }
+  if (usageCache.has(user.username)) { usageCache.set(name, usageCache.get(user.username)); usageCache.delete(user.username); }
+  res.redirect(`/dashboard?ok=${encodeURIComponent(`Your site is now ${cfg.siteUrl(name)}. The old address redirects there for 90 days. Pages that spell out the old address or name need editing by hand.`)}`);
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);

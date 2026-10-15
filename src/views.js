@@ -388,7 +388,15 @@ ${starterForm(ctx, 'Use this starter')}</section>
 &lt;a href="${esc(cfg.BASE_URL)}/webring/next?from=${esc(user.username)}"&gt;Next &amp;gt;&amp;gt;&lt;/a&gt;</pre>
 <h3>Custom 404 page</h3><p>Upload a file named <code>not_found.html</code>.</p></section>
 
-<section class="box"><h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>
+${user.banned ? '' : `<section class="box"><h2>Rename my site</h2>
+${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
+    ? `<p>You renamed your site recently. You can rename it again on ${new Date(user.renamed_at + cfg.RENAME_DAYS * 86400000).toISOString().slice(0, 10)}.</p>`
+    : `<p>Pick a new name and your site moves to its new address, files, followers, guestbook and all. The old address redirects to the new one for 90 days, and nobody else can take it meanwhile. You can rename once every ${cfg.RENAME_DAYS} days.</p>
+<form class="stack" method="post" action="/dashboard/rename">${csrfField(ctx)}<label for="newname">New site name (3-30 lowercase letters, numbers or hyphens)</label>
+<input type="text" id="newname" name="username" required maxlength="30">
+<label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</section>
+
+`}<section class="box"><h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
 }

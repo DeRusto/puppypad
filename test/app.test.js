@@ -1464,3 +1464,39 @@ test('visitor stats count page views and referring sites per day without cookies
   app.housekeeping();
   assert.equal(db.prepare('SELECT COUNT(*) n FROM page_views WHERE user_id = ?').get(id).n, 1);
 });
+
+test('a member renames their site: everything follows, the old name redirects and is held, and renames wait RENAME_DAYS', async () => {
+  const m = await member('old-name');
+  await upload(m, 'about.html', '<p>about</p>');
+  const id = db.prepare('SELECT id FROM users WHERE username = ?').get('old-name').id;
+  const fan = await member('rename-fan');
+  await req('post', '/follow').set('Cookie', fan.cookie).type('form').send({ _csrf: fan.csrf, site: 'old-name' });
+  const rename = (username, password = 'longpassword1') => req('post', '/dashboard/rename').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username, password });
+
+  assert.match((await rename('new-name', 'wrongpassword')).text, /Wrong password/);
+  assert.match((await rename('rename-fan')).text, /That site name is taken/);
+  assert.match((await rename('admin')).text, /not available/);
+  const ok = await rename('new-name');
+  assert.equal(ok.status, 302);
+  assert.equal(db.prepare('SELECT username FROM users WHERE id = ?').get(id).username, 'new-name');
+  assert.equal((await req('get', '/about', 'new-name.pad.test')).status, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM follows WHERE followed_id = ?').get(id).n, 1);
+
+  const old = await req('get', '/about?x=1', 'old-name.pad.test');
+  assert.equal(old.status, 301);
+  assert.equal(old.headers.location, 'http://new-name.pad.test/about?x=1');
+  assert.equal((await req('get', '/site/old-name')).headers.location, '/site/new-name');
+  assert.equal((await req('get', '/site/old-name/feed.xml')).headers.location, '/site/new-name/feed.xml');
+  assert.match((await signup('old-name', 'squatter@example.com')).text, /That site name is taken/);
+
+  // too soon for another rename, but once the wait is over the member may take their old name back
+  assert.match((await rename('third-name')).text, /rename your site again in 30 days/);
+  db.prepare('UPDATE users SET renamed_at = 0 WHERE id = ?').run(id);
+  assert.equal((await rename('old-name')).status, 302);
+  assert.equal((await req('get', '/about', 'old-name.pad.test')).status, 200);
+  assert.equal((await req('get', '/', 'new-name.pad.test')).headers.location, 'http://old-name.pad.test/');
+
+  // once the site is gone, its old names stop redirecting
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  assert.equal((await req('get', '/', 'new-name.pad.test')).status, 404);
+});
