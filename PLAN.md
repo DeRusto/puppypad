@@ -163,7 +163,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ `/healthz` for the uptime monitor (§5): 200 when the database answers and at least 5% of the disk is free, 503 otherwise.
 
 **Phase B — community (weeks 4–8)**
-- Webring membership as opt-in (today every live site is in the ring).
+- ✅ Webring membership is opt-in: a Join/Leave button on the dashboard (`users.webring`, off by default). Prev, next and `/webring/random` only visit sites that joined; `/random` still picks any listed site.
 - Tags or categories on profiles, and a search on `/browse`.
 - Guestbook moderation: hold entries containing links for owner approval.
 - RSS/Atom feed per site and for the global "recently updated" list.

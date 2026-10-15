@@ -942,6 +942,7 @@ test('webring next and prev go the right way, with or without a trailing slash',
   const b = await member('ringb');
   for (const [m, n] of [[a, 'ringa'], [b, 'ringb']]) {
     await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'x.html', content: 'x' });
+    await req('post', '/dashboard/webring').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, webring: '1' });
     db.prepare('UPDATE users SET created_at = 0 WHERE username = ?').run(n); // past the new-site wait
   }
   for (const slash of ['', '/']) {
@@ -1034,4 +1035,17 @@ test('SEO: robots, sitemap, favicon, and page meta', async () => {
 
   const profile = await req('get', '/site/oldtimer');
   assert.match(profile.text, /<link rel="canonical" href="http:\/\/pad\.test\/site\/oldtimer">/);
+});
+
+test('the webring holds only sites that joined it', async () => {
+  const a = await member('ringer');
+  await member('loner');
+  for (const n of ['ringer', 'loner']) db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, n);
+  assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Join the webring/);
+  await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
+  assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Leave the webring/);
+  for (let i = 0; i < 10; i++) assert.doesNotMatch((await req('get', '/webring/random')).headers.location, /loner/);
+  assert.match((await req('get', '/webring/prev?from=loner')).headers.location, /ringer\./); // loner is not in the ring, so its neighbour is
+  await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '0' });
+  assert.equal((await req('get', '/webring/random')).headers.location.includes('ringer'), false);
 });

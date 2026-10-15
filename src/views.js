@@ -301,7 +301,7 @@ ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ba
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
-${d.listed || user.banned ? '' : `<p class="note">Your site is online, but it shows up in the dog park, on the home page and in the webring only after your first edit${cfg.NEW_SITE_HOURS > 0 ? ` and once it is ${cfg.NEW_SITE_HOURS} hours old` : ''}. Make it yours!</p>`}
+${d.listed || user.banned ? '' : `<p class="note">Your site is online, but it shows up in the dog park and on the home page only after your first edit${cfg.NEW_SITE_HOURS > 0 ? ` and once it is ${cfg.NEW_SITE_HOURS} hours old` : ''}. Make it yours!</p>`}
 <form class="stack" method="post" action="/dashboard/tagline">${csrfField(ctx)}<label for="tagline">One-line description for the site directory</label>
 <input type="text" id="tagline" name="tagline" maxlength="100" value="${esc(user.tagline)}"><button>Save description</button></form></section>
 
@@ -330,7 +330,11 @@ ${starterForm(ctx, 'Use this starter')}</section>
 ` : ''}<section class="box"><h2>Widgets</h2><p>Paste these into your HTML.</p>
 <h3>Hit counter</h3><pre>&lt;img src="/_hw/counter.svg" alt="hit counter"&gt;</pre>
 <h3>Guestbook</h3><pre>&lt;iframe src="/_hw/guestbook" width="100%" height="420"&gt;&lt;/iframe&gt;</pre>
-<h3>Webring</h3><pre>&lt;a href="${esc(cfg.BASE_URL)}/webring/prev?from=${esc(user.username)}"&gt;&amp;lt;&amp;lt; Prev&lt;/a&gt; |
+<h3>Webring</h3>
+<form class="stack" method="post" action="/dashboard/webring">${csrfField(ctx)}<input type="hidden" name="webring" value="${user.webring ? '0' : '1'}">
+<p>${user.webring ? 'Your site is in the webring. Visitors clicking Prev, Next or Random on other sites can land on yours.' : 'Your site is not in the webring. Join it and visitors of other sites can land on yours; you can leave any time.'}</p>
+<button>${user.webring ? 'Leave the webring' : 'Join the webring'}</button></form>
+<pre>&lt;a href="${esc(cfg.BASE_URL)}/webring/prev?from=${esc(user.username)}"&gt;&amp;lt;&amp;lt; Prev&lt;/a&gt; |
 &lt;a href="${esc(cfg.BASE_URL)}/webring/random"&gt;Random&lt;/a&gt; |
 &lt;a href="${esc(cfg.BASE_URL)}/webring/next?from=${esc(user.username)}"&gt;Next &amp;gt;&amp;gt;&lt;/a&gt;</pre>
 <h3>Custom 404 page</h3><p>Upload a file named <code>not_found.html</code>.</p></section>

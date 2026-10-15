@@ -116,7 +116,7 @@ const tempBudget = (bytes) => (req, res, next) => {
 };
 const dropTemp = (files) => { for (const f of files) if (f && f.path) fs.rmSync(f.path, { force: true }); };
 const LIVE = 'verified = 1 AND banned = 0';
-// live sites shown on the home page, the dog park, the webring and /random (profiles and addresses work for every live site)
+// live sites shown on the home page, the dog park and /random; the webring takes only those that joined it (profiles and addresses work for every live site)
 const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
 const listed = () => `${LIVE} AND updates > 0 AND created_at <= ${listedSince()}`;
 const isListed = (u) => !!(u.verified && !u.banned && u.updates > 0 && u.created_at <= listedSince());
@@ -423,16 +423,17 @@ main.get('/feed', (req, res) => {
     WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
   res.send(V.feed(req.ctx, { events, count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
 });
-const randomSite = (req, res) => {
-  const r = db.prepare(`SELECT username FROM users WHERE ${listed()} ORDER BY RANDOM() LIMIT 1`).get();
+const inRing = () => `${listed()} AND webring = 1`;
+const randomSite = (where) => (req, res) => {
+  const r = db.prepare(`SELECT username FROM users WHERE ${where()} ORDER BY RANDOM() LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 };
-main.get('/random', randomSite);
-main.get('/webring/random', randomSite);
+main.get('/random', randomSite(listed));
+main.get('/webring/random', randomSite(inRing));
 const webring = (next) => (req, res) => {
   const from = q.userByName.get(String(req.query.from || '').toLowerCase());
   const id = from ? from.id : 0;
-  const ring = listed();
+  const ring = inRing();
   const r = next
     ? db.prepare(`SELECT username FROM users WHERE ${ring} AND id > ? ORDER BY id LIMIT 1`).get(id) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id LIMIT 1`).get()
     : db.prepare(`SELECT username FROM users WHERE ${ring} AND id < ? ORDER BY id DESC LIMIT 1`).get(id || 1e15) || db.prepare(`SELECT username FROM users WHERE ${ring} ORDER BY id DESC LIMIT 1`).get();
@@ -790,6 +791,11 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
 main.post('/dashboard/tagline', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET tagline = ? WHERE id = ?').run(String(req.body.tagline || '').trim().slice(0, 100), req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('Description saved.')}`);
+});
+main.post('/dashboard/webring', auth, canEdit, (req, res) => {
+  const join = req.body.webring === '1';
+  db.prepare('UPDATE users SET webring = ? WHERE id = ?').run(join ? 1 : 0, req.ctx.user.id);
+  res.redirect(`/dashboard?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
 });
 main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null,
   db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id))));
