@@ -910,6 +910,10 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   const parent = to.split('/').slice(0, -1).join('/');
   res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
 });
+main.get('/dashboard/links', auth, async (req, res) => {
+  if (!U.limit(`links:${req.ctx.user.id}`, 30, 3600000)) return showDashboard(req, res, { err: 'That is a lot of link checks. Try again in an hour.' }, 429);
+  res.send(V.links(req.ctx, await U.brokenLinks(siteDir(req.ctx.user.username))));
+});
 main.post('/dashboard/tagline', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET tagline = ? WHERE id = ?').run(String(req.body.tagline || '').trim().slice(0, 100), req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('Description saved.')}`);

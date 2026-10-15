@@ -320,7 +320,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -374,6 +374,14 @@ ${starterForm(ctx, 'Use this starter')}</section>
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
 }
+
+const links = (ctx, broken) => layout(ctx, 'Broken links', `
+<section class="box"><h2>Broken links</h2>
+${broken.length ? `<p>These links and images in your pages point at files your site doesn't have. Fix the path, or upload the missing file.</p>
+<div class="scroll"><table><tr><th>Page</th><th>Points at</th></tr>${broken.slice(0, 500).map((b) => `<tr><td><a href="/dashboard/edit?path=${encodeURIComponent(b.file)}">${esc(b.file)}</a></td><td><code>${esc(b.link)}</code></td></tr>`).join('')}</table></div>
+${broken.length > 500 ? `<p class="note">...and ${broken.length - 500} more.</p>` : ''}` : '<p class="ok" role="status">No broken links. Every link and image in your pages points at a file you have.</p>'}
+<p class="note">Links to other websites aren't checked.</p>
+<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
 
 const CM = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
 // sha384 of each pinned file CM points at; if the version in CM ever changes, recompute these or the editor will not load
@@ -653,4 +661,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };

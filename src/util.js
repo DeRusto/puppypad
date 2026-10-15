@@ -74,6 +74,42 @@ function dirSize(dir) {
   return { total, count };
 }
 
+// every file under dir as a slash-separated path relative to it, read off the main thread
+async function listFiles(dir) {
+  const out = [];
+  const walk = async (d, pre) => {
+    for (const e of await fs.promises.readdir(d, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(path.join(d, e.name), `${pre}${e.name}/`);
+      else if (e.isFile()) out.push(pre + e.name);
+    }
+  };
+  if (fs.existsSync(dir)) await walk(dir, '');
+  return out;
+}
+
+// href and src values in a site's pages that point at its own files that don't exist, resolved the way the site router serves them
+const LINK_ATTR = /(?<![\w-])(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/gi;
+async function brokenLinks(root) {
+  const files = await listFiles(root);
+  const have = new Set(files);
+  const dirs = new Set(files.flatMap((f) => f.split('/').slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join('/'))));
+  const served = (p) => have.has(p) || ((p === '' || dirs.has(p)) && have.has(p ? `${p}/index.html` : 'index.html')) || (!path.posix.extname(p) && have.has(`${p}.html`));
+  const broken = [];
+  for (const file of files.filter((f) => /\.html?$/i.test(f))) {
+    const html = await fs.promises.readFile(path.join(root, file), 'utf8');
+    for (const m of html.matchAll(LINK_ATTR)) {
+      const link = (m[1] ?? m[2] ?? m[3]).trim();
+      // other sites, mail and script links, in-page anchors and the /_hw/ widgets are not files to check
+      if (!link || link.startsWith('#') || link.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(link) || link.includes('{')) continue;
+      let p;
+      try { p = decodeURIComponent(new URL(link, `http://x/${file}`).pathname).slice(1).replace(/\/$/, ''); } catch { p = null; }
+      if (p !== null && (p === '_hw' || p.startsWith('_hw/') || served(p))) continue;
+      broken.push({ file, link });
+    }
+  }
+  return broken;
+}
+
 // tiny in-memory rate limiter: true = allowed
 const buckets = new Map();
 function limit(key, max, windowMs) {
@@ -107,4 +143,4 @@ function phishSignals(html) {
 
 const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, limit, fmtBytes, phishSignals };
+module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, limit, fmtBytes, phishSignals };

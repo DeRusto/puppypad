@@ -1413,3 +1413,18 @@ test('guestbook emails: instant, a daily digest, or off; held entries say so', a
   await notify('bogus');
   assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
 });
+
+test('the link checker lists links and images that point at missing files of the site', async () => {
+  const m = await member('linkcheck');
+  await upload(m, 'about.html', '<p>about</p>');
+  await upload(m, 'cat.png', 'png');
+  await upload(m, 'index.html', `<a href="about.html">ok</a> <a href="/about">clean</a> <a href=about.html#top>anchor</a> <a href="./">home</a>
+<img src="cat.png"> <img data-src="lazy.png"> <img src='gone.png'> <a href="/nope/">dir</a> <a href="old.html?x=1">old</a>
+<a href="https://example.com/x.html">out</a> <a href="mailto:a@b.c">mail</a> <a href="#top">top</a> <img src="/_hw/counter.svg">`);
+  const res = await req('get', '/dashboard/links').set('Cookie', m.cookie);
+  assert.equal(res.status, 200);
+  const listed = [...res.text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
+  assert.deepEqual(listed, ['gone.png', '/nope/', 'old.html?x=1']);
+  await upload(m, 'index.html', '<a href="about.html">ok</a>');
+  assert.match((await req('get', '/dashboard/links').set('Cookie', m.cookie)).text, /No broken links/);
+});
