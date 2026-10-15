@@ -175,7 +175,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
   with no cookies.
 - Bandwidth guard: a daily byte cap per site, and throttling of media hotlinked from other domains.
-  The dashboard shows the member their bandwidth used this month against the allowance.
+  The dashboard shows the member their bandwidth used today against that cap.
 - "New page" starts from the member's starter layout, already linked to `puppypad.css`.
 - Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
   `<img>` with width and height.
