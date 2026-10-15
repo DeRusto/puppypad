@@ -204,7 +204,7 @@ if [ ! -f "$prevenv" ]; then
   existing=$(for f in $files; do [ -f "$f" ] && echo "$f"; done; true)
   if [ -n "$existing" ]; then tar -cf "$prev" $existing; else tar -cf "$prev" -T /dev/null; fi
   for f in $files; do [ -f "$f" ] || echo "$f"; done > .upgrade/prev.added
-  for k in PUPPYPAD_VERSION PUPPYPAD_APP_IMAGE PUPPYPAD_SHOTS_IMAGE PUPPYPAD_CADDY_IMAGE; do env_val $k; done > "$prevenv.tmp"
+  for k in PUPPYPAD_VERSION PUPPYPAD_APP_IMAGE PUPPYPAD_SHOTS_IMAGE PUPPYPAD_CADDY_IMAGE QUOTA_MB; do env_val $k; done > "$prevenv.tmp"
   mv -f "$prevenv.tmp" "$prevenv"
 else
   # the attempt that died may have been for another release: cover whatever paths this one adds to
@@ -269,6 +269,7 @@ tar -xf "$prev"
 for f in $added; do rm -f "$f"; done
 set_env PUPPYPAD_VERSION "$(prev_env 1)"
 set_images "$(prev_env 2)" "$(prev_env 3)" "$(prev_env 4)"
+q=$(prev_env 5); if [ -n "$q" ]; then set_env QUOTA_MB "$q"; fi # empty from an attempt saved before this line existed
 rm -f "$prevenv" # back on the last working state, so the next attempt starts from here
 docker compose up -d --remove-orphans || true
 # the database stays as the new release left it: schema changes are new tables and columns, which
