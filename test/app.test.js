@@ -1140,3 +1140,34 @@ test('a hidden site stays off listings, feeds and the ring, and asks not to be i
   assert.match((await req('get', '/browse')).text, /shyone/);
   assert.equal((await req('get', '/', 'shyone.pad.test')).headers['x-robots-tag'], undefined);
 });
+
+test('bandwidth guard: daily cap per site, hotlinked media throttled, usage on dashboard and admin', async () => {
+  const m = await member('bigpad');
+  await upload(m, 'index.html', '<p>hi</p>');
+  await upload(m, 'dog.png', 'png');
+  const host = 'bigpad.pad.test';
+  const bw = () => db.prepare("SELECT bw_day, bw_bytes FROM users WHERE username = 'bigpad'").get();
+  assert.equal((await req('get', '/', host)).status, 200);
+  assert.equal(bw().bw_bytes, 9);
+  assert.equal(bw().bw_day, new Date().toISOString().slice(0, 10));
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /Bandwidth today: 9 B of 1024 MB/);
+  const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
+  const admin = (await req('get', '/admin?q=bigpad').set('Cookie', login.headers['set-cookie'][0].split(';')[0])).text;
+  assert.match(admin, /<td class="num">9 B<\/td><\/tr>/);
+
+  // over the cap: files rest until midnight UTC; yesterday's bytes do not count
+  db.prepare("UPDATE users SET bw_bytes = ? WHERE username = 'bigpad'").run(1024 * 1048576);
+  const res = await req('get', '/', host);
+  assert.equal(res.status, 429);
+  assert.ok(Number(res.headers['retry-after']) <= 86400);
+  db.prepare("UPDATE users SET bw_day = '2000-01-01' WHERE username = 'bigpad'").run();
+  assert.equal((await req('get', '/', host)).status, 200);
+
+  // media embedded by another domain is throttled; member sites and pages are not
+  const get = (file, referer) => req('get', file, host).set('Referer', referer);
+  for (let i = 0; i < 60; i++) assert.equal((await get('/dog.png', 'https://elsewhere.example/page')).status, 200);
+  assert.equal((await get('/dog.png', 'https://elsewhere.example/page')).status, 429);
+  assert.equal((await get('/dog.png', 'http://friend.pad.test/')).status, 200);
+  assert.equal((await get('/', 'https://elsewhere.example/page')).status, 200);
+  assert.equal((await req('get', '/dog.png', host)).status, 200);
+});

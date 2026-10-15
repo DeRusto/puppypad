@@ -174,8 +174,9 @@ signup. **Your step:** read both pages and make them match how you run things
   at their own files that don't exist.
 - Visitor stats: views per page per day and top referrers, kept 30 days, counted in the site router
   with no cookies.
-- Bandwidth guard: a daily byte cap per site, and throttling of media hotlinked from other domains.
-  The dashboard shows the member their bandwidth used today against that cap.
+- ✅ Bandwidth guard: a daily byte cap per site (`BANDWIDTH_MB`, counted per UTC day in `users.bw_day`/`bw_bytes`;
+  over it, files get a 429 until midnight), and media hotlinked from other domains is capped at 60 requests a minute per site.
+  The dashboard shows the member their bandwidth used today against that cap, and `/admin` shows it per site.
 - "New page" starts from the member's starter layout, already linked to `puppypad.css`.
 - Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
   `<img>` with width and height.
@@ -184,7 +185,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - Staff picks and a "site of the week" on the home page (admin flag on `users`).
 - Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
 - ✅ Admin search and stats: `/admin` finds members by part of their name or email or by exact signup IP,
-  lists signups per day for 14 days, and shows each listed site's disk use. Bandwidth per site comes with the bandwidth guard.
+  lists signups per day for 14 days, and shows each listed site's disk use and bandwidth today.
 - More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
   80 GB VPS holds about 100 members at a full 500 MB, so add a volume and keep the 80% disk alert (§5).
   Move site disk totals (`usage()`) to a background job first, so `/admin` and the dashboard stop walking big folders on each request.
