@@ -906,17 +906,26 @@ main.post('/report', async (req, res) => {
 // who did what in /admin; names are stored as text so the log outlives deleted accounts
 const adminLog = (req, action, site, detail = '') => db.prepare('INSERT INTO admin_log (admin, action, site, detail, created_at) VALUES (?,?,?,?,?)')
   .run(req.ctx.user.username, action, site, detail, now());
-const showAdmin = (req, res, m) => res.send(V.admin(req.ctx, m, {
-  reports: db.prepare("SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all(),
-  log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-  users: db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all(),
-  stats: {
-    users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
-    banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned = 1').get().n,
-    open: db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n,
-  },
-  upgrade: upgrade.readState(DATA_DIR),
-}));
+const showAdmin = (req, res, m) => {
+  const q = String(req.query.q || '').trim().slice(0, 200);
+  // instr, not LIKE, so % and _ in the search are plain characters
+  const users = q
+    ? db.prepare('SELECT * FROM users WHERE instr(lower(username), lower(@q)) OR instr(lower(email), lower(@q)) OR signup_ip = @q ORDER BY id DESC LIMIT 50').all({ q })
+    : db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all();
+  res.send(V.admin(req.ctx, m, {
+    q,
+    reports: db.prepare("SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all(),
+    log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
+    users: users.map((u) => ({ ...u, disk: usage(u.username).total })),
+    signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
+    stats: {
+      users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
+      banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned = 1').get().n,
+      open: db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n,
+    },
+    upgrade: upgrade.readState(DATA_DIR),
+  }));
+};
 // ?ok= and ?err= carry the result of an upgrade request, redirected so a reload never re-sends the form
 main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
 // asks scripts/upgrade-watch.sh on the host to look for a new version or install one (see src/upgrade.js)
