@@ -944,6 +944,60 @@ test('disk totals come from the background refresh, not from walking folders on 
   } finally { U.dirSize = realWalk; }
 });
 
+test('the style editor writes puppypad.css, reads it back, keeps hand-written CSS and links it into the front page once asked', async () => {
+  const m = await member('stylish');
+  const root = path.join(process.env.DATA_DIR, 'sites', 'stylish');
+  const css = path.join(root, 'puppypad.css');
+  const page = async (q = '') => (await req('get', `/dashboard/style${q}`).set('Cookie', m.cookie)).text;
+  const save = (s) => req('post', '/dashboard/style').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...s });
+  const style = require('../src/style');
+  const night = { ...style.PRESETS.night };
+  delete night.name;
+
+  let text = await page();
+  assert.match(text, /<option selected>Comic Sans<\/option>/); // the sky preset until something is saved
+  assert.doesNotMatch(text, /Add it to index.html/);
+  assert.match(await page('?preset=night'), /value="#14141f"/);
+
+  assert.equal((await save(night)).status, 302);
+  assert.deepEqual(style.parse(fs.readFileSync(css, 'utf8')), night);
+  text = await page();
+  assert.match(text, /<option selected>solid<\/option>/);
+  assert.match(text, /Add it to index.html/);
+
+  // hand-written CSS below the block survives a save
+  fs.appendFileSync(css, '\nh1 { color: hotpink; }\n');
+  app.forgetUsage('stylish');
+  await save({ ...night, font: 'Georgia' });
+  assert.match(fs.readFileSync(css, 'utf8'), /--font: Georgia.*\n[^]*h1 \{ color: hotpink; \}/);
+  assert.equal(fs.readFileSync(css, 'utf8').match(/puppypad-style:/g).length, 2); // one block: its opening and closing comments
+
+  // anything not on the form's lists is refused, and nothing is written
+  const before = fs.readFileSync(css, 'utf8');
+  for (const bad of [{ font: 'x;}</style>' }, { page: 'red' }, { width: '99999' }, { cursor: 'url(evil)' }]) {
+    assert.match(decodeURIComponent((await save({ ...night, ...bad })).headers.location), /err=Pick each setting/);
+  }
+  assert.equal(fs.readFileSync(css, 'utf8'), before);
+
+  await req('post', '/dashboard/style/link').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.match(index, /<\/style>\n<link rel="stylesheet" href="\/puppypad.css">/);
+  await req('post', '/dashboard/style/link').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), index); // only once
+  assert.doesNotMatch(await page(), /Add it to index.html/);
+});
+
+test('a puppypad.css written by hand is kept whole below the new block', () => {
+  const style = require('../src/style');
+  const s = style.clean(style.PRESETS.pastel);
+  const out = style.merge('body { margin: 0; }\n', s);
+  assert.ok(out.startsWith('/* puppypad-style: '));
+  assert.ok(out.endsWith('*/\nbody { margin: 0; }\n'));
+  assert.deepEqual(style.parse(out), s);
+  assert.equal(style.merge(out, s), out); // saving the same settings again changes nothing
+  assert.equal(style.parse('/* puppypad-style: {"page":"red"} */'), null);
+});
+
 test('password hashing does not block: hashes are made and checked asynchronously', async () => {
   let yielded = false;
   setImmediate(() => { yielded = true; });

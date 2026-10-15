@@ -9,6 +9,7 @@ const U = require('./util');
 const V = require('./views');
 const { readZip, writeZip } = require('./zip');
 const starters = require('./starters');
+const style = require('./style');
 const upgrade = require('./upgrade');
 
 // ---------- config ----------
@@ -302,7 +303,7 @@ main.use((req, res, next) => { res.set('X-Frame-Options', 'DENY').set('Referrer-
 // Content-Security-Policy for the main site only: member sites run whatever their owners write, and get none.
 // The editor is left out too. Its live preview is an about:srcdoc frame, which inherits the page's policy, so any
 // policy there would also block the member's own scripts, images and <base> in the preview.
-const EDITOR_PATHS = new Set(['/dashboard/edit', '/dashboard/save']);
+const EDITOR_PATHS = new Set(['/dashboard/edit', '/dashboard/save', '/dashboard/style']);
 const csp = (nonce) => [
   "default-src 'self'",
   `script-src 'self' 'nonce-${nonce}' https://challenges.cloudflare.com`, // Turnstile on the signup form
@@ -720,31 +721,71 @@ main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : '', isNew: !exists }));
 });
+// write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
+function saveText(user, full, content) {
+  const size = Buffer.byteLength(content);
+  const exists = fs.existsSync(full) && fs.statSync(full).isFile();
+  const old = exists ? fs.statSync(full).size : 0;
+  const used = usage(user.username);
+  if (!exists && used.count >= MAX_FILES) return `your site already has ${MAX_FILES} files, the most we keep`;
+  if (used.total - old + size > cfg.QUOTA_MB * 1048576) return `this would go over your ${cfg.QUOTA_MB} MB limit`;
+  try {
+    writeAtomic(full, content);
+  } catch {
+    return 'a file or folder with that name is in the way';
+  }
+  usageCache.set(user.username, { total: used.total - old + size, count: used.count + (exists ? 0 : 1) });
+  return null;
+}
 main.post('/dashboard/save', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   const rel = U.safeRel(req.body.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(user, rel);
   if (!full) return res.status(400).send(V.notice(req.ctx, 'Cannot save', '<p>That file path is not allowed. <a href="/dashboard">Back to my site.</a></p>'));
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
-  const size = Buffer.byteLength(content);
-  const exists = fs.existsSync(full) && fs.statSync(full).isFile();
-  const old = exists ? fs.statSync(full).size : 0;
-  const dirSize = usage(user.username);
-  if (!exists && dirSize.count >= MAX_FILES) {
-    return res.status(400).send(V.editor(req.ctx, { err: `Not saved: your site already has ${MAX_FILES} files, the most we keep.` }, { rel, content, isNew: true }));
-  }
-  if (dirSize.total - old + size > cfg.QUOTA_MB * 1048576) {
-    return res.status(400).send(V.editor(req.ctx, { err: `Not saved: this would go over your ${cfg.QUOTA_MB} MB limit.` }, { rel, content, isNew: !old }));
-  }
-  try {
-    writeAtomic(full, content);
-  } catch {
-    return res.status(400).send(V.editor(req.ctx, { err: 'Not saved: a file or folder with that name is in the way.' }, { rel, content, isNew: true }));
-  }
-  usageCache.set(user.username, { total: dirSize.total - old + size, count: dirSize.count + (exists ? 0 : 1) });
+  const isNew = !(fs.existsSync(full) && fs.statSync(full).isFile());
+  const err = saveText(user, full, content);
+  if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew }));
   autoFlag(user, rel, content);
   markUpdated(user.id);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
+});
+// the style editor writes puppypad.css; it never touches a page without asking
+const readText = (full) => { try { return fs.readFileSync(full, 'utf8'); } catch { return null; } };
+main.get('/dashboard/style', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const root = siteDir(user.username);
+  const css = readText(path.join(root, 'puppypad.css'));
+  const index = readText(path.join(root, 'index.html'));
+  const preset = Object.hasOwn(style.PRESETS, req.query.preset) ? style.PRESETS[req.query.preset] : null;
+  const m = req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null;
+  res.send(V.styleEditor(req.ctx, m, {
+    s: style.clean(preset) || style.parse(css) || style.clean(style.PRESETS.sky),
+    page: index ?? starters.render(starters.DEFAULT, user.username, cfg),
+    offerLink: css !== null && index !== null && !style.hasLink(index),
+  }));
+});
+main.post('/dashboard/style', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const s = style.clean(req.body);
+  if (!s) return res.redirect(`/dashboard/style?err=${encodeURIComponent('Pick each setting from the form.')}`);
+  const full = path.join(siteDir(user.username), 'puppypad.css');
+  const err = saveText(user, full, style.merge(readText(full), s));
+  if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
+  markUpdated(user.id);
+  res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
+});
+main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const full = path.join(siteDir(user.username), 'index.html');
+  const html = readText(full);
+  if (html === null || style.hasLink(html)) return res.redirect('/dashboard/style');
+  const content = style.link(html);
+  const err = saveText(user, full, content);
+  if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not linked: ${err}.`)}`);
+  autoFlag(user, 'index.html', content);
+  markUpdated(user.id);
+  res.redirect(`/dashboard/style?ok=${encodeURIComponent('Your front page now uses puppypad.css.')}`);
 });
 // put a starter layout back as the front page: straight away when there is none, after a confirm when it would replace one
 main.post('/dashboard/starter', auth, canEdit, (req, res) => {

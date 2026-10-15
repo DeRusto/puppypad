@@ -1,5 +1,6 @@
 const { esc, fmtBytes, TEXT_EXT, extOf } = require('./util');
 const starters = require('./starters');
+const style = require('./style');
 
 const CSS = `
 /* look: a puppy pad. blue plastic backing with paw prints, white quilted boxes, and one yellow accent for the accidents */
@@ -334,7 +335,10 @@ ${d.hasIndex && !user.banned ? `<section class="box"><h2>Start over with a start
 <p>Want your front page back the way it started, or a different look? Pick a starter and it replaces your <code>index.html</code>. We ask before anything is overwritten, and your other files stay put.</p>
 ${starterForm(ctx, 'Use this starter')}</section>
 
-` : ''}<section class="box"><h2>Widgets</h2><p>Paste these into your HTML.</p>
+` : ''}${user.banned ? '' : `<section class="box"><h2>Colours and fonts</h2>
+<p>Restyle your pages without writing CSS: the <a href="/dashboard/style">style editor</a> writes <code>puppypad.css</code> for you.</p></section>
+
+`}<section class="box"><h2>Widgets</h2><p>Paste these into your HTML.</p>
 <h3>Hit counter</h3><pre>&lt;img src="/_hw/counter.svg" alt="hit counter"&gt;</pre>
 <h3>Guestbook</h3><pre>&lt;iframe src="/_hw/guestbook" width="100%" height="420"&gt;&lt;/iframe&gt;</pre>
 <h3>Webring</h3>
@@ -392,6 +396,34 @@ if(window.CodeMirror){
 }else{var t2;ta.addEventListener('input',function(){clearTimeout(t2);t2=setTimeout(draw,400)})}
 draw();
 })();</script>`, { wide: true, head });
+};
+
+const styleEditor = (ctx, m, { s, page, offerLink }) => {
+  const opts = (list, cur) => list.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  const colour = (k, label) => `<label for="st-${k}">${label}</label><input type="color" id="st-${k}" name="${k}" value="${esc(s[k])}">`;
+  const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
+  return layout(ctx, 'Style editor', `
+<section class="box"><h2>Style editor</h2>${msg(m)}
+<p>Pick colours, a font and borders. Saving writes <code>puppypad.css</code> at the top of your site; anything you write below its last line is kept.</p>
+${offerLink ? `<form class="stack" method="post" action="/dashboard/style/link">${csrfField(ctx)}<p class="note">Your front page does not use <code>puppypad.css</code> yet. Add <code>${esc('<link rel="stylesheet" href="/puppypad.css">')}</code> after its <code>${esc('<style>')}</code>?</p><button>Add it to index.html</button></form>` : ''}
+<p>Presets: ${Object.entries(style.PRESETS).map(([id, p]) => `<a href="/dashboard/style?preset=${id}">${esc(p.name)}</a>`).join(' | ')}</p>
+<div class="edwrap"><div><form class="stack" id="stform" method="post" action="/dashboard/style">${csrfField(ctx)}
+${colour('page', 'Page colour')}${colour('text', 'Text colour')}${colour('link', 'Link colour')}${colour('visited', 'Visited link colour')}
+<label for="st-font">Font</label><select id="st-font" name="font">${opts(Object.keys(style.FONTS), s.font)}</select>
+<label for="st-border">Box border style</label><select id="st-border" name="border">${opts(style.BORDERS, s.border)}</select>
+<label for="st-width">Page width in pixels</label><input type="number" id="st-width" name="width" min="320" max="2000" step="10" value="${s.width}">
+<label for="st-cursor">Cursor</label><select id="st-cursor" name="cursor">${opts(style.CURSORS, s.cursor)}</select>
+<button>Save puppypad.css</button></form><p><a href="/dashboard">Back to my pad</a></p></div>
+<div><label for="preview">Live preview of your front page (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div></div></section>
+<script>(function(){
+var form=document.getElementById('stform'),frame=document.getElementById('preview');
+var page=${json(`<base href="${ctx.cfg.siteUrl(ctx.user.username)}/">`)}+${json(page)},fonts=${json(style.FONTS)};
+var block=${style.block.toString()};
+// the preview runs in a sandboxed frame with no access to your login; the new styles go last, so they win over the saved ones
+function draw(){var s={};for(var i=0;i<form.elements.length;i++){var e=form.elements[i];if(e.name)s[e.name]=e.value}
+  frame.srcdoc=page+'<style>'+block(s,fonts).replace(/<\\//g,'')+'</style>'}
+form.addEventListener('input',draw);draw();
+})();</script>`, { wide: true });
 };
 
 const move = (ctx, m, { from, to, dir }) => {
@@ -582,4 +614,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };
