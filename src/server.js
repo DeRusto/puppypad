@@ -53,10 +53,11 @@ const mailer = env.SMTP_HOST ? nodemailer.createTransport({
   host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), secure: Number(env.SMTP_PORT) === 465,
   auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
 }) : null;
+// resolves true once the message is handed over, false when sending failed
 async function sendMail(to, subject, text) {
-  if (!mailer) { console.log(`[mail not configured] to=${to} subject="${subject}"\n${text}\n`); return; }
-  try { await mailer.sendMail({ from: env.MAIL_FROM || `${cfg.SITE_NAME} <noreply@${cfg.BASE_HOST}>`, to, subject, text }); }
-  catch (e) { console.error('mail failed:', e.message); }
+  if (!mailer) { console.log(`[mail not configured] to=${to} subject="${subject}"\n${text}\n`); return true; }
+  try { await mailer.sendMail({ from: env.MAIL_FROM || `${cfg.SITE_NAME} <noreply@${cfg.BASE_HOST}>`, to, subject, text }); return true; }
+  catch (e) { console.error('mail failed:', e.message); return false; }
 }
 
 // Cloudflare Turnstile. Fails closed: if Cloudflare cannot be reached, nobody signs up until it can.
@@ -905,7 +906,7 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   for (let d = path.dirname(src); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
   // a .txt renamed to .html becomes a page, so it gets the same phishing check a saved page does
   if (!dir && SCANNED.test(to) && !SCANNED.test(from)) autoFlag(user, to, fs.readFileSync(dst, 'utf8'));
-  markUpdated(user.id, [to]);
+  markUpdated(user.id, dir ? [] : [to]); // a folder is no page to link to
   const parent = to.split('/').slice(0, -1).join('/');
   res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
 });
@@ -937,7 +938,10 @@ main.post('/dashboard/guestbook/approve', auth, (req, res) => {
 });
 main.post('/dashboard/guestbook/notify', auth, (req, res) => {
   // the digest restarts from now, so switching from instant never repeats entries already mailed
-  if (GB_NOTIFY.includes(req.body.notify)) db.prepare('UPDATE users SET gb_notify = ?, gb_digest_at = ? WHERE id = ?').run(req.body.notify, now(), req.ctx.user.id);
+  // saving the same setting again keeps entries already waiting for the digest
+  if (GB_NOTIFY.includes(req.body.notify)) {
+    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now(), id: req.ctx.user.id });
+  }
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/settings', auth, (req, res) => {
@@ -1125,12 +1129,14 @@ const housekeeping = () => {
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
     // daily guestbook digests: at most one a day per site, only when someone signed since the last
     for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
-      const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? ORDER BY id LIMIT 100').all(u.id, u.gb_digest_at);
+      const cutoff = now();
+      const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
       if (!rows.length) continue;
-      db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(now(), u.id);
       const held = rows.filter((e) => !e.approved).length;
       sendMail(u.email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
-        `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.map(gbEntryText).join('\n\n')}\n\n${gbMailFooter}`);
+        `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(gbEntryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${gbMailFooter}`)
+        // only a digest that went out moves the cutoff, so a failed one is retried at the next hourly run
+        .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
     }
     // temp files are removed when their request ends; anything an hour old was orphaned
     for (const f of fs.readdirSync(UPLOAD_TMP)) {

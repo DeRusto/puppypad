@@ -1401,7 +1401,9 @@ test('guestbook emails: instant, a daily digest, or off; held entries say so', a
   // a day passes
   db.prepare('UPDATE users SET gb_digest_at = gb_digest_at - 86401000 WHERE username = ?').run('mailpad');
   db.prepare("UPDATE guestbook SET created_at = created_at - 86401000 WHERE user_id = (SELECT id FROM users WHERE username = 'mailpad')").run();
+  await notify('daily'); // saving the same setting keeps what waits for the digest
   app.housekeeping();
+  await new Promise(setImmediate); // the cutoff moves once the mail is handed over
   assert.equal(mailsTo(), 3);
   assert.match(mail.at(-1), /1 new guestbook entry on mailpad\.pad\.test/);
   assert.match(mail.at(-1), /digest one/);
