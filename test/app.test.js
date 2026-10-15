@@ -1000,6 +1000,10 @@ test('a puppypad.css written by hand is kept whole below the new block', () => {
   // only a real, active <link> counts, and the new one goes after every style block
   assert.equal(style.hasLink('<a href="/puppypad.css">css</a><!-- <link rel="stylesheet" href="/puppypad.css"> -->'), false);
   assert.equal(style.hasLink('<link rel="stylesheet" href="puppypad.css">'), true);
+  assert.equal(style.hasLink('<link rel="preload" href="/puppypad.css" as="style">'), false);
+  assert.equal(style.hasLink('<link rel="stylesheet" href="/puppypad.css.bak">'), false);
+  assert.equal(style.tail('body { margin: 0; }'), '\nbody { margin: 0; }'); // a file with no block previews whole, as it is saved
+  assert.equal(style.clean({ ...s, page: [s.page] }), null); // a repeated field is refused, not thrown on
   assert.equal(style.link('<head><style>a{}</style><style>b{}</style></head>'), '<head><style>a{}</style><style>b{}</style><link rel="stylesheet" href="/puppypad.css">\n</head>');
 });
 

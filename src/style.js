@@ -26,7 +26,7 @@ function clean(x) {
   if (!x || typeof x !== 'object') return null;
   const s = {};
   for (const k of COLOURS) {
-    if (!/^#[0-9a-f]{6}$/i.test(x[k])) return null;
+    if (typeof x[k] !== 'string' || !/^#[0-9a-f]{6}$/i.test(x[k])) return null; // a repeated form field arrives as an array
     s[k] = x[k].toLowerCase();
   }
   if (!Object.hasOwn(FONTS, x.font) || !BORDERS.includes(x.border) || !CURSORS.includes(x.cursor)) return null;
@@ -51,14 +51,15 @@ function parse(text) {
   const m = /^\/\* puppypad-style: (\{[^\n]*?\}) \*\//.exec(text || '');
   try { return m ? clean(JSON.parse(m[1])) : null; } catch { return null; }
 }
-// a new puppypad.css: the generated block, then whatever the member wrote below the old one (or the whole old file, if it had none)
-function merge(old, s) {
-  const at = old && parse(old) ? old.indexOf(END) : -1;
-  return block(s, FONTS) + (at < 0 ? `\n${old || ''}` : old.slice(at + END.length));
-}
+// what the member wrote below the generated block (or the whole file, if it has none); it stays after the block
+const tail = (css) => (css && parse(css) && css.includes(END) ? css.slice(css.indexOf(END) + END.length) : `\n${css || ''}`);
+// a new puppypad.css: the generated block, then the member's own CSS
+const merge = (old, s) => block(s, FONTS) + tail(old);
 
 const LINK = '<link rel="stylesheet" href="/puppypad.css">';
-const hasLink = (html) => /<link[^>]*href=["']?\/?puppypad\.css/i.test(html.replace(/<!--[^]*?-->/g, ''));
+// only an active stylesheet <link> applies the CSS: not a comment, an <a>, or a preload
+const hasLink = (html) => (html.replace(/<!--[^]*?-->/g, '').match(/<link\b[^>]*>/gi) || [])
+  .some((tag) => /\brel=["']?stylesheet\b/i.test(tag) && /\bhref=["']?\/?puppypad\.css(["'\s>]|$)/i.test(tag));
 // the page with the stylesheet linked after its styles (at the end of <head>), so it wins over the page's own rules
 function link(html) {
   const head = html.search(/<\/head>/i);
@@ -66,7 +67,5 @@ function link(html) {
   const style = html.toLowerCase().lastIndexOf('</style>');
   return style >= 0 ? `${html.slice(0, style + 8)}\n${LINK}${html.slice(style + 8)}` : `${LINK}\n${html}`;
 }
-// what the member wrote below the generated block, which comes after it on the live page too
-const tail = (css) => (css && parse(css) && css.includes(END) ? css.slice(css.indexOf(END) + END.length) : '');
 
 module.exports = { FONTS, BORDERS, CURSORS, COLOURS, PRESETS, clean, block, parse, merge, tail, hasLink, link };
