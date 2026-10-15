@@ -176,8 +176,12 @@ function usage(name) {
 }
 async function refreshUsage() {
   for (const { username } of db.prepare('SELECT username FROM users').all()) {
-    try { usageCache.set(username, U.dirSize(siteDir(username))); } catch { usageCache.delete(username); } // changed while walked: the next look rewalks
-    await new Promise(setImmediate); // one site at a time, so requests get in between
+    const before = usageCache.get(username);
+    try {
+      const fresh = await U.dirSizeAsync(siteDir(username));
+      // a write during the walk already stored newer totals, which the walk may have missed
+      if (usageCache.get(username) === before) usageCache.set(username, fresh);
+    } catch { usageCache.delete(username); } // changed while walked: the next look rewalks
   }
 }
 // resolve a member path inside their folder, or null

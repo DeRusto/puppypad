@@ -941,6 +941,21 @@ test('disk totals come from the background refresh, not from walking folders on 
     assert.equal(walks, 0);
     await app.refreshUsage();
     assert.equal(await shown(), String(Number(before) + 1));
+    assert.equal(walks, 0); // the refresh walks off the main thread, not with the blocking walker
+
+    // an upload that lands while the refresh is walking is not undone by the walk's older totals
+    const realAsync = U.dirSizeAsync;
+    let release;
+    // only this site's walk is held, until the upload has landed
+    U.dirSizeAsync = async (dir) => { const stale = await realAsync(dir); if (dir.endsWith('outside')) await new Promise((r) => { release = r; }); return stale; };
+    try {
+      const refreshing = app.refreshUsage();
+      while (!release) await new Promise(setImmediate);
+      await upload(m, 'during.txt', 'x');
+      release();
+      await refreshing;
+    } finally { U.dirSizeAsync = realAsync; }
+    assert.equal(await shown(), String(Number(before) + 2));
   } finally { U.dirSize = realWalk; }
 });
 
