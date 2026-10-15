@@ -26,11 +26,14 @@ deleted site's name is held for 90 days.
 
 **Serving.** Each site is served on its own subdomain, with clean URLs (`/about` serves `about.html`)
 and an optional custom `not_found.html`. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
-(the owner can delete entries) and webring prev/next/random links.
+(the owner can delete entries, and is emailed about new ones right away, in a daily digest or not at
+all) and webring prev/next/random links.
 
 **Community.** The Explore page shows a screenshot of every site, sortable by recently updated,
-newest, most followed and most visited. Members can follow sites and read a feed of their updates,
-and every site has a profile page (`/site/name`). A new site joins Explore, the home page, the
+newest, most followed and most visited, with a search by site name or tag (members add up to 5 tags).
+Members can follow sites and read a feed of their updates, which names the files each update changed,
+and every site has a profile page (`/site/name`). Atom feeds: `/site/name/feed.xml` per site and
+`/feed.xml` for recently updated sites. A new site joins Explore, the home page, the
 webring and `/random` after its first edit, once it is `NEW_SITE_HOURS` old (24 by default). A
 member can hide their site from all of these and from search engines.
 

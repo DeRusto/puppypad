@@ -24,7 +24,7 @@ nav{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center}
 form.inline{display:inline}
 form.stack{display:flex;flex-direction:column;gap:6px;max-width:460px}
 label{font-size:14px;color:var(--blue)}
-input[type=text],input[type=email],input[type=password],input[type=file],textarea,select{font:15px "Courier New",monospace;background:#fff;color:#000;border:2px inset var(--edge);padding:4px;width:100%;max-width:100%}
+input[type=text],input[type=search],input[type=email],input[type=password],input[type=file],textarea,select{font:15px "Courier New",monospace;background:#fff;color:#000;border:2px inset var(--edge);padding:4px;width:100%;max-width:100%}
 textarea.code{min-height:60vh;white-space:pre;tab-size:2}
 button{font:700 14px "Comic Sans MS","Comic Neue",cursive;background:var(--pee);color:var(--ink);border:3px outset #fff3a8;padding:3px 12px;cursor:pointer;align-self:flex-start}
 button:active{border-style:inset}
@@ -113,13 +113,15 @@ const siteList = (ctx, rows) => rows.length
 const shotImg = (ctx, r, link) => (r.shot
   ? `<a href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
   : `<a class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
+const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
 const cards = (ctx, rows) => (rows.length
   ? `<ul class="grid">${rows.map((r) => `<li class="card">${shotImg(ctx, r, ctx.cfg.siteUrl(r.username))}
 <div><a href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${esc(r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
-${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}
+${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div class="t">${tagLinks(r.tags)}</div>` : ''}
 <div class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div></li>`).join('')}</ul>`
   : `<p>The pad is clean. Make the first mess.</p>`);
 
+const ATOM_LINK = (title, href) => `<link rel="alternate" type="application/atom+xml" title="${esc(title)}" href="${esc(href)}">`;
 const home = (ctx, { recent, newest, total }) => layout(ctx, 'Home', `
 <section class="box"><img class="pup" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"><img class="pup left" src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"><h2>Your own pad on the web</h2>
 <p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
@@ -129,17 +131,31 @@ const home = (ctx, { recent, newest, total }) => layout(ctx, 'Home', `
   fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
   description: `${ctx.cfg.SITE_NAME} is a free homepage host. Get yourname.${ctx.cfg.BASE_HOST}, ${ctx.cfg.QUOTA_MB} MB, a built-in editor, guestbook and hit counter. No templates, no algorithm \u2014 write your own HTML. Accidents welcome.`,
   path: '/',
+  head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml'),
   jsonLd: JSON.stringify({ '@context': 'https://schema.org', '@type': 'WebSite', name: ctx.cfg.SITE_NAME, url: ctx.cfg.BASE_URL, description: 'Free old-web homepage host' }),
 });
 
 const SORT_LABELS = { updated: 'Recently updated', newest: 'Newest', followed: 'Most followed', hits: 'Most visited' };
-const browse = (ctx, { rows, page, pages, sort }) => layout(ctx, 'Dog park', `
+const browse = (ctx, { rows, page, pages, sort, q }) => {
+  const qs = q ? `&amp;q=${esc(encodeURIComponent(q))}` : '';
+  return layout(ctx, 'Dog park', `
 <section class="box"><h2>The dog park <small>(page ${page} of ${pages})</small></h2>
-<p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}">${l}</a>`)).join(' ')}</p>
-${cards(ctx, rows)}
-<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p></section>`, { wide: true, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}` });
+<form class="stack" method="get" action="/browse" role="search"><input type="hidden" name="sort" value="${esc(sort)}"><label for="q">Find a site by name or tag</label>
+<input type="search" id="q" name="q" maxlength="50" value="${esc(q)}"><button>Search</button></form>${q ? `<p><a href="/browse?sort=${sort}">Show every site</a></p>` : ''}
+<p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}${qs}">${l}</a>`)).join(' ')}</p>
+${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows)}
+<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
+<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { wide: true, noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
+};
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
+// "updated a.html, b.png and 3 more", each name passed through link; events from before files were recorded keep the old line
+const eventText = (e, link) => {
+  const files = e.kind === 'update' && e.files ? e.files.split('\n') : [];
+  if (!files.length) return EVENT_TEXT[e.kind] || esc(e.kind);
+  return `updated ${files.slice(0, 5).map(link).join(', ')}${files.length > 5 ? ` and ${files.length - 5} more` : ''}`;
+};
+const fileLinks = (e, url) => eventText(e, (f) => `<a href="${esc(url)}/${esc(f)}">${esc(f)}</a>`);
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
 const profile = (ctx, m, { p, following, events, followers, follows }) => {
   const url = ctx.cfg.siteUrl(p.username);
@@ -148,12 +164,13 @@ const profile = (ctx, m, { p, following, events, followers, follows }) => {
 <section class="box"><h2>${esc(p.username)}</h2>${msg(m)}<div class="prof">
 <div class="pic">${shotImg(ctx, p, url)}</div>
 <div class="info"><p><a href="${esc(url)}">${esc(url.replace(/^https?:\/\//, ''))}</a></p>
-${p.tagline ? `<p>${esc(p.tagline)}</p>` : ''}
+${p.tagline ? `<p>${esc(p.tagline)}</p>` : ''}${p.tags ? `<p>${tagLinks(p.tags)}</p>` : ''}
 <p>${p.followers} follower${p.followers === 1 ? '' : 's'} | ${p.updates} update${p.updates === 1 ? '' : 's'} | ${p.hits} hits<br>Joined ${ago(p.created_at)}, last updated ${ago(p.updated_at)}</p>
 ${mine ? '<p><a href="/dashboard">Edit my site</a></p>' : `<form class="inline" method="post" action="/follow">${csrfField(ctx)}<input type="hidden" name="site" value="${esc(p.username)}">
 <button name="action" value="${following ? 'unfollow' : 'follow'}">${following ? 'Unfollow' : ctx.user ? 'Follow' : 'Log in to follow'}</button></form>
 <p style="margin-top:10px"><a href="/report?site=${esc(p.username)}">Report this site</a></p>`}</div></div></section>
-<section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${EVENT_TEXT[e.kind] || esc(e.kind)} ${ago(e.created_at)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}</section>
+<section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${fileLinks(e, url)} ${ago(e.created_at)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}
+<p class="note"><a href="/site/${esc(p.username)}/feed.xml">Follow ${esc(p.username)} in a feed reader</a> (Atom).</p></section>
 <section class="box"><h2>Followers</h2>${nameLinks(followers)}<h3>Following</h3>${nameLinks(follows)}</section>
 ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/password">${csrfField(ctx)}<label for="curpw">Current password</label>
@@ -170,12 +187,13 @@ ${mine ? `<section class="box"><h2>Change password</h2>
     description: p.tagline ? `${p.tagline} \u2014 ${p.username}'s homepage on ${ctx.cfg.SITE_NAME}` : `${p.username}'s homepage on ${ctx.cfg.SITE_NAME}, a free old-web homepage host.`,
     path: `/site/${p.username}`,
     ogImage: p.shot ? `${ctx.cfg.BASE_URL}/shots/${p.username}.jpg` : undefined,
+    head: ATOM_LINK(`${p.username} on ${ctx.cfg.SITE_NAME}`, `/site/${p.username}/feed.xml`),
   });
 };
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
 <section class="box"><h2>Your feed</h2>
-${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${EVENT_TEXT[e.kind] || esc(e.kind)} ${ago(e.created_at)}${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}</div></li>`).join('')}</ul>`
+${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} ${ago(e.created_at)}${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}</div></li>`).join('')}</ul>`
     : count ? '<p>The sites you follow have been quiet. Updates show up here.</p>'
       : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`);
 
@@ -309,6 +327,8 @@ ${starterForm(ctx, 'Make my front page')}</div>` : ''}
 ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is online, but it shows up in the dog park, on the home page and in the webring (if you join it) only after your first edit${cfg.NEW_SITE_HOURS > 0 ? ` and once it is ${cfg.NEW_SITE_HOURS} hours old` : ''}. Make it yours!</p>`}
 <form class="stack" method="post" action="/dashboard/tagline">${csrfField(ctx)}<label for="tagline">One-line description for the site directory</label>
 <input type="text" id="tagline" name="tagline" maxlength="100" value="${esc(user.tagline)}"><button>Save description</button></form>
+<form class="stack" method="post" action="/dashboard/tags">${csrfField(ctx)}<label for="tags">Tags, so people can find your site in the dog park: up to 5, separated by spaces, like <code>pixel-art cats retro</code></label>
+<input type="text" id="tags" name="tags" maxlength="130" value="${esc(user.tags)}"><button>Save tags</button></form>
 <form class="stack" method="post" action="/dashboard/hidden">${csrfField(ctx)}<input type="hidden" name="hidden" value="${user.hidden ? '0' : '1'}">
 <p>${user.hidden ? 'Your site is hidden: it stays off the dog park, the home page, feeds and the webring, and asks search engines not to index it. Its address and profile still work.' : 'Want a quiet corner? Hide your site from browsing, feeds, the webring and search engines. Its address and profile keep working.'}</p>
 <button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form></section>
@@ -443,6 +463,9 @@ const guestbookAdmin = (ctx, m, rows, blocked = []) => layout(ctx, 'Guestbook en
 <div class="scroll"><table><tr><th>When</th><th>Name</th><th>Message</th><th></th></tr>
 ${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
 </table></div>
+<h3>Email me about new entries</h3>
+<form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.user.email)}. Entries waiting for your approval are marked.</label>
+<select id="gn" name="notify">${[['instant', 'Right away, one email per entry'], ['daily', 'Once a day, a digest'], ['off', 'Never']].map(([v, l]) => `<option value="${v}"${ctx.user.gb_notify === v ? ' selected' : ''}>${l}</option>`).join('')}</select><button>Save</button></form>
 <h3>Moderation</h3><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused (one per line). Posts from a blocked IP are silently dropped; visitor IPs are only kept for 90 days.</p>
 <p>Blocked IPs: ${blocked.map((ip) => `${esc(ip)} <form class="inline" method="post" action="/dashboard/guestbook/unblock-ip">${csrfField(ctx)}<input type="hidden" name="ip" value="${esc(ip)}"><button class="link">unblock</button></form>`).join(', ') || 'none'}</p>
 <form class="stack" method="post" action="/dashboard/guestbook/settings">${csrfField(ctx)}
@@ -608,6 +631,21 @@ const guestbook = (rows, err) => bare('Guestbook', `<h1>Sign the guestbook</h1>$
 <div class="hp" aria-hidden="true"><input name="website" tabindex="-1" autocomplete="off"></div><button>Sign it!</button></form>
 ${rows.map((r) => `<div class="e"><small>${esc(r.name)} wrote ${ago(r.created_at)}:</small><div>${esc(r.message)}</div></div>`).join('') || '<p>No entries yet. Be the first!</p>'}`);
 
+// one entry per feed event; the five characters esc() replaces are the ones XML needs escaped too
+const atom = (cfg, { title, path, link, events }) => {
+  const self = cfg.BASE_URL + path;
+  return `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>${esc(title)}</title><id>${esc(self)}</id><link rel="self" href="${esc(self)}"/><link href="${esc(link)}"/>
+<updated>${new Date(events.length ? events[0].created_at : 0).toISOString()}</updated>
+${events.map((e) => {
+    const url = cfg.siteUrl(e.username);
+    return `<entry><title>${esc(`${e.username} ${eventText(e, (f) => f)}`)}</title><id>tag:${esc(cfg.BASE_HOST)},2026:event-${e.id}</id><link href="${esc(url)}/"/>
+<updated>${new Date(e.created_at).toISOString()}</updated><author><name>${esc(e.username)}</name></author><content type="html">${esc(`<a href="${esc(url)}/">${esc(e.username)}</a> ${fileLinks(e, url)}`)}</content></entry>`;
+  }).join('\n')}
+</feed>
+`;
+};
+
 const counterSvg = (n) => {
   const d = String(n).padStart(6, '0');
   const w = d.length * 18 + 6;
@@ -615,4 +653,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg };
+module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
