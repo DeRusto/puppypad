@@ -63,6 +63,7 @@ progress{width:100%;max-width:460px}
 iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#fff}
 .pup{float:right;width:180px;height:auto;margin:0 0 8px 12px}
 .pup.left{float:left;margin:0 12px 8px 0}
+@media (min-width:561px) and (max-width:820px){.pup{width:120px}}
 @media (max-width:560px){.pup,.pup.left{float:none;display:block;margin:0 auto 8px}}
 `;
 
