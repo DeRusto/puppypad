@@ -865,6 +865,7 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   } catch {
     return fail('Not moved: a file is in the way of that path.');
   }
+  usageCache.set(user.username, { ...usage(user.username) }); // same totals, new entry: a refresh walking mid-move may have counted it twice or not at all
   const root = siteDir(user.username);
   for (let d = path.dirname(src); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
   // a .txt renamed to .html becomes a page, so it gets the same phishing check a saved page does

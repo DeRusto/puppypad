@@ -419,9 +419,10 @@ ${colour('page', 'Page colour')}${colour('text', 'Text colour')}${colour('link',
 var form=document.getElementById('stform'),frame=document.getElementById('preview');
 var page=${json(`<base href="${ctx.cfg.siteUrl(ctx.user.username)}/">`)}+${json(page)},fonts=${json(style.FONTS)},tail=${json(tail)};
 var block=${style.block.toString()};
-// the preview runs in a sandboxed frame with no access to your login; the new block and your own CSS below it go last, as on the saved page
+// the preview runs in a sandboxed frame with no access to your login; the new block and your own CSS below it go last, as on the saved page.
+// A CSS escape keeps a </style> in your CSS from closing the preview's <style> early; it still reads as </style>
 function draw(){var s={};for(var i=0;i<form.elements.length;i++){var e=form.elements[i];if(e.name)s[e.name]=e.value}
-  frame.srcdoc=page+'<style>'+(block(s,fonts)+tail).replace(/<\\//g,'')+'</style>'}
+  frame.srcdoc=page+'<style>'+(block(s,fonts)+tail).replace(/<\\/(style)/gi,'<\\\\/$1')+'</style>'}
 form.addEventListener('input',draw);draw();
 })();</script>`, { wide: true });
 };

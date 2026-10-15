@@ -956,6 +956,18 @@ test('disk totals come from the background refresh, not from walking folders on 
       await refreshing;
     } finally { U.dirSizeAsync = realAsync; }
     assert.equal(await shown(), String(Number(before) + 2));
+
+    // a move while the refresh walks may be counted twice or missed, so that walk's totals are dropped too
+    release = null;
+    U.dirSizeAsync = async (dir) => { if (dir.endsWith('outside')) await new Promise((r) => { release = r; }); return dir.endsWith('outside') ? { total: 0, count: 0 } : realAsync(dir); };
+    try {
+      const refreshing = app.refreshUsage();
+      while (!release) await new Promise(setImmediate);
+      await req('post', '/dashboard/move').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, from: 'during.txt', to: 'moved.txt' });
+      release();
+      await refreshing;
+    } finally { U.dirSizeAsync = realAsync; }
+    assert.equal(await shown(), String(Number(before) + 2));
   } finally { U.dirSize = realWalk; }
 });
 
