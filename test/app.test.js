@@ -1044,7 +1044,11 @@ test('the webring holds only sites that joined it', async () => {
   assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Join the webring/);
   await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
   assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Leave the webring/);
-  for (let i = 0; i < 10; i++) assert.doesNotMatch((await req('get', '/webring/random')).headers.location, /loner/);
+  for (let i = 0; i < 10; i++) {
+    const to = (await req('get', '/webring/random')).headers.location;
+    assert.notEqual(to, '/'); // lands on a joined site
+    assert.doesNotMatch(to, /loner/);
+  }
   assert.match((await req('get', '/webring/prev?from=loner')).headers.location, /ringer\./); // loner is not in the ring, so its neighbour is
   await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '0' });
   assert.equal((await req('get', '/webring/random')).headers.location.includes('ringer'), false);
