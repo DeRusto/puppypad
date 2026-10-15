@@ -917,7 +917,7 @@ const showAdmin = (req, res, m) => {
     reports: db.prepare("SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all(),
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
     users: users.map((u) => ({ ...u, disk: usage(u.username).total })),
-    signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at > ? GROUP BY day ORDER BY day DESC").all(now() - 14 * DAY),
+    signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
       banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned = 1').get().n,

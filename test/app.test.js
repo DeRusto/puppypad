@@ -613,8 +613,16 @@ test('admin finds members by name, email or signup IP, and shows signups per day
   for (const q of ['FINDM', 'findme@', '203.0.113.9']) assert.match(await find(q), />findme<\/a>/, q);
   assert.doesNotMatch(await find('203.0.113'), /203\.0\.113\.9/); // IPs match whole, not in part
   assert.match(await find('100%'), /No members found/);
+  // 14 whole UTC days including today: a signup at midnight 13 days ago counts, one a millisecond earlier does not
+  const start = new Date().setUTCHours(0, 0, 0, 0) - 13 * 86400000;
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const ins = db.prepare("INSERT INTO users (username, email, pw_hash, created_at, updated_at) VALUES (?, ?, 'x', ?, ?)");
+  ins.run('oldest', 'oldest@example.com', start, start);
+  ins.run('tooold', 'tooold@example.com', start - 1, start - 1);
   const page = (await req('get', '/admin').set('Cookie', cookie)).text;
-  assert.match(page, new RegExp(`<td>${new Date().toISOString().slice(0, 10)}</td><td class="num">\\d+</td>`));
+  assert.match(page, new RegExp(`<td>${day(Date.now())}</td><td class="num">\\d+</td>`));
+  assert.match(page, new RegExp(`<td>${day(start)}</td><td class="num">1</td>`));
+  assert.doesNotMatch(page, new RegExp(`<td>${day(start - 1)}</td>`));
 });
 
 test('rename and move files and folders', async () => {
