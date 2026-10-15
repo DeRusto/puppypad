@@ -81,13 +81,19 @@ const q = {
   userById: db.prepare('SELECT * FROM users WHERE id = ?'),
   userByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
 };
-// a save or upload: bump the directory, queue a fresh screenshot, and log at most one feed event per hour
-function markUpdated(userId) {
+// a save or upload: bump the directory, queue a fresh screenshot, and log at most one feed event per hour,
+// naming the files it changed (later changes in the same hour join that event)
+// shortcut: keeps the newest 50 names per event, so "and N more" undercounts a bigger batch; store a count if that matters
+const eventFiles = (old, rels) => [...new Set([...rels, ...lines(old)])].slice(0, 50).join('\n');
+function markUpdated(userId, rels = []) {
   const t = now();
   db.prepare('UPDATE users SET updated_at = ?, shot_dirty = 1 WHERE id = ?').run(t, userId);
-  const last = db.prepare("SELECT id, created_at FROM events WHERE user_id = ? AND kind = 'update' ORDER BY id DESC LIMIT 1").get(userId);
-  if (last && t - last.created_at < 3600000) return;
-  db.prepare("INSERT INTO events (user_id, kind, created_at) VALUES (?, 'update', ?)").run(userId, t);
+  const last = db.prepare("SELECT id, created_at, files FROM events WHERE user_id = ? AND kind = 'update' ORDER BY id DESC LIMIT 1").get(userId);
+  if (last && t - last.created_at < 3600000) {
+    if (rels.length) db.prepare('UPDATE events SET files = ? WHERE id = ?').run(eventFiles(last.files, rels), last.id);
+    return;
+  }
+  db.prepare("INSERT INTO events (user_id, kind, files, created_at) VALUES (?, 'update', ?, ?)").run(userId, eventFiles('', rels), t);
   db.prepare('UPDATE users SET updates = updates + 1 WHERE id = ?').run(userId);
 }
 // queue a saved page or script for review if it looks like phishing or mining; one open flag per site at a time
@@ -245,6 +251,9 @@ site.get('/_hw/counter.svg', (req, res) => {
 
 const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 const GB_LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz|top|click|link)\b/i; // shortcut: a TLD list, not a URL parser
+const gbEntryText = (e) => `${e.name} wrote:\n${e.message}${e.approved ? '' : '\n(This entry has a link, so it waits for your approval.)'}`;
+const gbMailFooter = `Approve or delete entries, or change how often we email you about them: ${cfg.BASE_URL}/dashboard/guestbook`;
+const GB_NOTIFY = ['instant', 'daily', 'off'];
 const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND approved = 1 ORDER BY id DESC LIMIT 50').all(id);
 site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id))));
 site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
@@ -258,6 +267,10 @@ site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }
   if (lines(req.owner.gb_words).some((w) => text.includes(w.toLowerCase()))) return res.status(400).send(V.guestbook(gbRows(req.owner.id), 'Your entry contains a word the owner has blocked.'));
   const approved = GB_LINK.test(text) ? 0 : 1; // entries with links wait for the owner
   db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
+  // capped so a spam wave from many addresses can't flood the owner's inbox
+  if (req.owner.gb_notify === 'instant' && U.limit(`gbmail:${req.owner.id}`, 10, 3600000)) {
+    sendMail(req.owner.email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
+  }
   res.redirect('/_hw/guestbook');
 });
 
@@ -430,11 +443,14 @@ const WITH_FOLLOWERS = `SELECT u.*, (SELECT COUNT(*) FROM follows f WHERE f.foll
 const hasShot = (r) => ({ ...r, shot: fs.existsSync(shotPath(r.username)) });
 main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
-  const total = db.prepare(`SELECT COUNT(*) n FROM users WHERE ${listed()}`).get().n;
+  const search = String(req.query.q || '').trim().toLowerCase().slice(0, 50);
+  // part of a site name or tag; instr, not LIKE, so % and _ in the search are plain characters
+  const where = `${listed()}${search ? ' AND (instr(username, @search) OR instr(tags, @search))' : ''}`;
+  const total = db.prepare(`SELECT COUNT(*) n FROM users WHERE ${where}`).get({ search }).n;
   const pages = Math.max(1, Math.ceil(total / 24));
   const page = Math.min(pages, Math.max(1, parseInt(req.query.page, 10) || 1));
-  const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET ?`).all((page - 1) * 24).map(hasShot);
-  res.send(V.browse(req.ctx, { rows, page, pages, sort }));
+  const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${where} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET @offset`).all({ offset: (page - 1) * 24, search }).map(hasShot);
+  res.send(V.browse(req.ctx, { rows, page, pages, sort, q: search }));
 });
 function showProfile(req, res, name, m, status = 200) {
   const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
@@ -466,6 +482,22 @@ main.get('/feed', (req, res) => {
   const events = db.prepare(`SELECT e.*, u.username, u.tagline FROM events e JOIN users u ON u.id = e.user_id
     WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 AND u.hidden = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
   res.send(V.feed(req.ctx, { events, count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
+});
+// Atom feeds: one per site (hidden sites too, like their profile), and the recently updated list without hidden or new sites
+const atom = (res, feed) => res.set('Cache-Control', 'public, max-age=300').type('application/atom+xml').send(V.atom(cfg, feed));
+main.get('/feed.xml', (req, res) => atom(res, {
+  title: `${cfg.SITE_NAME}: recently updated`, path: '/feed.xml', link: `${cfg.BASE_URL}/browse`,
+  events: db.prepare(`SELECT e.*, u.username FROM events e JOIN users u ON u.id = e.user_id
+    WHERE e.kind = 'update' AND e.user_id IN (SELECT id FROM users WHERE ${listed()}) ORDER BY e.id DESC LIMIT 50`).all(),
+}));
+main.get('/site/:name/feed.xml', (req, res) => {
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  if (!p) return res.sendStatus(404);
+  if (p.hidden) res.set('X-Robots-Tag', 'noindex');
+  atom(res, {
+    title: `${p.username} on ${cfg.SITE_NAME}`, path: `/site/${p.username}/feed.xml`, link: cfg.siteUrl(p.username) + '/',
+    events: db.prepare('SELECT *, ? AS username FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 30').all(p.username, p.id),
+  });
 });
 const inRing = () => `${listed()} AND webring = 1`;
 const randomSite = (where) => (req, res) => {
@@ -655,7 +687,7 @@ function saveFiles(user, dir, files, skipped) {
     if (SCANNED.test(rel)) autoFlag(user, rel, f.data ? f.data.toString('utf8') : fs.readFileSync(full, 'utf8'));
     saved.push(rel);
   }
-  if (saved.length) markUpdated(user.id);
+  if (saved.length) markUpdated(user.id, saved);
   return saved;
 }
 const savedMsg = (saved, skipped, verb) => ({
@@ -756,7 +788,7 @@ main.post('/dashboard/save', auth, canEdit, (req, res) => {
   const err = saveText(user, full, content);
   if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew }));
   autoFlag(user, rel, content);
-  markUpdated(user.id);
+  markUpdated(user.id, [rel]);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false }));
 });
 // the style editor writes puppypad.css; it never touches a page without asking
@@ -782,7 +814,7 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
   const full = path.join(siteDir(user.username), 'puppypad.css');
   const err = saveText(user, full, style.merge(readText(full), s));
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
-  markUpdated(user.id);
+  markUpdated(user.id, ['puppypad.css']);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
 });
 main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
@@ -794,7 +826,7 @@ main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
   const err = saveText(user, full, content);
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not linked: ${err}.`)}`);
   autoFlag(user, 'index.html', content);
-  markUpdated(user.id);
+  markUpdated(user.id, ['index.html']);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Your front page now uses puppypad.css.')}`);
 });
 // put a starter layout back as the front page: straight away when there is none, after a confirm when it would replace one
@@ -873,13 +905,19 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   for (let d = path.dirname(src); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
   // a .txt renamed to .html becomes a page, so it gets the same phishing check a saved page does
   if (!dir && SCANNED.test(to) && !SCANNED.test(from)) autoFlag(user, to, fs.readFileSync(dst, 'utf8'));
-  markUpdated(user.id);
+  markUpdated(user.id, [to]);
   const parent = to.split('/').slice(0, -1).join('/');
   res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
 });
 main.post('/dashboard/tagline', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET tagline = ? WHERE id = ?').run(String(req.body.tagline || '').trim().slice(0, 100), req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('Description saved.')}`);
+});
+// up to 5 tags of lowercase letters, numbers and hyphens, kept space-separated
+const cleanTags = (t) => [...new Set(String(t || '').toLowerCase().split(/[\s,#]+/).filter((x) => /^[a-z0-9][a-z0-9-]{0,23}$/.test(x)))].slice(0, 5).join(' ');
+main.post('/dashboard/tags', auth, canEdit, (req, res) => {
+  db.prepare('UPDATE users SET tags = ? WHERE id = ?').run(cleanTags(req.body.tags), req.ctx.user.id);
+  res.redirect(`/dashboard?ok=${encodeURIComponent('Tags saved.')}`);
 });
 main.post('/dashboard/webring', auth, canEdit, (req, res) => {
   const join = req.body.webring === '1';
@@ -895,6 +933,11 @@ main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(r
   db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id), lines(req.ctx.user.gb_ips))));
 main.post('/dashboard/guestbook/approve', auth, (req, res) => {
   db.prepare('UPDATE guestbook SET approved = 1 WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  res.redirect('/dashboard/guestbook');
+});
+main.post('/dashboard/guestbook/notify', auth, (req, res) => {
+  // the digest restarts from now, so switching from instant never repeats entries already mailed
+  if (GB_NOTIFY.includes(req.body.notify)) db.prepare('UPDATE users SET gb_notify = ?, gb_digest_at = ? WHERE id = ?').run(req.body.notify, now(), req.ctx.user.id);
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/settings', auth, (req, res) => {
@@ -1080,6 +1123,15 @@ const housekeeping = () => {
     db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
+    // daily guestbook digests: at most one a day per site, only when someone signed since the last
+    for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
+      const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? ORDER BY id LIMIT 100').all(u.id, u.gb_digest_at);
+      if (!rows.length) continue;
+      db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(now(), u.id);
+      const held = rows.filter((e) => !e.approved).length;
+      sendMail(u.email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
+        `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.map(gbEntryText).join('\n\n')}\n\n${gbMailFooter}`);
+    }
     // temp files are removed when their request ends; anything an hour old was orphaned
     for (const f of fs.readdirSync(UPLOAD_TMP)) {
       const full = path.join(UPLOAD_TMP, f);

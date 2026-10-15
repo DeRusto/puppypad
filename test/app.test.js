@@ -1318,3 +1318,96 @@ test('restarting with a higher QUOTA_MB raises existing members; a lower one lea
   assert.equal(start(500), 500);
   assert.equal(start(100), 500);
 });
+
+test('members tag their site, and the dog park finds sites by name or tag', async () => {
+  const m = await member('tagdog');
+  const old = Date.now() - 25 * 3600000;
+  db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(old, 'tagdog');
+  await req('post', '/dashboard/tags').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, tags: 'Pixel-Art, cats #cats <b> retro x y z' });
+  assert.equal(db.prepare('SELECT tags FROM users WHERE username = ?').get('tagdog').tags, 'pixel-art cats retro x y');
+  assert.match((await req('get', '/site/tagdog')).text, /href="\/browse\?q=pixel-art">#pixel-art</);
+  const search = async (q) => (await req('get', `/browse?q=${encodeURIComponent(q)}`)).text;
+  assert.match(await search('pixel'), /\/site\/tagdog/);
+  assert.match(await search('TAGD'), /\/site\/tagdog/);
+  const none = await search('nomatch%_');
+  assert.doesNotMatch(none, /\/site\/tagdog/);
+  assert.match(none, /No sites match/);
+  assert.match(none, /name="robots" content="noindex"/);
+  assert.match(await search('cats'), /sort=newest&amp;q=cats/); // sort links keep the search
+  // hidden sites stay out of search too
+  db.prepare('UPDATE users SET hidden = 1 WHERE username = ?').run('tagdog');
+  assert.doesNotMatch(await search('pixel'), /\/site\/tagdog/);
+});
+
+test('feed updates name the files they changed, folded into one event per hour', async () => {
+  const a = await member('filedog');
+  const f = await member('filefan');
+  await req('post', '/follow').set('Cookie', f.cookie).type('form').send({ _csrf: f.csrf, site: 'filedog' });
+  await upload(a, 'kitty.png', 'png');
+  await req('post', '/dashboard/save').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, path: 'about.html', content: 'hi' });
+  for (const n of ['a', 'b', 'c', 'd']) await upload(a, `${n}.txt`, n);
+  const events = db.prepare("SELECT files FROM events WHERE user_id = (SELECT id FROM users WHERE username = 'filedog') AND kind = 'update'").all();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].files, 'd.txt\nc.txt\nb.txt\na.txt\nabout.html\nkitty.png');
+  const feed = (await req('get', '/feed').set('Cookie', f.cookie)).text;
+  assert.match(feed, /updated <a href="http:\/\/filedog\.pad\.test\/d\.txt">d\.txt<\/a>, .*about\.html<\/a> and 1 more/);
+  assert.match((await req('get', '/site/filedog')).text, /href="http:\/\/filedog\.pad\.test\/about\.html"/);
+});
+
+test('Atom feeds: one per site, and recently updated without hidden or new sites', async () => {
+  const a = await member('atomdog');
+  await req('post', '/dashboard/save').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, path: 'index.html', content: 'hi' });
+  const site = await req('get', '/site/atomdog/feed.xml');
+  assert.equal(site.status, 200);
+  assert.match(site.headers['content-type'], /application\/atom\+xml/);
+  assert.match(site.text, /<title>atomdog updated index\.html<\/title>/);
+  assert.match(site.text, /<title>atomdog joined<\/title>/);
+  assert.match(site.text, /&lt;a href=&quot;http:\/\/atomdog\.pad\.test\/index\.html&quot;&gt;/);
+  assert.match((await req('get', '/site/atomdog')).text, /rel="alternate" type="application\/atom\+xml"[^>]*href="\/site\/atomdog\/feed\.xml"/);
+  assert.equal((await req('get', '/site/nobody-here/feed.xml')).status, 404);
+  // brand new: not in the global feed yet
+  assert.doesNotMatch((await req('get', '/feed.xml')).text, /atomdog/);
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'atomdog');
+  const global = (await req('get', '/feed.xml')).text;
+  assert.match(global, /<title>atomdog updated index\.html<\/title>/);
+  assert.doesNotMatch(global, /atomdog joined/);
+  db.prepare('UPDATE users SET hidden = 1 WHERE username = ?').run('atomdog');
+  assert.doesNotMatch((await req('get', '/feed.xml')).text, /atomdog/);
+  assert.equal((await req('get', '/site/atomdog/feed.xml')).headers['x-robots-tag'], 'noindex');
+});
+
+test('guestbook emails: instant, a daily digest, or off; held entries say so', async () => {
+  const m = await member('mailpad');
+  const sign = (message) => req('post', '/_hw/guestbook', 'mailpad.pad.test').type('form').send({ name: 'Vee', message });
+  const notify = (v) => req('post', '/dashboard/guestbook/notify').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, notify: v });
+  const mailsTo = () => mail.filter((s) => s.includes('to=mailpad@example.com') && s.includes('guestbook')).length;
+  assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
+
+  await notify('instant');
+  await sign('lovely pad');
+  await sign('see http://spam.example');
+  assert.equal(mailsTo(), 2);
+  assert.match(mail.at(-1), /spam\.example\n\(This entry has a link, so it waits for your approval\.\)/);
+
+  await notify('off');
+  await sign('quiet one');
+  app.housekeeping();
+  assert.equal(mailsTo(), 2);
+
+  await notify('daily');
+  await sign('digest one');
+  app.housekeeping();
+  assert.equal(mailsTo(), 2); // the digest waits a day after switching
+  // a day passes
+  db.prepare('UPDATE users SET gb_digest_at = gb_digest_at - 86401000 WHERE username = ?').run('mailpad');
+  db.prepare("UPDATE guestbook SET created_at = created_at - 86401000 WHERE user_id = (SELECT id FROM users WHERE username = 'mailpad')").run();
+  app.housekeeping();
+  assert.equal(mailsTo(), 3);
+  assert.match(mail.at(-1), /1 new guestbook entry on mailpad\.pad\.test/);
+  assert.match(mail.at(-1), /digest one/);
+  assert.doesNotMatch(mail.at(-1), /lovely pad|quiet one/);
+  app.housekeeping();
+  assert.equal(mailsTo(), 3); // once a day at most
+  await notify('bogus');
+  assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
+});

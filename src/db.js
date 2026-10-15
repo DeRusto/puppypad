@@ -88,9 +88,13 @@ CREATE INDEX IF NOT EXISTS idx_guestbook_user ON guestbook(user_id, id);
 
 // columns added after v0.1
 const cols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
-for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0']]) {
+for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0'], ['tags', "TEXT NOT NULL DEFAULT ''"], ['gb_notify', "TEXT NOT NULL DEFAULT 'daily'"], ['gb_digest_at', 'INTEGER NOT NULL DEFAULT 0']]) {
   if (!cols.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
 }
+// existing guestbooks start their first digest from now, not from every entry ever signed
+if (!cols.has('gb_digest_at')) db.prepare('UPDATE users SET gb_digest_at = ?').run(Date.now());
 if (!db.prepare('PRAGMA table_info(guestbook)').all().some((c) => c.name === 'approved')) db.exec('ALTER TABLE guestbook ADD COLUMN approved INTEGER NOT NULL DEFAULT 1');
+// the files an update changed, newest first, one per line
+if (!db.prepare('PRAGMA table_info(events)').all().some((c) => c.name === 'files')) db.exec("ALTER TABLE events ADD COLUMN files TEXT NOT NULL DEFAULT ''");
 
 module.exports = { db, DATA_DIR, SITES_DIR, SHOTS_DIR };

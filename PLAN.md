@@ -164,9 +164,9 @@ signup. **Your step:** read both pages and make them match how you run things
 
 **Phase B — community (weeks 4–8)**
 - ✅ Webring membership is opt-in: a Join/Leave button on the dashboard (`users.webring`, off by default). Prev, next and `/webring/random` only visit sites that joined; `/random` still picks any listed site.
-- Tags or categories on profiles, and a search on `/browse`.
+- ✅ Tags on profiles (`users.tags`, up to 5) and a search on `/browse` by site name or tag.
 - Guestbook moderation: hold entries containing links for owner approval.
-- RSS/Atom feed per site and for the global "recently updated" list.
+- ✅ Atom feed per site (`/site/name/feed.xml`) and for the global "recently updated" list (`/feed.xml`).
 - Rename my site: once every N days; the old name goes into the 90-day hold and redirects to the new one.
 - ✅ Hide from browse: a dashboard switch (`users.hidden`) keeps the site off `/browse`, the home page, the
   sitemap, `/random`, followers' feeds and the webring, and sends `X-Robots-Tag: noindex` on the site and its profile.
@@ -180,7 +180,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ "New page" starts from the member's starter layout, already linked to `puppypad.css`.
 - Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
   `<img>` with width and height.
-- Guestbook notifications: email the owner on new entries (instant, daily digest or off).
+- ✅ Guestbook notifications: email the owner on new entries (instant, daily digest or off; daily by default).
 - Weekly digest email of updates from followed sites (opt-in).
 - Staff picks and a "site of the week" on the home page (admin flag on `users`).
 - Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
@@ -192,7 +192,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can
   delete them. Same rate limits and honeypot as the guestbook.
 - Likes and comments on feed updates ("so-and-so updated their site").
-- The feed names the files an update changed and links to them (today an event only says "update").
+- ✅ The feed names the files an update changed and links to them (`events.files`).
 - Notifications: an in-site list of new followers, comments and likes, with optional email for each.
 - Block a member: hides their comments, likes and follows from you.
 - HTTP API with a per-member API key: upload, delete, list files and site info. The CLI and deploy
