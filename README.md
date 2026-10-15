@@ -1,25 +1,50 @@
 # PuppyPad
 
-A free old-web homepage host. Accidents welcome. Every member gets `name.yourdomain`, a file manager, an in-browser HTML editor, a hit counter, a guestbook and a webring link. Static files only.
+A free old-web homepage host. Accidents welcome. Every member gets `name.yourdomain` for a static
+site, with a file manager, an in-browser editor, a hit counter, a guestbook and a webring link.
 
-## What's in the box
+## Features
 
-- Signup with email confirmation, login, password reset, email change (confirmed by link), account deletion (a deleted site's name is held for 90 days)
-- Four starter layouts to pick from at signup (`templates/`), each restyled from one block of colour and font variables; the dashboard spots a missing `index.html` and can put any starter back as the front page (asking first if one is there)
-- Per-member folder with drag-and-drop uploads (many files at once, with a progress bar), zip import (unpacks a whole site, with the same name, type and quota checks), folders (rename or move any file or folder), text editor, quota (500 MB), file-type allowlist, and a one-click download of the whole site as a zip
-- Member sites served on their own subdomain, with custom `not_found.html` and clean URLs (`/about` serves `about.html`)
-- Widgets: `/_hw/counter.svg`, `/_hw/guestbook` (owner can delete entries), webring prev/next/random (members join the ring from the dashboard)
-- Explore page with a screenshot of every site (new sites join it after their first edit and once they are `NEW_SITE_HOURS` old, 24 by default), sortable by recently updated, newest, most followed, most visited
-- Follows, a personal feed of updates from sites you follow, and a profile page per site (`/site/name`); a member can hide their site from all of these and from search engines
-- Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files; a new page starts from the member's starter layout
-- Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and a live preview; it writes `puppypad.css` and keeps any CSS written below its block
-- Moderation: public report form (linked from default 404/410 pages), `/admin` queue, take down / restore / delete, signup IPs, and a log of every moderator action
-- Log in with site name or email; `/healthz` for an uptime monitor
-- Abuse brakes: rate limits on signup, login, reports and guestbooks; honeypot fields; unconfirmed accounts purged after 3 days
+**Accounts.** Signup with email confirmation and an optional Cloudflare Turnstile captcha. Log in
+with site name or email. Password reset, email change (confirmed by link) and account deletion; a
+deleted site's name is held for 90 days.
+
+**Building a site.**
+
+- Four starter layouts (`templates/`), picked at signup and each styled from one block of colour and
+  font variables. If `index.html` goes missing, the dashboard offers to put a starter back.
+- File manager: drag-and-drop uploads with a progress bar, folders, rename and move, zip import, and
+  a one-click download of the whole site as a zip.
+- Code editor (CodeMirror, from cdnjs) with a sandboxed live preview. New pages start from the
+  member's starter layout.
+- Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and
+  a live preview. It writes `puppypad.css` and leaves any CSS below its block alone.
+- Limits from `.env`: `QUOTA_MB` of space per member (500 by default), `MAX_FILE_MB` per file,
+  `ZIP_MAX_MB` per import, `BANDWIDTH_MB` served per day, and a file-type allowlist. Raising
+  `QUOTA_MB` grows every site; lowering it only applies to new signups.
+
+**Serving.** Each site is served on its own subdomain, with clean URLs (`/about` serves `about.html`)
+and an optional custom `not_found.html`. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
+(the owner can delete entries) and webring prev/next/random links.
+
+**Community.** The Explore page shows a screenshot of every site, sortable by recently updated,
+newest, most followed and most visited. Members can follow sites and read a feed of their updates,
+and every site has a profile page (`/site/name`). A new site appears in these after its first edit,
+once it is `NEW_SITE_HOURS` old (24 by default). A member can hide their site from all of them and
+from search engines.
+
+**Moderation.** A public report form (linked from the default 404/410 pages), an `/admin` queue,
+take down / restore / delete, signup IPs and a log of every moderator action. HTML that looks like
+phishing is flagged into the queue automatically. Rate limits on signup, login, reports and
+guestbooks, honeypot fields, and unconfirmed accounts are purged after 3 days.
+
+`/healthz` answers for an uptime monitor.
 
 ## Deploy on a VPS
 
-1. In Cloudflare DNS, point `A example.com` and `A *.example.com` at the server, set to **DNS only** (grey cloud). Create an API token with the "Edit zone DNS" template for that zone; Caddy uses it to get one wildcard certificate.
+1. In Cloudflare DNS, point `A example.com` and `A *.example.com` at the server, set to **DNS only**
+   (grey cloud). Create an API token with the "Edit zone DNS" template for that zone; Caddy uses it to
+   get one wildcard certificate.
 2. Install Docker (with the compose plugin), `curl`, `jq` and `cron`, then install the newest release:
 
    ```
@@ -28,19 +53,25 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
    ```
 
    That unpacks the release, creates `.env` and `.env.caddy` from the examples, and adds the upgrade
-   watcher (every minute) and the nightly backup (03:15) to your crontab. Fill in `.env` (BASE_DOMAIN, ACME_EMAIL, ADMIN_EMAILS, SMTP_*, SHOT_TOKEN)
-   and `.env.caddy` (CF_API_TOKEN, only the Caddy container reads it), then `docker compose up -d`.
-3. Sign up with an email you put in `ADMIN_EMAILS` and confirm it. Until SMTP is set, the confirmation link is in `docker compose logs app`.
+   watcher (every minute) and the nightly backup (03:15) to your crontab. Fill in `.env` (BASE_DOMAIN,
+   ACME_EMAIL, ADMIN_EMAILS, SMTP_*, SHOT_TOKEN) and `.env.caddy` (CF_API_TOKEN, which only the Caddy
+   container reads), then `docker compose up -d`.
+3. Sign up with an email you put in `ADMIN_EMAILS` and confirm it. Until SMTP is set, the
+   confirmation link is in `docker compose logs app`.
 4. Open `/admin` when logged in as that member.
 
 Everything lives in `./data` (SQLite database plus `sites/`). Back that folder up.
+
+To move a server that runs from a git checkout onto releases, run the same `curl ... | sh` line in
+the checkout with the app running. It treats this as an upgrade (below) and leaves `.env`,
+`.env.caddy`, `data/` and `backups/` as they are. Delete any `docker-compose.override.yml` first.
 
 ## Backups
 
 `scripts/backup.sh` takes a consistent copy of the database while the app runs, archives it with
 every member's files into `./backups`, and keeps the last 14. Set `BACKUP_REMOTE` to an
-[rclone](https://rclone.org) remote to copy the archives off the server too. `scripts/install.sh` schedules it every night at
-03:15 in the installing user's crontab, logging to `backups/backup.log`.
+[rclone](https://rclone.org) remote to copy the archives off the server too. The installer schedules
+it every night at 03:15, logging to `backups/backup.log`.
 
 To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/puppypad.db-shm`
 (left over, they would be replayed onto the restored database and corrupt it), unpack an archive
@@ -52,59 +83,44 @@ into `./data`, rename `backup.db` to `puppypad.db`, and `docker compose start ap
 Servers run published releases, not the source tree. Publishing a GitHub release tagged `vX.Y.Z`
 runs `.github/workflows/release.yml`, which tests the code, pushes the app, shots and Caddy images to
 `ghcr.io/derusto/puppypad-{app,shots,caddy}:vX.Y.Z`, and attaches the deploy bundle, `install.sh`
-and `SHA256SUMS` to the release. The first time, check that those three packages are public under
-your GitHub profile > Packages, or servers can't pull them.
+and `SHA256SUMS` to the release. Those three packages must be public (GitHub profile > Packages) or
+servers can't pull them.
 
-`scripts/install.sh` both installs and upgrades. In an install folder, `scripts/install.sh` moves to
-the newest release and `scripts/install.sh v1.2.3` to a given one (older ones too). An upgrade:
+`scripts/install.sh` both installs and upgrades: with no argument it moves to the newest release,
+and `scripts/install.sh v1.2.3` moves to a given one (older ones too). An upgrade:
 
-1. downloads the release bundle and checks it against `SHA256SUMS`, then hands over to the
-   release's own `install.sh` for the rest, so a fix to the installer counts from the upgrade
-   that ships it
-2. pulls the new images by the digests the bundle records, so pushing a tag again can't change what
-   a release runs (nothing has changed yet if this fails)
+1. downloads the release bundle, checks it against `SHA256SUMS`, and hands over to that release's
+   own `install.sh`
+2. pulls the new images by the digests the bundle records, so re-pushing a tag can't change what a
+   release runs
 3. runs `scripts/backup.sh`
-4. puts the release's files in place, sets `PUPPYPAD_VERSION` and the image digests in `.env` and
+4. puts the release's files in place, sets `PUPPYPAD_VERSION` and the image digests in `.env`, and
    runs `docker compose up -d`
-5. waits for `/healthz` and for every container to stay running; if the new release doesn't come
-   up, it puts the previous files and version back. `VERSION` changes only once this passes, so an
-   upgrade that is cut off partway is simply tried again, and a retry that fails still goes back to
-   the last release that worked.
+5. waits for `/healthz` and for every container to stay running, and puts the previous files and
+   version back if it doesn't come up. `VERSION` changes only once this passes, so an interrupted
+   upgrade is simply tried again.
 
-Every download and pull has a time limit, so a stalled connection fails the upgrade instead of
-holding it up forever.
-
-A rollback leaves the database as the new release left it, which is fine while schema changes only
-add tables and columns. The backup from step 3 is the newest archive in `./backups` if one ever isn't.
+Every download and pull has a time limit. A rollback leaves the database as the new release left it,
+which is fine while schema changes only add tables and columns; the backup from step 3 is the newest
+archive in `./backups` if it isn't.
 
 **From /admin.** The "Server version" box at the bottom of `/admin` shows the running release, the
 newest one with its notes, and a button that runs the upgrade above. The app never upgrades itself:
-it runs in a container with no Docker access and no credentials. It only leaves a request in
-`data/upgrade/`, and `scripts/upgrade-watch.sh` on the host, run every minute from the cron line the
-installer adds, picks it up. The watcher only accepts "check" or the newest release's tag, so a
-compromised app can at most ask for the release you published. It asks GitHub for the newest release
-every `UPGRADE_CHECK_MINUTES` (60 by default); its output goes to `.upgrade/watch.log`, and the full
-output of the last upgrade to `.upgrade/last.log`.
+it runs in a container with no Docker access and no credentials, and only leaves a request in
+`data/upgrade/`. `scripts/upgrade-watch.sh`, run every minute from cron on the host, picks it up and
+only accepts "check" or the newest release's tag, so a compromised app can at most ask for the
+release you published. It checks GitHub every `UPGRADE_CHECK_MINUTES` (60 by default) and logs to
+`.upgrade/watch.log`, with the full output of the last upgrade in `.upgrade/last.log`.
 
 The app (uid 1000 in its container) and the watcher both write to `data/upgrade/`, which is
 group-writable. If the user running the watcher isn't uid 1000 or root, the installer prints the one
 `sudo chown` it needs.
 
-**Moving a server from a git checkout to releases.** In the checkout, with the app running, run
-`curl -fsSL https://github.com/DeRusto/puppypad/releases/latest/download/install.sh | sh`. It sees
-`.env` and `data/puppypad.db`, so it treats the move like an upgrade: it pulls the images, backs up,
-switches, and puts the checkout's files back if the release doesn't come up healthy. `.env`,
-`.env.caddy`, `data/` and `backups/` stay as they are. (If the checkout already has
-`docker-compose.override.yml`, delete it first.)
-
-**Working on the code.** In the source tree, `docker-compose.override.yml` makes
-`docker compose up -d --build` build the images locally instead of pulling them.
-
 ## Email that arrives
 
-Confirmation mail lands in spam unless the domain vouches for your mail provider. `docs/launch-checklist.md`
-has the exact records for puppypad.org. In general, in Cloudflare DNS for the domain, add the
-records your provider gives you:
+Confirmation mail lands in spam unless the domain vouches for your mail provider.
+`docs/launch-checklist.md` has the exact records for puppypad.org. In general, in Cloudflare DNS for
+the domain, add the records your provider gives you:
 
 - **SPF**: one TXT record on the domain itself, e.g. `v=spf1 include:<provider's domain> ~all`.
   Merge providers into one record if you already have one.
@@ -114,12 +130,7 @@ records your provider gives you:
 
 Then sign up with a Gmail address and check that the confirmation arrives in the inbox.
 
-## Tests
-
-`npm test` runs the suite in `test/`. GitHub Actions runs it on every push, along with
-`npm audit` and a check that the Caddyfile is valid.
-
-## Run locally
+## Development
 
 ```
 npm install
@@ -128,7 +139,14 @@ BASE_URL=http://localhost.test:3000 ADMIN_EMAILS=me@example.com node src/server.
 
 Add `127.0.0.1 localhost.test me.localhost.test` to your hosts file to see a member site.
 
-Screenshots locally: `cd shots && npm install`, then run `APP_URL=http://localhost:3000 SHOT_TOKEN=x node worker.js` with the app started with the same `SHOT_TOKEN` (needs a Playwright Chromium install).
+Screenshots: `cd shots && npm install`, then run `APP_URL=http://localhost:3000 SHOT_TOKEN=x node worker.js`
+with the app started with the same `SHOT_TOKEN` (needs a Playwright Chromium install).
+
+In the source tree, `docker-compose.override.yml` makes `docker compose up -d --build` build the
+images locally instead of pulling them.
+
+`npm test` runs the suite in `test/`. GitHub Actions runs it on every push, along with `npm audit`
+and a check that the Caddyfile is valid.
 
 ## Before you open signups
 
