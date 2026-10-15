@@ -1304,3 +1304,17 @@ test('a member keeps a larger quota after QUOTA_MB is lowered', async () => {
   assert.match((await upload(m, 'c.txt', 'x'.repeat(900 * 1024))).text, /over your 2 MB limit/);
   assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /of 2 MB/);
 });
+
+test('restarting with a higher QUOTA_MB raises existing members; a lower one leaves them', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-quota-'));
+  // each run is a fresh process on the same database, like a restart after editing .env
+  const start = (quota) => Number(require('child_process').execFileSync(process.execPath, ['-e', `
+    const { db } = require('./src/db');
+    db.prepare("INSERT OR IGNORE INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES ('old', 'o@x', 'h', '1', 0, 0)").run();
+    require('./src/server');
+    process.stdout.write(String(db.prepare('SELECT quota_mb FROM users').get().quota_mb));
+    process.exit(0);`], { cwd: path.join(__dirname, '..'), env: { ...process.env, DATA_DIR: dir, QUOTA_MB: String(quota) } }));
+  assert.equal(start(50), 50);
+  assert.equal(start(500), 500);
+  assert.equal(start(100), 500);
+});
