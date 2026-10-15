@@ -88,7 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_guestbook_user ON guestbook(user_id, id);
 
 // columns added after v0.1
 const cols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
-for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"]]) {
+for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0']]) {
   if (!cols.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
 }
 if (!db.prepare('PRAGMA table_info(guestbook)').all().some((c) => c.name === 'approved')) db.exec('ALTER TABLE guestbook ADD COLUMN approved INTEGER NOT NULL DEFAULT 1');

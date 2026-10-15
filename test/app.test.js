@@ -1294,3 +1294,13 @@ test('bandwidth guard: daily cap per site, hotlinked media throttled, usage on d
   assert.equal((await get('/', 'https://elsewhere.example/page')).status, 200);
   assert.equal((await req('get', '/dog.png', host)).status, 200);
 });
+
+test('a member keeps a larger quota after QUOTA_MB is lowered', async () => {
+  const m = await member('roomy');
+  assert.equal(db.prepare("SELECT quota_mb FROM users WHERE username = 'roomy'").get().quota_mb, 1); // signup records the current quota
+  db.prepare("UPDATE users SET quota_mb = 2 WHERE username = 'roomy'").run(); // as if QUOTA_MB was 2 before it dropped to 1
+  await upload(m, 'a.txt', 'x'.repeat(600 * 1024));
+  assert.doesNotMatch((await upload(m, 'b.txt', 'x'.repeat(600 * 1024))).text, /over your/);
+  assert.match((await upload(m, 'c.txt', 'x'.repeat(900 * 1024))).text, /over your 2 MB limit/);
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /of 2 MB/);
+});
