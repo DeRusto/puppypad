@@ -10,7 +10,7 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 - Member sites served on their own subdomain, with custom `not_found.html` and clean URLs (`/about` serves `about.html`)
 - Widgets: `/_hw/counter.svg`, `/_hw/guestbook` (owner can delete entries), webring prev/next/random (members join the ring from the dashboard)
 - Explore page with a screenshot of every site (new sites join it after their first edit and once they are `NEW_SITE_HOURS` old, 24 by default), sortable by recently updated, newest, most followed, most visited
-- Follows, a personal feed of updates from sites you follow, and a profile page per site (`/site/name`)
+- Follows, a personal feed of updates from sites you follow, and a profile page per site (`/site/name`); a member can hide their site from all of these and from search engines
 - Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files
 - Moderation: public report form (linked from default 404/410 pages), `/admin` queue, take down / restore / delete, signup IPs, and a log of every moderator action
 - Log in with site name or email; `/healthz` for an uptime monitor

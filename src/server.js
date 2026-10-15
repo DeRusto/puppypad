@@ -116,10 +116,10 @@ const tempBudget = (bytes) => (req, res, next) => {
 };
 const dropTemp = (files) => { for (const f of files) if (f && f.path) fs.rmSync(f.path, { force: true }); };
 const LIVE = 'verified = 1 AND banned = 0';
-// live sites shown on the home page, the dog park and /random; the webring takes only those that joined it (profiles and addresses work for every live site)
+// live, unhidden sites shown on the home page, the dog park, the sitemap and /random; the webring takes only those that joined it (profiles and addresses work for every live site)
 const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
-const listed = () => `${LIVE} AND updates > 0 AND created_at <= ${listedSince()}`;
-const isListed = (u) => !!(u.verified && !u.banned && u.updates > 0 && u.created_at <= listedSince());
+const listed = () => `${LIVE} AND hidden = 0 AND updates > 0 AND created_at <= ${listedSince()}`;
+const isListed = (u) => !!(u.verified && !u.banned && !u.hidden && u.updates > 0 && u.created_at <= listedSince());
 const siteDir = (name) => path.join(SITES_DIR, name);
 
 function makeToken(userId, kind, ttl) {
@@ -215,6 +215,7 @@ site.use((req, res, next) => {
   }
   if (owner.banned) return res.status(410).send(V.sitePage(cfg, 'This pad got rolled up', `<p>A moderator removed this site for breaking the house rules.</p>${reportLink(owner.username)}`));
   req.owner = owner;
+  if (owner.hidden) res.set('X-Robots-Tag', 'noindex');
   next();
 });
 
@@ -397,6 +398,7 @@ function showProfile(req, res, name, m, status = 200) {
   const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
   if (!p) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
   const me = req.ctx.user;
+  if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   res.status(status).send(V.profile(req.ctx, m, {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
@@ -420,7 +422,7 @@ main.post('/follow', (req, res) => {
 main.get('/feed', (req, res) => {
   if (!req.ctx.user) return res.redirect('/login');
   const events = db.prepare(`SELECT e.*, u.username, u.tagline FROM events e JOIN users u ON u.id = e.user_id
-    WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
+    WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 AND u.hidden = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
   res.send(V.feed(req.ctx, { events, count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
 });
 const inRing = () => `${listed()} AND webring = 1`;
@@ -796,6 +798,11 @@ main.post('/dashboard/webring', auth, canEdit, (req, res) => {
   const join = req.body.webring === '1';
   db.prepare('UPDATE users SET webring = ? WHERE id = ?').run(join ? 1 : 0, req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
+});
+main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
+  const hide = req.body.hidden === '1';
+  db.prepare('UPDATE users SET hidden = ? WHERE id = ?').run(hide ? 1 : 0, req.ctx.user.id);
+  res.redirect(`/dashboard?ok=${encodeURIComponent(hide ? 'Your site is hidden from browsing.' : 'Your site is back in the listings.')}`);
 });
 main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null,
   db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id))));
