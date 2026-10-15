@@ -508,8 +508,8 @@ main.post('/signup', async (req, res) => {
   const t = now();
   let id;
   try {
-    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-      .run(username, email, pwHash, req.ip, t, t).lastInsertRowid;
+    id = db.prepare('INSERT INTO users (username, email, pw_hash, signup_ip, starter, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
+      .run(username, email, pwHash, req.ip, starter, t, t).lastInsertRowid;
   } catch (err) {
     // a twin signup for the same name or email landed while the human check ran, so the checks above are stale;
     // anything that is not a constraint violation (a locked or full db) is a server error, not a conflict
@@ -719,7 +719,9 @@ main.get('/dashboard/edit', auth, canEdit, (req, res) => {
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
   if (!full) return showDashboard(req, res, { err: 'Use a path like about.html or pics/index.html, made of letters, numbers, dots, hyphens and underscores, ending in a text type (html, css, js, txt, md, json, xml, svg).' }, 400);
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
-  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : '', isNew: !exists }));
+  // a new page starts as a copy of the member's starter layout, already using their puppypad.css
+  const blank = /\.html?$/i.test(rel) ? style.link(starters.render(req.ctx.user.starter, req.ctx.user.username, cfg)) : '';
+  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists }));
 });
 // write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
 function saveText(user, full, content) {
@@ -761,7 +763,7 @@ main.get('/dashboard/style', auth, canEdit, (req, res) => {
   const m = req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null;
   res.send(V.styleEditor(req.ctx, m, {
     s: style.clean(preset) || style.parse(css) || style.clean(style.PRESETS.sky),
-    page: index ?? starters.render(starters.DEFAULT, user.username, cfg),
+    page: index ?? starters.render(user.starter, user.username, cfg),
     offerLink: css !== null && index !== null && !style.hasLink(index),
   }));
 });
@@ -807,7 +809,7 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   }
   usageCache.set(user.username, { total: dirSize.total - old + Buffer.byteLength(content), count: dirSize.count + (exists ? 0 : 1) });
   // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
-  db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(user.id);
+  db.prepare('UPDATE users SET shot_dirty = 1, starter = ? WHERE id = ?').run(req.body.starter, user.id);
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
   res.redirect(`/dashboard?ok=${encodeURIComponent(`${exists ? 'Replaced' : 'Made'} your front page (index.html) from the ${name} starter.`)}`);
 });

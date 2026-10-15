@@ -177,7 +177,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ Bandwidth guard: a daily byte cap per site (`BANDWIDTH_MB`, counted per UTC day in `users.bw_day`/`bw_bytes`;
   over it, files get a 429 until midnight), and media hotlinked from other domains is capped at 60 requests a minute per site.
   The dashboard shows the member their bandwidth used today against that cap, and `/admin` shows it per site.
-- "New page" starts from the member's starter layout, already linked to `puppypad.css`.
+- ✅ "New page" starts from the member's starter layout, already linked to `puppypad.css`.
 - Image tools: optional resize and compress on upload, and an image picker in the editor that inserts
   `<img>` with width and height.
 - Guestbook notifications: email the owner on new entries (instant, daily digest or off).
@@ -186,7 +186,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
 - ✅ Admin search and stats: `/admin` finds members by part of their name or email or by exact signup IP,
   lists signups per day for 14 days, and shows each listed site's disk use and bandwidth today.
-- More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
+- ✅ More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
   80 GB VPS holds about 100 members at a full 500 MB, so add a volume and keep the 80% disk alert (§5).
   Move site disk totals (`usage()`) to a background job first, so `/admin` and the dashboard stop walking big folders on each request.
 - Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can
@@ -229,7 +229,7 @@ name, type, quota and phishing checks as an upload.
 with a preview and a copy-paste snippet, plus an "Add to a page" button that opens the editor
 with the snippet inserted at the cursor. No auto-editing of member HTML.
 
-**Style editor** (first to build)
+**Style editor** ✅ (built)
 - A form on `/dashboard/style`: page and text colours, link colours, font (a short list of web-safe
   and retro fonts), box border style, page width, cursor.
 - Live preview in the existing sandboxed preview iframe.

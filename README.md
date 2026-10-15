@@ -11,7 +11,8 @@ A free old-web homepage host. Accidents welcome. Every member gets `name.yourdom
 - Widgets: `/_hw/counter.svg`, `/_hw/guestbook` (owner can delete entries), webring prev/next/random (members join the ring from the dashboard)
 - Explore page with a screenshot of every site (new sites join it after their first edit and once they are `NEW_SITE_HOURS` old, 24 by default), sortable by recently updated, newest, most followed, most visited
 - Follows, a personal feed of updates from sites you follow, and a profile page per site (`/site/name`); a member can hide their site from all of these and from search engines
-- Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files
+- Code editor (CodeMirror, loaded from cdnjs) with a sandboxed live preview for HTML files; a new page starts from the member's starter layout
+- Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and a live preview; it writes `puppypad.css` and keeps any CSS written below its block
 - Moderation: public report form (linked from default 404/410 pages), `/admin` queue, take down / restore / delete, signup IPs, and a log of every moderator action
 - Log in with site name or email; `/healthz` for an uptime monitor
 - Abuse brakes: rate limits on signup, login, reports and guestbooks; honeypot fields; unconfirmed accounts purged after 3 days

@@ -998,6 +998,22 @@ test('a puppypad.css written by hand is kept whole below the new block', () => {
   assert.equal(style.parse('/* puppypad-style: {"page":"red"} */'), null);
 });
 
+test('a new page starts from the member\'s starter layout, linked to puppypad.css', async () => {
+  await req('post', '/signup').type('form').send({ username: 'scribe', email: 'scribe@example.com', password: 'longpassword1', agree: '1', starter: 'notebook' });
+  const res = await req('get', `/verify?token=${lastLink('verify')}`);
+  const cookie = res.headers['set-cookie'][0].split(';')[0];
+  const csrf = (await req('get', '/dashboard').set('Cookie', cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  const fresh = async (p) => (await req('get', `/dashboard/edit?path=${p}`).set('Cookie', cookie)).text;
+  let text = await fresh('about.html');
+  assert.match(text, /--desk/); // the notebook layout
+  assert.match(text, /&lt;\/style&gt;\n&lt;link rel=&quot;stylesheet&quot; href=&quot;\/puppypad.css&quot;&gt;/);
+  assert.doesNotMatch(await fresh('notes.txt'), /--desk/); // only pages get a layout
+  await req('post', '/dashboard/starter').set('Cookie', cookie).type('form').send({ _csrf: csrf, starter: 'arcade', confirm: '1' });
+  text = await fresh('more.html');
+  assert.match(text, /--tile-min/); // follows the starter picked since
+  assert.doesNotMatch(await fresh('index.html'), /puppypad\.css/); // an existing page opens as it is
+});
+
 test('password hashing does not block: hashes are made and checked asynchronously', async () => {
   let yielded = false;
   setImmediate(() => { yielded = true; });
