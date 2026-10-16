@@ -1200,7 +1200,7 @@ main.post('/dashboard/sites/new', auth, canEdit, (req, res) => {
   try {
     db.prepare("INSERT INTO users (username, email, pw_hash, verified, owner_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
       .run(username, `${username}@sites.invalid`, owner.id, req.ip, starters.DEFAULT, cfg.QUOTA_MB, t, t);
-  } catch { return fail('That site name is taken.'); }
+  } catch (err) { if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); throw err; }
   try {
     fs.mkdirSync(siteDir(username), { recursive: true });
     fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starters.DEFAULT, username, cfg));
