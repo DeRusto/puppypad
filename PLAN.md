@@ -203,7 +203,7 @@ signup. **Your step:** read both pages and make them match how you run things
   `HISTORY_DAYS` (`SUPPORTER_HISTORY_DAYS` for supporters); the dashboard views, restores and brings back deleted files.
 - Custom domains: the member adds a CNAME, the app verifies a TXT record, and the existing
   `/internal/tls-check` + on-demand TLS path issues the certificate.
-- ✅ CLI (`npx puppypad push`, `pull`) and a GitHub deploy Action for members who prefer local editors,
+- ✅ CLI (`npx @puppypad/cli push`, `pull`) and a GitHub deploy Action for members who prefer local editors,
   both over the Phase B HTTP API. WebDAV and Git push were weighed and skipped: the CLI and Action cover
   the same members with far less code and load; WebDAV could come back as a supporter perk.
 - Several sites under one login, switched between on the dashboard. Needs the schema to split

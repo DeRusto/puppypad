@@ -44,10 +44,10 @@ kept, and a password change or reset switches it off). With `Authorization: Bear
 may include folders) and `POST /api/delete` (`path`, or up to 100 `paths`). Uploads go through the
 dashboard's name, type, quota and phishing checks; 120 requests a minute per member.
 
-**CLI and deploy Action.** `npx puppypad push` uploads a folder's new and changed files (`--delete`
+**CLI and deploy Action.** `npx @puppypad/cli push` uploads a folder's new and changed files (`--delete`
 mirrors it, `--dry-run` previews), and `pull` downloads the site; see [`cli/README.md`](cli/README.md).
 The same CLI runs as a GitHub Action (`uses: DeRusto/puppypad@main`, `action.yml`) to deploy a
-repository on every push. Releases publish the CLI to npm when the `NPM_TOKEN` secret is set.
+repository on every push. Releases publish it to npm as `@puppypad/cli` through npm trusted publishing.
 
 **Community.** The Explore page shows a screenshot of every site, sortable by recently updated,
 newest, most followed and most visited, with a search by site name or tag (members add up to 5 tags).
