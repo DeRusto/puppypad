@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const QRCode = require('qrcode');
+const Stripe = require('stripe');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -35,6 +36,10 @@ const cfg = {
   RENAME_DAYS: Number(env.RENAME_DAYS || 30), // a member renames their site at most once this often
   HISTORY_DAYS: Number(env.HISTORY_DAYS || 30), // how long old versions of text files are kept
   SUPPORTER_HISTORY_DAYS: Number(env.SUPPORTER_HISTORY_DAYS || 365),
+  SUPPORTER_QUOTA_MB: Number(env.SUPPORTER_QUOTA_MB || 2000),
+  SUPPORTER_MAX_FILE_MB: Number(env.SUPPORTER_MAX_FILE_MB || 25),
+  // the supporter tier is on only with all three Stripe settings; otherwise its pages are hidden and nobody can pay
+  SUPPORT_ON: !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET && env.STRIPE_PRICE_ID),
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
@@ -56,7 +61,9 @@ const HOTLINK_MEDIA = /\.(png|jpe?g|gif|webp|ico|bmp|svg|midi?|mp3|ogg|wav)$/i;
 const BOT_UA = /bot|crawl|spider|slurp|preview|headless/i; // shortcut: a word list, not a bot database
 const STATS_DAYS = 30;
 const HOTLINK_PER_MIN = 60; // media requests a minute per site from pages on other domains
+const SUPPORT_GRACE = 3 * DAY; // Stripe retries a failed renewal for a few days before giving up
 
+const stripe = cfg.SUPPORT_ON ? new Stripe(env.STRIPE_SECRET_KEY) : null;
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
   host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), secure: Number(env.SMTP_PORT) === 465,
   auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
@@ -108,8 +115,10 @@ function markUpdated(userId, rels = []) {
   db.prepare('UPDATE users SET updates = updates + 1 WHERE id = ?').run(userId);
 }
 // queue a saved page or script for review if it looks like phishing or mining; one open flag per site at a time
+// the types a browser runs as a page or script; supporters may upload the rarer ones (xhtml, shtml, mjs) too
+const SCANNED = /\.(x?html?|shtml|m?js|svg|xml)$/i;
 function autoFlag(user, rel, content) {
-  if (!/\.(html?|js|svg)$/i.test(rel)) return;
+  if (!SCANNED.test(rel)) return;
   const signals = U.phishSignals(content);
   if (!signals.length || db.prepare("SELECT 1 FROM reports WHERE site = ? AND reason = 'Auto-flag' AND status = 'open'").get(user.username)) return;
   const details = `${rel}: ${signals.join(', ')}`;
@@ -190,6 +199,19 @@ function startSession(res, userId) {
 const MAX_SITES = 5;
 const isSupporter = (user) => user.supporter_until > now() || isAdmin(user);
 const ownerRow = (user) => (user.owner_id ? q.userById.get(user.owner_id) : user);
+// what a site may store: free limits, or bigger ones and any file type while its login supports.
+// When support lapses nothing is deleted; uploads are refused until the site is back under the free limits
+const limitsFor = (user) => {
+  const sup = isSupporter(ownerRow(user));
+  return {
+    quotaMB: sup ? Math.max(quotaMB(user), cfg.SUPPORTER_QUOTA_MB) : quotaMB(user),
+    fileMB: sup ? Math.max(cfg.MAX_FILE_MB, cfg.SUPPORTER_MAX_FILE_MB) : cfg.MAX_FILE_MB,
+    anyType: sup,
+  };
+};
+// sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
+const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.owner_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
+const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
 // a login row and its extra sites: for its sessions, API keys and bans
 const loginIds = '(SELECT id FROM users WHERE id = ? OR owner_id = ?)';
 const sitesOf = (user) => { const id = user.owner_id || user.id; return db.prepare('SELECT * FROM users WHERE id = ? OR owner_id = ? ORDER BY id').all(id, id); };
@@ -227,7 +249,7 @@ async function refreshUsage() {
 }
 // file history (src/history.js): old versions stay for HISTORY_DAYS, longer for supporters, and take at most the site's quota again
 const historyDays = (user) => (isSupporter(ownerRow(user)) ? cfg.SUPPORTER_HISTORY_DAYS : cfg.HISTORY_DAYS);
-const historyKeep = (user) => ({ since: now() - historyDays(user) * DAY, maxBytes: quotaMB(user) * 1048576 });
+const historyKeep = (user) => ({ since: now() - historyDays(user) * DAY, maxBytes: limitsFor(user).quotaMB * 1048576 });
 // history is a convenience: a failure is logged, never shown to the member or allowed to fail their save
 const recordHistory = (user, message) => H.record(user.id, siteDir(user.username), message, historyKeep(user)).catch((e) => console.error(`file history for ${user.username} failed:`, e.message));
 // a starting point for sites that have none yet (new, or here before history was), and the daily trim for the rest
@@ -414,7 +436,8 @@ const csp = (nonce) => [
   "connect-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
-  "form-action 'self'",
+  // the support page's forms redirect to Stripe's Checkout and billing portal
+  `form-action 'self'${cfg.SUPPORT_ON ? ' https://checkout.stripe.com https://billing.stripe.com' : ''}`,
   "frame-ancestors 'none'",
 ].join('; ');
 main.use((req, res, next) => {
@@ -459,6 +482,39 @@ main.get('/healthz', (req, res) => {
   res.set('Cache-Control', 'no-store').status(dbOk && diskOk ? 200 : 503).json({ ok: dbOk && diskOk, db: dbOk, disk: diskOk });
 });
 
+// Stripe tells us when a subscription starts, renews or ends. Signed with STRIPE_WEBHOOK_SECRET over the raw body,
+// so it sits ahead of the form parser and the CSRF/Origin check, and carries no session
+main.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+  if (!stripe) return res.sendStatus(404);
+  let event;
+  try { event = stripe.webhooks.constructEvent(req.body, req.get('stripe-signature') || '', env.STRIPE_WEBHOOK_SECRET); } catch { return res.status(400).type('text').send('Bad signature'); }
+  try {
+    const o = event.data.object;
+    if (event.type === 'checkout.session.completed' && o.customer) {
+      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND owner_id IS NULL").run(String(o.customer), Number(o.client_reference_id) || 0);
+    } else if (event.type.startsWith('customer.subscription.')) {
+      // the payload may be stale (Stripe can deliver or retry events out of order), so apply the subscription as it is now
+      applySubscription(await stripe.subscriptions.retrieve(o.id));
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error('stripe webhook failed:', e.message);
+    res.sendStatus(500); // Stripe retries
+  }
+});
+// a subscription's state sets supporter_until: paid up to the period's end (plus a few days for a late renewal), or over now
+function applySubscription(sub) {
+  const user = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer)) ||
+    db.prepare('SELECT * FROM users WHERE id = ? AND owner_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
+  if (!user) return;
+  // newer Stripe API versions keep the period on each item
+  const end = (sub.items?.data?.[0]?.current_period_end ?? sub.current_period_end ?? 0) * 1000;
+  let until = null;
+  if (['active', 'trialing', 'past_due'].includes(sub.status) && end) until = end + SUPPORT_GRACE;
+  else if (['canceled', 'unpaid', 'incomplete_expired'].includes(sub.status)) until = Math.min(user.supporter_until, now());
+  db.prepare('UPDATE users SET stripe_customer_id = ?, supporter_until = COALESCE(?, supporter_until) WHERE id = ?').run(String(sub.customer), until, user.id);
+}
+
 // the HTTP API takes a member's API key in the Authorization header and never reads the session cookie,
 // so a page on another site can't use it with a visitor's login and it needs no CSRF token; its routes are under "HTTP API" below
 const api = express.Router();
@@ -467,23 +523,26 @@ main.use('/api', api);
 // session
 main.use((req, res, next) => {
   const m = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === COOKIE);
-  req.ctx = { cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce };
+  req.ctx = withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce });
   if (m && m[1]) {
     const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
       if (user) {
         const login = ownerRow(user); // an extra site's admin rights and email are its login's
-        req.ctx = { cfg, user, login, csrf: s.csrf, isAdmin: isAdmin(login), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n };
+        req.ctx = withFlair({ cfg, user, login, csrf: s.csrf, isAdmin: isAdmin(login), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n });
         req.sessionHash = s.token_hash;
       }
     }
   }
   next();
 });
-// the editor posts whole files, and percent-escaping can triple a byte, so its cap tracks MAX_FILE_MB with room for that;
+// the editor posts whole files, and percent-escaping can triple a byte, so its cap tracks the member's file limit with room for that;
 // every other form, signed in or not, keeps the parser's 100 KB default so nobody can make the app hold megabytes per request
-main.use(['/dashboard/save', '/dashboard/style'], express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 }));
+const editorBody = (mb) => express.urlencoded({ extended: false, limit: (mb * 3 + 1) * 1048576 });
+const freeBody = editorBody(cfg.MAX_FILE_MB);
+const supporterBody = editorBody(Math.max(cfg.MAX_FILE_MB, cfg.SUPPORTER_MAX_FILE_MB));
+main.use(['/dashboard/save', '/dashboard/style'], (req, res, next) => (req.ctx.user && limitsFor(req.ctx.user).anyType ? supporterBody : freeBody)(req, res, next));
 main.use(express.urlencoded({ extended: false })); // skips a body already parsed above
 main.use(bodyDefault);
 
@@ -511,6 +570,7 @@ main.get('/favicon.ico', asset('favicon.svg', 'image/svg+xml')); // shortcut: SV
 main.get('/favicon.svg', asset('favicon.svg', 'image/svg+xml'));
 main.get('/og.svg', asset('og.svg', 'image/svg+xml'));
 main.get('/og.png', asset('og.png', 'image/png')); // the share-preview raster; og:image points here because several scrapers ignore SVG
+main.get('/img/supporter.svg', asset('supporter.svg', 'image/svg+xml'));
 main.get('/img/pup-hero.webp', asset('pup-hero.webp', 'image/webp'));
 main.get('/img/pup-coder.webp', asset('pup-coder.webp', 'image/webp'));
 main.get('/img/pup-accident.webp', asset('pup-accident.webp', 'image/webp'));
@@ -535,6 +595,7 @@ main.get('/', (req, res) => res.send(V.home(req.ctx, {
   recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
   newest: db.prepare(`SELECT * FROM users WHERE ${listed()} ORDER BY id DESC LIMIT 10`).all(),
   total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${LIVE}`).get().n,
+  supporters: cfg.SUPPORT_ON ? db.prepare('SELECT COUNT(*) n FROM users WHERE supporter_until > ?').get(now()).n : 0,
 })));
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
 const WITH_FOLLOWERS = `SELECT u.*, (SELECT COUNT(*) FROM follows f WHERE f.followed_id = u.id) AS followers FROM users u`;
@@ -901,7 +962,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: quotaMB(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(ownerRow(user)), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -909,7 +970,7 @@ const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.o
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, msgOf(req)));
 
 // The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
-const uploadRel = (dir, name) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'));
+const uploadRel = (dir, name, anyType) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'), { anyType });
 
 // write beside the target and rename over it, so a failed write never leaves a replaced file half-written
 function writeAtomic(full, data) {
@@ -929,18 +990,20 @@ const MAX_FILES = 2000; // the byte quota alone lets a member mint unlimited emp
 // Each file is { name, data } in memory or { name, path, size } in UPLOAD_TMP; the caller removes temp files that were not moved in.
 function saveFiles(user, dir, files, skipped) {
   const size = usage(user.username);
+  const lim = limitsFor(user);
   let used = size.total;
   let count = size.count;
   const saved = [];
   for (const f of files) {
-    const rel = uploadRel(dir, f.name);
+    const rel = uploadRel(dir, f.name, lim.anyType);
     const full = rel && resolveIn(user, rel);
     if (!full) { skipped.push(`${f.name} (name or file type not allowed)`); continue; }
     const exists = fs.existsSync(full);
     const old = exists && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
     if (!exists && count >= MAX_FILES) { skipped.push(`${f.name} (too many files: ${MAX_FILES} max)`); continue; }
     const bytes = f.data ? f.data.length : f.size;
-    if (used - old + bytes > quotaMB(user) * 1048576) { skipped.push(`${f.name} (over your ${quotaMB(user)} MB limit)`); continue; }
+    if (bytes > lim.fileMB * 1048576) { skipped.push(`${f.name} (bigger than ${lim.fileMB} MB)`); continue; }
+    if (used - old + bytes > lim.quotaMB * 1048576) { skipped.push(`${f.name} (over your ${lim.quotaMB} MB limit)`); continue; }
     try {
       if (f.data) writeAtomic(full, f.data);
       else { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.renameSync(f.path, full); } // a rename replaces the old file in one step
@@ -965,9 +1028,11 @@ const savedMsg = (saved, skipped, verb) => ({
 });
 
 const tmpStorage = multer.diskStorage({ destination: UPLOAD_TMP, filename: (req, file, cb) => cb(null, `up-${crypto.randomBytes(8).toString('hex')}`) });
-const upload = multer({ storage: tmpStorage, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
+// up to 20 files a request, each within the member's file size limit; preservePath keeps folders in names for the API
+const uploadFiles = (req, res, cb, preservePath = false) => multer({ storage: tmpStorage, preservePath, limits: { fileSize: limitsFor(req.ctx.user).fileMB * 1048576, files: 20 } }).array('files', 20)(req, res, cb);
+const uploadBudget = tempBudget((req) => 20 * limitsFor(req.ctx.user).fileMB * 1048576);
 // The plain form gets the dashboard back; the drag-and-drop uploader asks for JSON so it can send many batches and sum them up
-main.post('/dashboard/upload', auth, canEdit, tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next) => upload(req, res, (err) => {
+main.post('/dashboard/upload', auth, canEdit, uploadBudget, (req, res, next) => uploadFiles(req, res, (err) => {
   handleUpload(req, res, err).catch(next).finally(() => dropTemp(req.files || []));
 }));
 async function handleUpload(req, res, err) {
@@ -976,7 +1041,7 @@ async function handleUpload(req, res, err) {
   if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
   // the body can take a long time to arrive; a ban, reset or deletion meanwhile must stop the write
   if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
-  if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
+  if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return fail('That folder name is not allowed.', 400);
   const skipped = [];
@@ -993,7 +1058,7 @@ async function handleUpload(req, res, err) {
 
 // Import a whole site from one .zip, unpacked into the current folder
 const zipUpload = multer({ storage: tmpStorage, limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
-main.post('/dashboard/import', auth, canEdit, tempBudget((req) => (cfg.ZIP_MAX_MB + quotaMB(req.ctx.user)) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
+main.post('/dashboard/import', auth, canEdit, tempBudget((req) => (cfg.ZIP_MAX_MB + limitsFor(req.ctx.user).quotaMB) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
 async function importZip(req, res, err) {
   if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
@@ -1003,7 +1068,8 @@ async function importZip(req, res, err) {
   if (!U.limit(`import:${req.ctx.user.id}`, 10, 3600000)) return showDashboard(req, res, { err: 'That is a lot of imports. Try again in an hour.' }, 429);
   let zip;
   try {
-    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: quotaMB(req.ctx.user) * 1048576, allowed: (name) => !!uploadRel(dir, name) });
+    const lim = limitsFor(req.ctx.user);
+    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: lim.fileMB * 1048576, maxTotalBytes: lim.quotaMB * 1048576, allowed: (name) => !!uploadRel(dir, name, lim.anyType) });
   } catch (e) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }
@@ -1038,7 +1104,7 @@ main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   // a new page starts as a copy of the member's starter layout, already using their puppypad.css
   const blank = /\.html?$/i.test(rel) ? style.link(starters.render(req.ctx.user.starter, req.ctx.user.username, cfg)) : '';
   // "Add to a page" on the widgets page: the editor offers that widget's snippet to insert at the cursor
-  const insert = req.query.widget ? W.snippet(cfg, req.ctx.user, String(req.query.widget)) : null;
+  const insert = req.query.widget ? W.snippet(cfg, req.ctx.user, String(req.query.widget), isSupporter(req.ctx.login)) : null;
   res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists, images: await siteImages(req.ctx.user, rel), insert }));
 });
 // write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
@@ -1047,8 +1113,10 @@ function saveText(user, full, content) {
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   const old = exists ? fs.statSync(full).size : 0;
   const used = usage(user.username);
+  const lim = limitsFor(user);
   if (!exists && used.count >= MAX_FILES) return `your site already has ${MAX_FILES} files, the most we keep`;
-  if (used.total - old + size > quotaMB(user) * 1048576) return `this would go over your ${quotaMB(user)} MB limit`;
+  if (size > lim.fileMB * 1048576) return `files can be at most ${lim.fileMB} MB`;
+  if (used.total - old + size > lim.quotaMB * 1048576) return `this would go over your ${lim.quotaMB} MB limit`;
   try {
     writeAtomic(full, content);
   } catch {
@@ -1139,13 +1207,12 @@ function deleteFile(user, rel) {
   return true;
 }
 main.post('/dashboard/delete', auth, canEdit, (req, res) => {
-  if (deleteFile(req.ctx.user, U.safeRel(req.body.path))) markUpdated(req.ctx.user.id);
+  if (deleteFile(req.ctx.user, U.safeRel(req.body.path, { anyType: true }))) markUpdated(req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('File deleted.')}`);
 });
 // rename or move a file or folder; folders keep their contents, and nothing is ever overwritten
 const isDirAt = (full) => !!full && fs.existsSync(full) && fs.statSync(full).isDirectory();
 const depthBelow = (full) => Math.max(0, ...fs.readdirSync(full, { withFileTypes: true }).map((e) => (e.isDirectory() ? 1 + depthBelow(path.join(full, e.name)) : 1)));
-const SCANNED = /\.(html?|js|svg)$/i;
 main.get('/dashboard/move', auth, canEdit, (req, res) => {
   const from = U.safeRel(req.query.path, { file: false });
   const full = from && resolveIn(req.ctx.user, from);
@@ -1160,7 +1227,7 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   const dir = isDirAt(src);
   const want = String(req.body.to || '').trim().replace(/^\/+|\/+$/g, '');
   const fail = (err) => res.status(400).send(V.move(req.ctx, { err }, { from, to: want, dir }));
-  const to = U.safeRel(want, { file: !dir });
+  const to = U.safeRel(want, { file: !dir, anyType: limitsFor(user).anyType });
   const dst = to && resolveIn(user, to);
   if (!dst) return fail(dir
     ? 'Use a folder path like pics or old/pics, made of letters, numbers, dots, hyphens and underscores.'
@@ -1466,14 +1533,81 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
     deleteAccount(req.ctx.user);
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
+  if (!(await cancelBilling(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
 });
 
+// ----- supporter tier (Stripe) -----
+// a deleted login must stop paying: its subscriptions are cancelled first, and the account stays if Stripe can't be reached
+async function cancelBilling(user) {
+  if (user.owner_id || !user.stripe_customer_id || !stripe) return true;
+  try {
+    for await (const sub of stripe.subscriptions.list({ customer: user.stripe_customer_id, status: 'all' })) {
+      if (!['canceled', 'incomplete_expired'].includes(sub.status)) await stripe.subscriptions.cancel(sub.id);
+    }
+    return true;
+  } catch (e) {
+    console.error('stripe cancel failed:', e.message);
+    return false;
+  }
+}
+// supporting is per login: an extra site's page shows and pays for the login that owns it
+const supportPage = (req, res, m, status = 200) => res.status(status).send(V.support(req.ctx, m, {
+  until: req.ctx.login.supporter_until, customer: !!req.ctx.login.stripe_customer_id, limits: limitsFor(req.ctx.user),
+}));
+main.get('/dashboard/support', auth, (req, res) => (cfg.SUPPORT_ON || isSupporter(req.ctx.login) ? supportPage(req, res, msgOf(req)) : res.redirect('/dashboard')));
+// Stripe's hosted Checkout takes the card; the webhook above turns the perks on once it is paid
+main.post('/dashboard/support', auth, async (req, res) => {
+  if (!stripe) return res.redirect('/dashboard');
+  const already = () => supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
+  let login = req.ctx.login;
+  if (login.supporter_until > now() && login.stripe_customer_id) return already();
+  try {
+    // one Stripe customer per login, made before checkout, so a second tab or a payment the webhook hasn't reported yet
+    // finds the same customer: an open checkout is reused and a live subscription refuses another
+    if (!login.stripe_customer_id) {
+      const customer = await stripe.customers.create({ email: login.email, metadata: { user_id: String(login.id) } });
+      // two requests at once: the first stored wins, the other customer is left unused
+      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id = ''").run(customer.id, login.id);
+      login = q.userById.get(login.id);
+    }
+    const subs = await stripe.subscriptions.list({ customer: login.stripe_customer_id, status: 'all', limit: 10 });
+    if (subs.data.some((x) => ['active', 'trialing', 'past_due', 'incomplete'].includes(x.status))) return already();
+    const open = (await stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 1 })).data[0];
+    if (open) return res.redirect(303, open.url);
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: env.STRIPE_PRICE_ID, quantity: 1 }],
+      client_reference_id: String(login.id),
+      // flexible billing mode: Stripe's recommended default for predictable proration and invoices
+      subscription_data: { metadata: { user_id: String(login.id) }, billing_mode: { type: 'flexible' } },
+      customer: login.stripe_customer_id,
+      success_url: `${cfg.BASE_URL}/dashboard/support?ok=${encodeURIComponent('Thank you! Your supporter perks switch on as soon as Stripe confirms the payment.')}`,
+      cancel_url: `${cfg.BASE_URL}/dashboard/support`,
+    });
+    res.redirect(303, session.url);
+  } catch (e) {
+    console.error('stripe checkout failed:', e.message);
+    supportPage(req, res, { err: 'Stripe could not be reached. Nothing was charged; try again in a little while.' }, 502);
+  }
+});
+// Stripe's Customer Portal: cancel, change the card, see receipts
+main.post('/dashboard/support/portal', auth, async (req, res) => {
+  if (!stripe || !req.ctx.login.stripe_customer_id) return res.redirect('/dashboard/support');
+  try {
+    const session = await stripe.billingPortal.sessions.create({ customer: req.ctx.login.stripe_customer_id, return_url: `${cfg.BASE_URL}/dashboard/support` });
+    res.redirect(303, session.url);
+  } catch (e) {
+    console.error('stripe portal failed:', e.message);
+    supportPage(req, res, { err: 'Stripe could not be reached. Try again in a little while.' }, 502);
+  }
+});
+
 // ----- widgets -----
 main.get('/dashboard/widgets', auth, async (req, res) => res.send(V.widgets(req.ctx, msgOf(req), {
-  groups: W.groups(cfg, req.ctx.user),
+  groups: W.groups(cfg, req.ctx.user, isSupporter(req.ctx.login)),
   pages: (await U.listFiles(siteDir(req.ctx.user.username))).filter((f) => /\.html?$/i.test(f)).sort(),
 })));
 main.post('/dashboard/widgets/status', auth, canEdit, (req, res) => {
@@ -1484,8 +1618,8 @@ main.post('/dashboard/widgets/status', auth, canEdit, (req, res) => {
 main.post('/dashboard/widgets/copy', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   const back = (kind, text) => res.redirect(`/dashboard/widgets?${kind}=${encodeURIComponent(text)}`);
-  const src = W.effectSource(req.body.fx);
-  if (src === null) return back('err', 'Pick one of the effects.');
+  const src = W.snippet(cfg, user, String(req.body.fx), isSupporter(req.ctx.login)) && W.effectSource(req.body.fx);
+  if (!src) return back('err', 'Pick one of the effects.');
   const rel = `${req.body.fx}.js`;
   const full = resolveIn(user, rel);
   if (fs.existsSync(full)) return back('err', `You already have ${rel}. Rename or delete it first to copy a fresh one.`);
@@ -1532,11 +1666,12 @@ const apiCurrent = (user) => {
 api.get('/site', (req, res) => {
   const u = req.ctx.user;
   const used = usage(u.username);
+  const lim = limitsFor(u);
   res.json({
     name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: isListed(u), hidden: !!u.hidden,
-    used_bytes: used.total, quota_bytes: quotaMB(u) * 1048576, files: used.count, max_files: MAX_FILES, max_file_bytes: cfg.MAX_FILE_MB * 1048576,
+    used_bytes: used.total, quota_bytes: lim.quotaMB * 1048576, files: used.count, max_files: MAX_FILES, max_file_bytes: lim.fileMB * 1048576,
     bandwidth_today_bytes: bwToday(u), bandwidth_cap_bytes: cfg.BANDWIDTH_MB * 1048576, hits: u.hits, updated_at: new Date(u.updated_at).toISOString(),
-    allowed_types: [...U.ALLOWED_EXT],
+    allowed_types: [...U.ALLOWED_EXT], any_type: lim.anyType,
   });
 });
 api.get('/files', async (req, res) => {
@@ -1555,10 +1690,9 @@ api.get('/files', async (req, res) => {
   res.json({ files });
 });
 // preservePath keeps the folders in a filename like pics/cat.png, so one request can upload a whole tree
-const apiUpload = multer({ storage: tmpStorage, preservePath: true, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
-api.post('/upload', tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next) => apiUpload(req, res, (err) => {
+api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err) => {
   try {
-    if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time, in a field called "files".' });
+    if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time, in a field called "files".' });
     if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the upload.' });
     if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files. Send them in a field called "files".' });
     const dir = U.safeRel(req.body?.dir || '', { file: false });
@@ -1567,7 +1701,7 @@ api.post('/upload', tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next)
     const saved = saveFiles(req.ctx.user, dir, req.files.map((f) => ({ name: f.originalname, path: f.path, size: f.size })), skipped);
     res.json({ saved, skipped });
   } catch (e) { next(e); } finally { dropTemp(req.files || []); }
-}));
+}, true));
 // one file as { path }, or up to 100 as { paths: [...] } with one history entry for the lot
 api.post('/delete', express.urlencoded({ extended: false }), express.json(), (req, res) => {
   if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
@@ -1575,7 +1709,7 @@ api.post('/delete', express.urlencoded({ extended: false }), express.json(), (re
   if (req.body?.paths !== undefined) {
     const list = [req.body.paths].flat();
     if (!list.length || list.length > 100) return res.status(400).json({ error: 'Send between 1 and 100 paths at a time.' });
-    const rels = list.map((p) => U.safeRel(p));
+    const rels = list.map((p) => U.safeRel(p, { anyType: true }));
     const bad = list.find((p, i) => !rels[i]);
     if (bad !== undefined) return res.status(400).json({ error: `That path is not allowed: ${String(bad).slice(0, 100)}` });
     const deleted = [];
@@ -1584,7 +1718,7 @@ api.post('/delete', express.urlencoded({ extended: false }), express.json(), (re
     if (deleted.length) markUpdated(user.id);
     return res.json({ deleted, missing });
   }
-  const rel = U.safeRel(req.body?.path);
+  const rel = U.safeRel(req.body?.path, { anyType: true });
   if (!rel) return res.status(400).json({ error: 'Send the path of one file, like pics/cat.png.' });
   if (!deleteFile(user, rel)) return res.status(404).json({ error: `There is no file called ${rel}.` });
   markUpdated(user.id);
@@ -1592,7 +1726,7 @@ api.post('/delete', express.urlencoded({ extended: false }), express.json(), (re
 });
 // a file's bytes as stored, for the CLI's pull; served as a download so a member's page never runs on this origin
 api.get('/file', (req, res) => {
-  const rel = U.safeRel(req.query.path);
+  const rel = U.safeRel(req.query.path, { anyType: true });
   const full = rel && resolveIn(req.ctx.user, rel);
   if (!full || !fs.existsSync(full) || !fs.statSync(full).isFile()) return res.status(404).json({ error: `There is no file called ${String(req.query.path ?? '').slice(0, 100)}.` });
   res.set({ 'Cache-Control': 'no-store', 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment' }).sendFile(full);
@@ -1639,6 +1773,7 @@ const showAdmin = (req, res, m) => {
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
       banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned > 0').get().n,
+      supporters: db.prepare('SELECT COUNT(*) n FROM users WHERE supporter_until > ?').get(now()).n,
       open,
     },
     upgrade: upgrade.readState(DATA_DIR),
@@ -1705,7 +1840,7 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
   showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
 });
-main.post('/admin/ban', auth, adminOnly, (req, res) => {
+main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
   const login = ownerRow(target);
@@ -1713,6 +1848,7 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
+    if (!(await cancelBilling(target))) return showAdmin(req, res, { err: `Stripe could not be reached to cancel ${target.username}'s supporter payments, so nothing was deleted.` });
     // the rows and the log entry commit together; the files go only after both have
     deleteAccount(target, db.transaction((u) => { deleteAccountRows(u); adminLog(req, 'delete', u.username, reason); }));
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });

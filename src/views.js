@@ -56,6 +56,10 @@ footer{text-align:center;font-size:13px}
 .sorts{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 10px}
 .prof{display:flex;flex-wrap:wrap;gap:14px}.prof>.pic{flex:1 1 260px;max-width:420px}.prof>.info{flex:2 1 260px;min-width:0}
 .names{display:flex;flex-wrap:wrap;gap:4px 12px}
+.badge{width:14px;height:14px;vertical-align:-2px;margin-left:3px}
+.supporter .shot{border:4px solid transparent;background:linear-gradient(#eaf5fd,#eaf5fd) padding-box,linear-gradient(90deg,#ff5f6d,#ffc371,#ffe14d,#47e891,#4fb3ff,#b07bff,#ff5f6d) 0 0/200% 100% border-box;animation:rainbow 6s linear infinite}
+@keyframes rainbow{to{background-position:0 0,200% 0}}
+@media (prefers-reduced-motion:reduce){.supporter .shot{animation:none}}
 .feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .feed li{display:flex;gap:10px;align-items:flex-start}
 .cmt{border-left:3px solid var(--edge);padding:2px 8px;margin:6px 0;background:#fff}.social{font-size:14px;margin-top:4px}.new{background:var(--pee)}.feed .shot{width:96px;flex:none;border-width:2px}
@@ -108,8 +112,11 @@ const ago = (t) => {
   const k = Math.floor(n);
   return `${k} ${u}${k === 1 ? '' : 's'} ago`;
 };
+// a site's name, plus the supporter icon while its login supports; every place that lists names goes through here
+const isSup = (ctx, name) => !!ctx.supporters?.has(name);
+const nameTag = (ctx, name) => `${esc(name)}${isSup(ctx, name) ? `<img class="badge" src="/img/supporter.svg" alt="${esc(ctx.cfg.SITE_NAME)} supporter" title="${esc(ctx.cfg.SITE_NAME)} supporter">` : ''}`;
 const siteList = (ctx, rows) => rows.length
-  ? `<ul class="sites">${rows.map((r) => `<li><a href="${esc(ctx.cfg.siteUrl(r.username))}">${esc(r.username)}</a>${r.tagline ? ` - ${esc(r.tagline)}` : ''} <small>(updated ${ago(r.updated_at)}, ${r.hits} hits)</small></li>`).join('')}</ul>`
+  ? `<ul class="sites">${rows.map((r) => `<li><a href="${esc(ctx.cfg.siteUrl(r.username))}">${nameTag(ctx, r.username)}</a>${r.tagline ? ` - ${esc(r.tagline)}` : ''} <small>(updated ${ago(r.updated_at)}, ${r.hits} hits)</small></li>`).join('')}</ul>`
   : `<p>The pad is clean. Make the first mess.</p>`;
 
 const shotImg = (ctx, r, link) => (r.shot
@@ -117,17 +124,17 @@ const shotImg = (ctx, r, link) => (r.shot
   : `<a class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
 const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
 const cards = (ctx, rows) => (rows.length
-  ? `<ul class="grid">${rows.map((r) => `<li class="card">${shotImg(ctx, r, ctx.cfg.siteUrl(r.username))}
-<div><a href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${esc(r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
+  ? `<ul class="grid">${rows.map((r) => `<li class="card${isSup(ctx, r.username) ? ' supporter' : ''}">${shotImg(ctx, r, ctx.cfg.siteUrl(r.username))}
+<div><a href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
 ${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div class="t">${tagLinks(r.tags)}</div>` : ''}
 <div class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div></li>`).join('')}</ul>`
   : `<p>The pad is clean. Make the first mess.</p>`);
 
 const ATOM_LINK = (title, href) => `<link rel="alternate" type="application/atom+xml" title="${esc(title)}" href="${esc(href)}">`;
-const home = (ctx, { sotw, picks, recent, newest, total }) => layout(ctx, 'Home', `
+const home = (ctx, { sotw, picks, recent, newest, total, supporters = 0 }) => layout(ctx, 'Home', `
 <section class="box"><img class="pup" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"><img class="pup left" src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"><h2>Your own pad on the web</h2>
 <p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
-<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p><div style="clear:both"></div></section>
+<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far${supporters ? ` | kept running by ${supporters} supporter${supporters === 1 ? '' : 's'} (<a href="/dashboard/support">chip in</a>)` : ''}</p><div style="clear:both"></div></section>
 ${sotw ? `<section class="box"><h2>Site of the week</h2>${cards(ctx, [sotw])}</section>` : ''}
 ${picks.length ? `<section class="box"><h2>Staff picks</h2>${cards(ctx, picks)}</section>` : ''}
 <section class="box"><img class="pup" src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"><h2>Fresh accidents <small>(recently updated)</small></h2><div style="clear:right"></div>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
@@ -164,7 +171,7 @@ const fileLinks = (e, url) => eventText(e, (f) => `<a href="${esc(url)}/${esc(f)
 const pager = (href, page, pages) => (pages > 1 ? `<p>${page > 1 ? `<a href="${esc(href(page - 1))}">&lt;&lt; Newer</a> ` : ''}page ${page} of ${pages}${page < pages ? ` <a href="${esc(href(page + 1))}">Older &gt;&gt;</a>` : ''}</p>` : '');
 const updateUrl = (owner, e) => `/site/${owner}/update/${e.id}`;
 // comments: the member whose profile or update it is (canDelete) may delete them; back says where the form returns to
-const commentHtml = (ctx, c, canDelete, back) => `<div class="cmt"><a href="/site/${esc(c.username)}">${esc(c.username)}</a> <small>${ago(c.created_at)}</small>${canDelete
+const commentHtml = (ctx, c, canDelete, back) => `<div class="cmt"><a href="/site/${esc(c.username)}">${nameTag(ctx, c.username)}</a> <small>${ago(c.created_at)}</small>${canDelete
   ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${c.id}"><input type="hidden" name="back" value="${back}"><button class="link">delete</button></form>` : ''}<div>${esc(c.body)}</div></div>`;
 const commentForm = (ctx, target, back) => `<form class="stack" method="post" action="/comment">${csrfField(ctx)}${target}<input type="hidden" name="back" value="${back}">
 <textarea name="body" rows="2" maxlength="500" required aria-label="Your comment"></textarea>
@@ -177,13 +184,13 @@ ${e.commentCount > e.comments.length ? `<p class="note"><a href="${esc(updateUrl
 ${e.comments.map((c) => commentHtml(ctx, c, !!ctx.user && ctx.user.username === owner, back)).join('')}
 ${ctx.user ? `<details><summary>Comment</summary>${commentForm(ctx, `<input type="hidden" name="event" value="${e.id}">`, back)}</details>` : ''}</div>`;
 };
-const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
+const nameLinks = (ctx, rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${nameTag(ctx, r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
 const profile = (ctx, m, { p, following, blocking, login, comments, events, followers, follows }) => {
   const url = ctx.cfg.siteUrl(p.username);
   const mine = ctx.user && ctx.user.id === p.id;
   return layout(ctx, p.username, `
-<section class="box"><h2>${esc(p.username)}</h2>${msg(m)}<div class="prof">
-<div class="pic">${shotImg(ctx, p, url)}</div>
+<section class="box"><h2>${nameTag(ctx, p.username)}</h2>${msg(m)}<div class="prof">
+<div class="pic${isSup(ctx, p.username) ? ' supporter' : ''}">${shotImg(ctx, p, url)}</div>
 <div class="info"><p><a href="${esc(url)}">${esc(url.replace(/^https?:\/\//, ''))}</a></p>
 ${p.tagline ? `<p>${esc(p.tagline)}</p>` : ''}${p.tags ? `<p>${tagLinks(p.tags)}</p>` : ''}
 <p>${p.followers} follower${p.followers === 1 ? '' : 's'} | ${p.updates} update${p.updates === 1 ? '' : 's'} | ${p.hits} hits<br>Joined ${ago(p.created_at)}, last updated ${ago(p.updated_at)}</p>
@@ -197,9 +204,9 @@ ${blocking ? `<p class="note">You blocked ${esc(p.username)}. Their comments and
 <section class="box" id="comments"><h2>Comments</h2>${comments.rows.map((c) => commentHtml(ctx, c, mine, `/site/${p.username}`)).join('') || '<p class="note">No comments yet.</p>'}
 ${pager((n) => `/site/${p.username}?cpage=${n}#comments`, comments.page, comments.pages)}
 ${ctx.user ? commentForm(ctx, `<input type="hidden" name="site" value="${esc(p.username)}">`, `/site/${p.username}`) : '<p><a href="/login">Log in</a> to leave a comment.</p>'}</section>
-<section class="box" id="followers"><h2>Followers</h2>${nameLinks(followers.rows)}
+<section class="box" id="followers"><h2>Followers</h2>${nameLinks(ctx, followers.rows)}
 ${pager((n) => `/site/${p.username}?fpage=${n}#followers`, followers.page, followers.pages)}
-<h3 id="following">Following</h3>${nameLinks(follows.rows)}
+<h3 id="following">Following</h3>${nameLinks(ctx, follows.rows)}
 ${pager((n) => `/site/${p.username}?gpage=${n}#following`, follows.page, follows.pages)}</section>
 ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/password">${csrfField(ctx)}<label for="curpw">Current password</label>
@@ -229,7 +236,7 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
 <section class="box"><h2>Your feed</h2>
-${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} <a href="${esc(updateUrl(e.username, e))}" class="note">${ago(e.created_at)}</a>${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, '/feed')}</div></li>`).join('')}</ul>`
+${events.length ? `<ul class="feed">${events.map((e) => `<li${isSup(ctx, e.username) ? ' class="supporter"' : ''}>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${nameTag(ctx, e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} <a href="${esc(updateUrl(e.username, e))}" class="note">${ago(e.created_at)}</a>${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, '/feed')}</div></li>`).join('')}</ul>`
     : count ? '<p>The sites you follow have been quiet. Updates show up here.</p>'
       : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`);
 
@@ -240,7 +247,7 @@ const update = (ctx, { p, e, comments }) => {
   const here = updateUrl(p.username, e);
   const mine = !!ctx.user && ctx.user.id === p.id;
   return layout(ctx, `${p.username}'s update`, `
-<section class="box"><h2><a href="/site/${esc(p.username)}">${esc(p.username)}</a> ${fileLinks(e, url)}</h2><p class="note">${ago(e.created_at)}</p>
+<section class="box"><h2><a href="/site/${esc(p.username)}">${nameTag(ctx, p.username)}</a> ${fileLinks(e, url)}</h2><p class="note">${ago(e.created_at)}</p>
 ${social(ctx, { ...e, comments: [], commentCount: 0 }, p.username, here)}
 <h3>Comments</h3>${comments.rows.map((c) => commentHtml(ctx, c, mine, here)).join('') || '<p class="note">No comments yet.</p>'}
 ${pager((n) => `${here}?page=${n}`, comments.page, comments.pages)}</section>`, { noindex: true });
@@ -251,7 +258,7 @@ const notifications = (ctx, { rows, page, pages, seenAt }) => {
   const box = (k, label) => `<label><input type="checkbox" name="${k}" value="1"${u.note_mail.split(' ').includes(k) ? ' checked' : ''}> ${label}</label>`;
   return layout(ctx, 'Notifications', `
 <section class="box"><h2>Notifications</h2>
-${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${esc(n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="${esc(n.event_id ? updateUrl(u.username, { id: n.event_id }) : `/site/${u.username}#comments`)}">see it</a>`}</small>${n.comment_id ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${n.comment_id}"><input type="hidden" name="back" value="/notifications"><button class="link">delete</button></form>` : ''}</li>`).join('')}</ul>`
+${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${nameTag(ctx, n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="${esc(n.event_id ? updateUrl(u.username, { id: n.event_id }) : `/site/${u.username}#comments`)}">see it</a>`}</small>${n.comment_id ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${n.comment_id}"><input type="hidden" name="back" value="/notifications"><button class="link">delete</button></form>` : ''}</li>`).join('')}</ul>`
     : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}
 ${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</section>
 <section class="box"><h2>Email me</h2>
@@ -410,7 +417,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
 ${d.canAdd ? `<form class="stack" method="post" action="/dashboard/sites/new">${csrfField(ctx)}<label for="newsite">Add another site to this login (supporters, up to 5)</label><input type="text" id="newsite" name="username" required maxlength="30"><button>Add site</button></form>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/history">bring back deleted files</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/history">bring back deleted files</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a>${d.support ? ' | <a href="/dashboard/support">support us</a>' : ''}</p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -426,8 +433,8 @@ ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is on
 <section class="box"><h2>Files in /${esc(d.dir)}</h2>
 <div class="scroll"><table><tr><th>Name</th><th>Size</th><th>Actions</th></tr>${rows || '<tr><td colspan="3">This folder is empty.</td></tr>'}</table></div>
 <h3>Upload files</h3>
-<form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${cfg.MAX_FILE_MB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
-<div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
+<form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${d.fileMB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
+<div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${d.fileMB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
 <label><input type="checkbox" id="shrink" name="shrink" value="1"> Shrink photos bigger than ${SHRINK_PX} pixels across and drop their hidden camera details (smaller files load faster and save space)</label>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
@@ -591,7 +598,7 @@ const widgets = (ctx, m, { groups, pages }) => {
 <p>${user.webring ? 'Your site is in the webring. Visitors clicking Prev, Next or Random on other sites can land on yours.' : 'Your site is not in the webring. Join it and visitors of other sites can land on yours; you can leave any time.'}</p>
 <button>${user.webring ? 'Leave the webring' : 'Join the webring'}</button></form>`,
   };
-  const item = (g, i) => `<div class="cmt"><b>${esc(i.name)}</b>
+  const item = (g, i) => `<div class="cmt"><b>${esc(i.name)}</b>${i.early ? ' <small>(supporters\' first look)</small>' : ''}
 ${i.preview ? `<p><img src="${esc(i.preview)}" alt=""${i.w ? ` width="${i.w}" height="${i.h}"` : ''}></p>` : ''}${i.see ? `<p><a href="${esc(i.see)}" target="_blank">See it</a></p>` : ''}
 <pre>${esc(i.snippet)}</pre>${g.id === 'effects' ? copy(i.id) : ''}${add(i.id)}</div>`;
   return layout(ctx, 'Widgets', `
@@ -599,6 +606,29 @@ ${i.preview ? `<p><img src="${esc(i.preview)}" alt=""${i.w ? ` width="${i.w}" he
 <datalist id="pages">${pages.map((p) => `<option value="${esc(p)}">`).join('')}</datalist></section>
 ${groups.map((g) => `<section class="box"><h2>${esc(g.title)}</h2><p>${g.about}</p>${extra[g.id] || ''}${g.items.map((i) => item(g, i)).join('\n')}</section>`).join('\n')}
 <section class="box"><h2>Backgrounds</h2><p>Pick a tiling background in the <a href="/dashboard/style">style editor</a>.</p></section>`);
+};
+
+// what supporting gets you; the support page and the supporter terms on /rules both list it
+const perks = (c) => `<ul>
+<li>${c.SUPPORTER_QUOTA_MB} MB of space instead of ${c.QUOTA_MB} MB, and files up to ${c.SUPPORTER_MAX_FILE_MB} MB instead of ${c.MAX_FILE_MB} MB.</li>
+<li>Any type of file, not just the usual web ones. They are still checked for phishing and never run as anything but what they are.</li>
+<li>File history kept for ${c.SUPPORTER_HISTORY_DAYS} days instead of ${c.HISTORY_DAYS}.</li>
+<li>Up to 5 sites under one login.</li>
+<li>A rainbow frame around your screenshot and a little star next to your name across ${esc(c.SITE_NAME)}.</li>
+<li>A first look at new widgets before everyone gets them.</li></ul>`;
+const support = (ctx, m, { until, customer, limits }) => {
+  const c = ctx.cfg;
+  const live = until > Date.now();
+  const manage = customer ? `<form class="inline" method="post" action="/dashboard/support/portal">${csrfField(ctx)}<button>Manage billing, cancel or change card</button></form> <span class="note">on Stripe</span>` : '';
+  return layout(ctx, 'Support', `
+<section class="box"><h2>Support ${esc(c.SITE_NAME)}</h2>${msg(m)}
+<p>${esc(c.SITE_NAME)} is free and stays free. Supporters chip in for the server and get a few extras that cost us something to give.</p>
+${perks(c)}
+${live ? `<p class="ok" role="status">You are a supporter until ${date(until)}. Thank you!</p>${customer ? `<p>${manage}</p>` : ''}`
+    : `${until ? `<p class="note">Your support ended ${date(until)}. Nothing was deleted: files over the free ${c.QUOTA_MB} MB stay online, and uploads wait until your site is back under it.</p>` : ''}
+${c.SUPPORT_ON ? `<form method="post" action="/dashboard/support">${csrfField(ctx)}<button>Become a supporter</button></form>
+<p class="note">Payment is handled by Stripe; your card never touches our server. See the <a href="/rules#supporter-terms">supporter terms</a>.</p>${manage ? `<p>${manage}</p>` : ''}` : ''}`}
+<p>Your limits now: ${limits.quotaMB} MB of space, files up to ${limits.fileMB} MB${limits.anyType ? ', any file type' : ''}. <a href="/dashboard">Back to my pad</a></p></section>`);
 };
 
 // the member's API key: made with their password, shown once, revoked any time
@@ -626,7 +656,7 @@ curl -H "Authorization: Bearer $KEY" -F "files=@index.html" -F "files=@cat.png;f
 
 # delete one file
 curl -H "Authorization: Bearer $KEY" -d "path=pics/cat.png" ${esc(base)}/api/delete</pre>
-<p>Uploads follow the dashboard's rules: allowed file types only, ${ctx.cfg.MAX_FILE_MB} MB a file, your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
+<p>Uploads follow the dashboard's rules: allowed file types only (any type for supporters), your file size limit (${ctx.cfg.MAX_FILE_MB} MB, more for supporters), your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
 <section class="box"><h2>Edit on your computer</h2><p>The <code>puppypad</code> command-line tool uploads a folder for you, sending only the files that changed. It needs <a href="https://nodejs.org/">Node.js</a>.</p>
 <pre>npx @puppypad/cli login --url ${esc(base)}   # paste your key
 npx @puppypad/cli push           # upload new and changed files from this folder
@@ -739,7 +769,7 @@ Deleting your account removes it.</p>
 <li>No pirated or cracked software, and no "unblocked games" or other copies of things you don't own.</li>
 <li>No file dumps. Your ${c.QUOTA_MB} MB is for the files your website uses.</li>
 <li>No attacks on ${name} or other members: no break-in attempts, no flooding, nothing meant to knock the site over.</li>
-<li>One account per person for one site. Don't create accounts in bulk or to hold names.</li>
+<li>One account per person, with one site (supporters can add up to 5 under the same login). Don't create accounts in bulk or to hold names.</li>
 </ol>
 
 <h3>When we remove a site</h3>
@@ -767,6 +797,12 @@ repeat infringers. We may pass your notice, including your email address, to tha
 damage from using or being unable to use it, including lost files, downtime, or anything another member
 publishes. Member sites are made by members, not by us, and some may contain things you find offensive.
 You visit them at your own risk.</p>
+${c.SUPPORT_ON ? `
+<h3 id="supporter-terms">Supporter terms</h3>
+<p>Supporting is optional; everything free stays free. A supporter subscription renews each period at the price shown at checkout until you cancel, and includes:</p>
+${perks(c)}
+<p>Payments are taken by Stripe. Cancel any time from the support page on your dashboard; the extras last until the end of the period you paid for, and nothing more is charged. We don't refund part-used periods, but if something went wrong with a charge, write to ${mail} and we will sort it out.</p>
+<p>When support ends nothing is deleted. Files over the free ${c.QUOTA_MB} MB stay online, but new uploads wait until the site is back under the free limits; extra sites stay, and new ones can't be added. Supporting doesn't change the house rules: a site that breaks them is removed like any other.</p>` : ''}
 ${c.GOVERNING_LAW ? `
 <h3>Governing law</h3>
 <p>These terms are governed by the laws of ${esc(c.GOVERNING_LAW)}.</p>` : ''}
@@ -790,7 +826,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
 </ul>
 <h3>Who else sees it</h3>
-<p>Your site, its files, your site name, description, followers and hit count are public. Guestbook entries are public on the site they were left on, and comments and likes you leave are public too. We do not sell or share your data. Our email provider delivers our messages${ctx.cfg.TURNSTILE_SITE_KEY ? ', and Cloudflare Turnstile checks that people signing up are human' : ''}.</p>
+<p>Your site, its files, your site name, description, followers and hit count are public. Guestbook entries are public on the site they were left on, and comments and likes you leave are public too. We do not sell or share your data. Our email provider delivers our messages${ctx.cfg.TURNSTILE_SITE_KEY ? ', and Cloudflare Turnstile checks that people signing up are human' : ''}.${ctx.cfg.SUPPORT_ON ? ' Supporter payments are processed by Stripe, which receives your email address and payment details; we keep only your Stripe customer number and how long your support lasts, never your card.' : ''}</p>
 <h3>Deleting it</h3>
 <p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
@@ -819,7 +855,7 @@ ${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll"
 };
 
 const admin = (ctx, m, { q, reports, users, signups, stats, log, upgrade, sotw, picks }) => layout(ctx, 'Admin', `
-<section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
+<section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.supporters} supporters, ${stats.open} open reports.</p>
 <h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
 ${reports.rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
 <td><form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="rpage" value="${reports.page}"><button class="link">close</button></form></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>${pager((n) => `/admin?${q ? `q=${encodeURIComponent(q)}&` : ''}rpage=${n}`, reports.page, reports.pages)}
@@ -838,7 +874,7 @@ The home page shows them while they are listed (not hidden, and past the new-sit
 <h3>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h3>
 <form class="inline" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label> <input type="search" id="q" name="q" value="${esc(q)}"> <button>Search</button>${q ? ' <a href="/admin">clear</a>' : ''}</form>
 <div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th></tr>
-${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td></tr>`).join('') || '<tr><td colspan="7">No members found.</td></tr>'}</table></div>
+${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.supporter_until > Date.now() ? `<br><small>supporter to ${date(u.supporter_until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td></tr>`).join('') || '<tr><td colspan="7">No members found.</td></tr>'}</table></div>
 <h3>Signups per day</h3><div class="scroll"><table><tr><th>Day (UTC)</th><th>Signups</th></tr>
 ${signups.map((d) => `<tr><td>${d.day}</td><td class="num">${d.n}</td></tr>`).join('') || '<tr><td colspan="2">None in the last 14 days.</td></tr>'}</table></div>
 <h3>Moderation log</h3><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
@@ -877,4 +913,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { CM, layout, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };

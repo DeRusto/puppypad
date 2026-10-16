@@ -47,13 +47,14 @@ const statusSvg = (status) => lineSvg(status || '...');
 // one short line, no control characters
 const cleanStatus = (s) => String(s || '').replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
 
-// the widgets page, group by group; each item's snippet is what "Add to a page" inserts, looked up by its id
-function groups(cfg, user) {
+// the widgets page, group by group; each item's snippet is what "Add to a page" inserts, looked up by its id.
+// A list entry marked early: true is a supporters' first look: only they see it until the mark comes off
+function groups(cfg, user, supporter = false) {
   const base = cfg.BASE_URL;
   const site = cfg.siteUrl(user.username);
   const img = (src, alt, extra = '') => `<img src="${src}" alt="${esc(alt)}"${extra}>`;
   const gallery = (list) => list.map((b) => ({
-    id: b.id, name: b.name, preview: `/assets/buttons/${b.id}.svg`, w: b.w, h: b.h,
+    id: b.id, name: b.name, early: b.early, preview: `/assets/buttons/${b.id}.svg`, w: b.w, h: b.h,
     snippet: `<a href="${base}">${img(`${base}/assets/buttons/${b.id}.svg`, b.name, ` width="${b.w}" height="${b.h}"`)}</a>`,
   }));
   return [
@@ -71,10 +72,10 @@ function groups(cfg, user) {
     { id: 'buttons', title: '88×31 buttons', about: 'Little buttons that link back here.', items: gallery(BUTTONS) },
     { id: 'stamps', title: 'Stamps', about: 'Say something about yourself.', items: gallery(STAMPS) },
     { id: 'effects', title: 'Effects', about: 'Small scripts that run on your pages. Copy one into your site first, then add it to a page. Visitors who ask their browser for less motion don\'t see them.',
-      items: EFFECTS.map((e) => ({ id: e.id, name: e.name, see: `/assets/fx/${e.id}.js`, snippet: `<script src="/${e.id}.js"></script>` })) },
-  ];
+      items: EFFECTS.map((e) => ({ id: e.id, name: e.name, early: e.early, see: `/assets/fx/${e.id}.js`, snippet: `<script src="/${e.id}.js"></script>` })) },
+  ].map((g) => ({ ...g, items: g.items.filter((i) => supporter || !i.early) })).filter((g) => g.items.length);
 }
-const snippet = (cfg, user, id) => groups(cfg, user).flatMap((g) => g.items).find((i) => i.id === id) || null;
+const snippet = (cfg, user, id, supporter) => groups(cfg, user, supporter).flatMap((g) => g.items).find((i) => i.id === id) || null;
 const effectSource = (id) => (EFFECTS.some((e) => e.id === id) ? fs.readFileSync(path.join(ASSETS, 'fx', `${id}.js`), 'utf8') : null);
 
 // the widget routes on member sites; req.owner is the site's owner

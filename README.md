@@ -24,6 +24,12 @@ deleted site's name is held for 90 days.
   `ZIP_MAX_MB` per import and `BANDWIDTH_MB` served per day. File types follow a fixed allowlist
   (`src/util.js`). Raising
   `QUOTA_MB` grows every site; lowering it only applies to new signups.
+- Optional supporter tier through Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`;
+  hidden while any is empty). Supporters get `SUPPORTER_QUOTA_MB` (2000) and `SUPPORTER_MAX_FILE_MB` (25), any
+  file type, longer history, up to 5 sites per login, a rainbow frame and star by their name, and a first look at
+  widgets marked `early`. `/dashboard/support` opens Stripe Checkout and the Customer Portal; `POST /stripe/webhook`
+  sets `users.supporter_until`. When it lapses nothing is deleted: uploads wait until the site is under the free limits.
+  Admins can grant it by hand on `/admin`.
 
 **Serving.** Each site is served on its own subdomain, with clean URLs (`/about` serves `about.html`)
 and an optional custom `not_found.html`. Members see views per page per day and the sites visitors
@@ -199,6 +205,7 @@ and a check that the Caddyfile is valid.
 - **Certificates**: Caddy (built from `caddy/Dockerfile` with the Cloudflare DNS plugin) gets one `*.yourdomain` certificate through a DNS challenge, so new member sites never wait on a certificate. Keep the DNS records grey-clouded: if you turn on Cloudflare's proxy, every visitor arrives from a Cloudflare IP, and the per-IP rate limits need to read the real address from `CF-Connecting-IP` first.
 - **Cookies**: member pages run their own JavaScript on subdomains of your main domain. The login cookie is host-only with the `__Host-` prefix, so member sites cannot read or overwrite it. Serving member sites from a separate domain is stronger still, and is what the big hosts do.
 - **Rules**: edit the rules page in `src/views.js`. As the operator you are the one who gets the takedown notices, so keep `ABUSE_EMAIL` monitored. If you are in the US, look into registering a DMCA agent.
+- **Supporter tier**: before setting the Stripe keys, read the "Supporter terms" on `/rules` and the Stripe line on `/privacy` (both appear once the keys are set) and make them match what you sell. In the Stripe Dashboard: turn on the Customer Portal with cancellation at the end of the period, turn on Smart Retries and the failed-payment emails (Billing > Revenue recovery), and give the product the "digital services" tax category with your head office address so Stripe Tax's free threshold monitoring warns you before you owe sales tax anywhere.
 - **Captcha**: set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (Cloudflare Turnstile) before opening signups. Without them only the honeypot and rate limits stand in the way of bots.
 - **Phishing**: saving or uploading an HTML page with a password field, a card-number field or a big brand name in its title puts the site in the `/admin` queue as an "Auto-flag" report and emails `ABUSE_EMAIL`. The site stays online until a moderator looks.
 - **Public Suffix List**: see `docs/public-suffix-list.md`.
