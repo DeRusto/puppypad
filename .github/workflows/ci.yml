@@ -13,6 +13,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx playwright install --with-deps chromium # for test/editor.browser.test.js
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high
       - name: Check the Caddyfile

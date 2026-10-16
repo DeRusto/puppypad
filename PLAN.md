@@ -40,7 +40,7 @@ it. It covers what the framework is today, what must change before signups open 
 | Config, routing, all handlers | `src/server.js` | Single Express app, one process |
 | Schema | `src/db.js` | `CREATE TABLE IF NOT EXISTS` plus ad-hoc `ALTER TABLE` for new columns |
 | Helpers | `src/util.js` | scrypt passwords, name rules, reserved names, path safety, in-memory rate limiter |
-| HTML | `src/views.js` | Server-rendered template strings; CodeMirror 5 from cdnjs |
+| HTML | `src/views.js` | Server-rendered template strings; CodeMirror 5 from npm, served at `/cm/<version>` |
 | New-site page | `templates/*.html`, listed in `src/starters.js` | The layout picked at signup is written to `index.html` |
 | Screenshots | `shots/worker.js` | Separate container, blocks IPs and internal hostnames |
 | Deploy | `docker-compose.yml`, `Caddyfile`, `Dockerfile` | One VPS, everything under `./data` |
@@ -214,7 +214,7 @@ signup. **Your step:** read both pages and make them match how you run things
   a password reset no longer logs in on its own while it is on.
 - ✅ Favicon and link-preview defaults: a PuppyPad favicon and an `og:image` from the dog-park
   screenshot when the member has none.
-- Editor extras: tag autocomplete (Emmet) and find-and-replace, from CodeMirror addons.
+- ✅ Editor extras: tag autocomplete and find-and-replace, from CodeMirror addons (CodeMirror's own tag hints and auto-closing tags; Emmet left out unless members ask).
 - Member-run webrings: any member can start a named ring that others join, with a ring page and snippet.
 - Monthly theme challenges using tags, with a gallery.
 - Inactive sites: email members whose site is still the untouched starter after 60 days, and archive
