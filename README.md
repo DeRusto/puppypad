@@ -93,8 +93,11 @@ the checkout with the app running. It treats this as an upgrade (below) and leav
 
 `scripts/backup.sh` takes a consistent copy of the database while the app runs, archives it with
 every member's files into `./backups`, and keeps the last 14. Set `BACKUP_REMOTE` to an
-[rclone](https://rclone.org) remote to copy the archives off the server too. The installer schedules
-it every night at 03:15, logging to `backups/backup.log`.
+[rclone](https://rclone.org) remote to copy the archives off the server too; the remote then keeps
+14 days and `./backups` only the last 3. Each archive is about the size of `data/sites`, and pictures
+don't compress, so leave room for that many copies on the server's disk: once less than 5% is free,
+`/healthz` fails and uploads are turned away. The installer schedules it every night at 03:15,
+logging to `backups/backup.log`.
 
 To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/puppypad.db-shm`
 (left over, they would be replayed onto the restored database and corrupt it), unpack an archive
@@ -122,6 +125,13 @@ and `scripts/install.sh v1.2.3` moves to a given one (older ones too). An upgrad
 5. waits for `/healthz` and for every container to stay running, and puts the previous files and
    version back if it doesn't come up. `VERSION` changes only once this passes, so an interrupted
    upgrade is simply tried again.
+
+An upgrade replaces `docker-compose.yml`, `Caddyfile` and `scripts/` with the release's copies, so
+local changes there are lost (the last replaced copies sit in `.upgrade/prev.tar` until the next
+upgrade). Put compose changes (a bigger `mem_limit`, another port) in `docker-compose.local.yml`
+and add `COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml` to `.env`: docker compose then
+loads both, and upgrades never touch it. Don't use `docker-compose.override.yml`; the installer
+refuses it, since a source checkout uses that name to build images from source.
 
 Every download and pull has a time limit. A rollback leaves the database as the new release left it,
 which is fine while schema changes only add tables and columns; the backup from step 3 is the newest
