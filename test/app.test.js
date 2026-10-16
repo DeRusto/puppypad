@@ -1534,3 +1534,146 @@ test('the link checker follows <base href> and trailing slashes like the router'
   const listed = [...(await req('get', '/dashboard/links').set('Cookie', m.cookie)).text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
   assert.deepEqual(listed.sort(), ['/about/', 'dog.txt']);
 });
+
+const bossLogin = async () => {
+  const cookie = (await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0];
+  return { cookie, csrf: (await req('get', '/admin').set('Cookie', cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1] };
+};
+const post = (m, url, body) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+const eventOf = (name) => db.prepare('SELECT e.id FROM events e JOIN users u ON u.id = e.user_id WHERE u.username = ? ORDER BY e.id DESC').get(name).id;
+
+test('staff picks and the site of the week are set from /admin and shown on the home page while listed', async () => {
+  const boss = await bossLogin();
+  const m = await member('picked');
+  await upload(m, 'index.html', '<h1>pick me</h1>');
+  await member('weekly');
+  db.prepare("UPDATE users SET created_at = ?, updates = 1 WHERE username IN ('picked', 'weekly')").run(Date.now() - 25 * 3600000);
+  await post(boss, '/admin/feature', { site: 'picked', action: 'pick' });
+  await post(boss, '/admin/feature', { site: 'weekly', action: 'sotw' });
+  let home = (await req('get', '/')).text;
+  assert.match(home, /Site of the week<\/h2><ul class="grid"><li class="card">[^]*?weekly/);
+  assert.match(home, /Staff picks<\/h2><ul class="grid"><li class="card">[^]*?picked/);
+  assert.match((await req('get', '/admin').set('Cookie', boss.cookie)).text, /Site of the week: <a href="\/site\/weekly">/);
+  // one site of the week at a time
+  await post(boss, '/admin/feature', { site: 'picked', action: 'sotw' });
+  assert.deepEqual(db.prepare('SELECT username FROM users WHERE sotw_at > 0').all().map((r) => r.username), ['picked']);
+  // hidden sites stay off the home page; unpicking and clearing take them off
+  db.prepare("UPDATE users SET hidden = 1 WHERE username = 'picked'").run();
+  assert.doesNotMatch((await req('get', '/')).text, /Site of the week|Staff picks/);
+  db.prepare("UPDATE users SET hidden = 0 WHERE username = 'picked'").run();
+  await post(boss, '/admin/feature', { site: 'picked', action: 'unpick' });
+  await post(boss, '/admin/feature', { action: 'unsotw' });
+  home = (await req('get', '/')).text;
+  assert.doesNotMatch(home, /Site of the week|Staff picks/);
+  assert.deepEqual(db.prepare("SELECT action FROM admin_log WHERE action IN ('staff pick', 'site of the week', 'remove staff pick') AND site = 'picked' ORDER BY id").all().map((r) => r.action), ['staff pick', 'site of the week', 'remove staff pick']);
+  // members can't do it
+  assert.equal((await post(m, '/admin/feature', { site: 'picked', action: 'pick' })).status, 404);
+});
+
+test('profile comments: members comment, bots and floods are stopped, and only the owner deletes', async () => {
+  const owner = await member('commented');
+  const fan = await member('chatty');
+  assert.match((await req('get', '/site/commented')).text, /Log in<\/a> to leave a comment/);
+  await post(fan, '/comment', { site: 'commented', body: 'nice <b>pad</b>', back: 'profile' });
+  await post(fan, '/comment', { site: 'commented', body: 'buy pills', website: 'http://spam', back: 'profile' }); // honeypot
+  let page = (await req('get', '/site/commented')).text;
+  assert.match(page, /nice &lt;b&gt;pad&lt;\/b&gt;/);
+  assert.doesNotMatch(page, /buy pills/);
+  const id = db.prepare("SELECT id FROM comments WHERE body LIKE 'nice%'").get().id;
+  await post(fan, '/comment/delete', { id }); // not the owner: nothing happens
+  assert.ok(db.prepare('SELECT 1 FROM comments WHERE id = ?').get(id));
+  await post(owner, '/comment/delete', { id });
+  assert.equal(db.prepare('SELECT 1 FROM comments WHERE id = ?').get(id), undefined);
+  // the guestbook's limit: three in ten minutes from one connection
+  const from = (body) => req('post', '/comment').set('Cookie', fan.cookie).set('X-Forwarded-For', '10.9.9.9').type('form').send({ _csrf: fan.csrf, site: 'commented', body });
+  for (const n of [1, 2, 3]) assert.equal((await from(`hi ${n}`)).status, 302);
+  assert.equal((await from('hi 4')).status, 429);
+});
+
+test('feed updates take likes and comments', async () => {
+  const site = await member('liked');
+  await upload(site, 'index.html', '<h1>new</h1>');
+  const fan = await member('liker');
+  await post(fan, '/follow', { site: 'liked' });
+  const ev = eventOf('liked');
+  await post(fan, '/like', { event: ev, back: 'feed' });
+  await post(fan, '/like', { event: ev, back: 'feed' }); // twice is still one
+  await post(fan, '/comment', { event: ev, body: 'love the update', back: 'feed' });
+  const feed = (await req('get', '/feed').set('Cookie', fan.cookie)).text;
+  assert.match(feed, /1 like <form[^]*?value="unlike"/);
+  assert.match(feed, /love the update/);
+  // the owner sees both under the update on their profile, and can delete the comment
+  const prof = (await req('get', '/site/liked').set('Cookie', site.cookie)).text;
+  assert.match(prof, /Recent activity[^]*1 like[^]*action="\/comment\/delete"[^]*love the update/);
+  assert.equal((await post(fan, '/like', { event: ev, action: 'unlike', back: 'feed' })).headers.location, '/feed');
+  assert.match((await req('get', '/feed').set('Cookie', fan.cookie)).text, /0 likes/);
+});
+
+test('blocking a member hides their comments and likes, ends follows, and stops new ones', async () => {
+  const me = await member('blocker');
+  await upload(me, 'index.html', '<h1>mine</h1>');
+  const pest = await member('pest');
+  await post(pest, '/follow', { site: 'blocker' });
+  await post(me, '/follow', { site: 'pest' });
+  await post(pest, '/comment', { site: 'blocker', body: 'old comment' });
+  await post(pest, '/like', { event: eventOf('blocker') });
+  await post(me, '/block', { site: 'pest' });
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM follows f JOIN users a ON a.id = f.follower_id JOIN users b ON b.id = f.followed_id WHERE a.username IN (\'pest\', \'blocker\') AND b.username IN (\'pest\', \'blocker\')').get().n, 0);
+  // hidden on my profile for every visitor
+  const page = (await req('get', '/site/blocker')).text;
+  assert.doesNotMatch(page, /old comment/);
+  assert.match(page, /0 likes/);
+  // new comments, likes and follows go nowhere
+  await post(pest, '/comment', { site: 'blocker', body: 'new comment' });
+  await post(pest, '/follow', { site: 'blocker' });
+  await post(pest, '/like', { event: eventOf('blocker'), action: 'like' });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM comments WHERE body = 'new comment'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM follows WHERE follower_id = (SELECT id FROM users WHERE username = 'pest')").get().n, 0);
+  assert.match((await req('get', '/site/pest').set('Cookie', me.cookie)).text, /value="unblock">Unblock/);
+  // unblocking brings the old comment back
+  await post(me, '/block', { site: 'pest', action: 'unblock' });
+  assert.match((await req('get', '/site/blocker')).text, /old comment/);
+});
+
+test('notifications list new followers, comments and likes, email the kinds asked for, and respect blocks', async () => {
+  const me = await member('noticed');
+  await upload(me, 'index.html', '<h1>hi</h1>');
+  const a = await member('fan-a');
+  const b = await member('fan-b');
+  await post(me, '/notifications/settings', { comment: '1' });
+  const mailed = mail.length;
+  await post(a, '/follow', { site: 'noticed' });
+  await post(a, '/like', { event: eventOf('noticed') });
+  await post(b, '/comment', { site: 'noticed', body: 'hello there' });
+  const sent = mail.slice(mailed).join('\n');
+  assert.match(sent, /to=noticed@example.com subject="fan-b commented on your site/);
+  assert.doesNotMatch(sent, /started following|liked your update/); // not asked for
+  assert.match((await req('get', '/dashboard').set('Cookie', me.cookie)).text, /Notifications \(3\)/);
+  const list = (await req('get', '/notifications').set('Cookie', me.cookie)).text;
+  assert.match(list, /fan-b<\/a> commented on your site: "hello there"[^]*fan-a<\/a> liked your update[^]*fan-a<\/a> started following you/);
+  assert.equal((list.match(/class="new"/g) || []).length, 3);
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', me.cookie)).text, /Notifications \(/);
+  await post(me, '/block', { site: 'fan-b' });
+  assert.doesNotMatch((await req('get', '/notifications').set('Cookie', me.cookie)).text, /fan-b/);
+});
+
+test('the weekly digest emails updates from followed sites to members who opted in, once a week', async () => {
+  const reader = await member('reader');
+  const writer = await member('writer');
+  await post(reader, '/follow', { site: 'writer' });
+  await post(reader, '/notifications/settings', { digest: '1' });
+  await upload(writer, 'poem.html', '<p>roses</p>');
+  const before = mail.length;
+  app.housekeeping();
+  assert.equal(mail.slice(before).some((m) => m.includes('to=reader@')), false); // a week hasn't passed
+  db.prepare("UPDATE users SET digest_at = digest_at - ? WHERE username = 'reader'").run(8 * 86400000);
+  db.prepare("UPDATE events SET created_at = created_at - ? WHERE user_id = (SELECT id FROM users WHERE username = 'writer')").run(86400000);
+  app.housekeeping();
+  const digest = mail.slice(before).find((m) => m.includes('to=reader@'));
+  assert.match(digest, /This week on PuppyPad: 1 update from sites you follow[^]*writer updated poem\.html\nhttp:\/\/writer\.pad\.test\//);
+  await new Promise((r) => setImmediate(r)); // the sent digest moves the cutoff
+  const again = mail.length;
+  db.prepare("UPDATE users SET digest_at = digest_at - ? WHERE username = 'reader'").run(60000);
+  app.housekeeping();
+  assert.equal(mail.slice(again).some((m) => m.includes('to=reader@')), false);
+});

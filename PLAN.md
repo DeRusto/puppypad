@@ -181,20 +181,20 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ Image tools: optional resize and compress on upload (on the server with sharp), and an image picker in the editor that inserts
   `<img>` with width and height.
 - ✅ Guestbook notifications: email the owner on new entries (instant, daily digest or off; daily by default).
-- Weekly digest email of updates from followed sites (opt-in).
-- Staff picks and a "site of the week" on the home page (admin flag on `users`).
+- ✅ Weekly digest email of updates from followed sites (opt-in on `/notifications`, `users.digest`); a quiet week sends nothing.
+- ✅ Staff picks and a "site of the week" on the home page (`users.staff_pick`, `users.sotw_at`), set from `/admin` and shown while the site is listed.
 - Guestbook word filter and per-site IP block for owners, alongside holding entries with links.
 - ✅ Admin search and stats: `/admin` finds members by part of their name or email or by exact signup IP,
   lists signups per day for 14 days, and shows each listed site's disk use and bandwidth today.
 - ✅ More space: raise the free quota from 50 MB to 500 MB (`QUOTA_MB=500`). Grow the disk first: the
   80 GB VPS holds about 100 members at a full 500 MB, so add a volume and keep the 80% disk alert (§5).
   Move site disk totals (`usage()`) to a background job first, so `/admin` and the dashboard stop walking big folders on each request.
-- Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can
+- ✅ Profile comments: logged-in members comment on a site's profile page (`/site/name`); the owner can
   delete them. Same rate limits and honeypot as the guestbook.
-- Likes and comments on feed updates ("so-and-so updated their site").
+- ✅ Likes and comments on feed updates ("so-and-so updated their site"), on the feed and under Recent activity on the profile.
 - ✅ The feed names the files an update changed and links to them (`events.files`).
-- Notifications: an in-site list of new followers, comments and likes, with optional email for each.
-- Block a member: hides their comments, likes and follows from you.
+- ✅ Notifications: an in-site list of new followers, comments and likes (`/notifications`, worked out from those tables), with optional email for each.
+- ✅ Block a member: hides their comments and likes on your profile and updates from everyone (and theirs elsewhere from you), stops new ones, and ends follows between you.
 - HTTP API with a per-member API key: upload, delete, list files and site info. The CLI and deploy
   Action in Phase C are thin clients over it.
 

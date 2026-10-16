@@ -95,6 +95,29 @@ CREATE TABLE IF NOT EXISTS referrers (
   views INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, day, host)
 );
+-- comments on a member's profile (event_id NULL) or on one of their feed updates; user_id is the member whose space it is
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS likes (
+  event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (event_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS blocks (
+  blocker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (blocker_id, blocked_id)
+);
+CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_comments_event ON comments(event_id);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id);
 CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at);
@@ -103,11 +126,13 @@ CREATE INDEX IF NOT EXISTS idx_guestbook_user ON guestbook(user_id, id);
 
 // columns added after v0.1
 const cols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.name));
-for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0'], ['tags', "TEXT NOT NULL DEFAULT ''"], ['gb_notify', "TEXT NOT NULL DEFAULT 'daily'"], ['gb_digest_at', 'INTEGER NOT NULL DEFAULT 0'], ['renamed_at', 'INTEGER NOT NULL DEFAULT 0']]) {
+for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0'], ['tags', "TEXT NOT NULL DEFAULT ''"], ['gb_notify', "TEXT NOT NULL DEFAULT 'daily'"], ['gb_digest_at', 'INTEGER NOT NULL DEFAULT 0'], ['renamed_at', 'INTEGER NOT NULL DEFAULT 0'], ['staff_pick', 'INTEGER NOT NULL DEFAULT 0'], ['sotw_at', 'INTEGER NOT NULL DEFAULT 0'], ['notes_seen_at', 'INTEGER NOT NULL DEFAULT 0'], ['note_mail', "TEXT NOT NULL DEFAULT ''"], ['digest', 'INTEGER NOT NULL DEFAULT 0'], ['digest_at', 'INTEGER NOT NULL DEFAULT 0']]) {
   if (!cols.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
 }
 // existing guestbooks start their first digest from now, not from every entry ever signed
 if (!cols.has('gb_digest_at')) db.prepare('UPDATE users SET gb_digest_at = ?').run(Date.now());
+// existing members' old followers are not news
+if (!cols.has('notes_seen_at')) db.prepare('UPDATE users SET notes_seen_at = ?').run(Date.now());
 if (!db.prepare('PRAGMA table_info(guestbook)').all().some((c) => c.name === 'approved')) db.exec('ALTER TABLE guestbook ADD COLUMN approved INTEGER NOT NULL DEFAULT 1');
 // a name left behind by a rename points at its site, so the old address redirects while the name is held
 if (!db.prepare('PRAGMA table_info(released_names)').all().some((c) => c.name === 'user_id')) db.exec('ALTER TABLE released_names ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
