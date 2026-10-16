@@ -2001,4 +2001,7 @@ test('supporters run several sites under one login; free members cannot', async 
   await member('stranger');
   await pick(free, db.prepare('SELECT id FROM users WHERE username = ?').get('stranger').id);
   assert.match(await dash(), /<b>freebie-two<\/b>/);
+  // "log out everywhere" reaches a session that is switched to an extra site
+  await req('post', '/account/logout-all').set('Cookie', free.cookie).type('form').send({ _csrf: free.csrf });
+  assert.equal((await req('get', '/dashboard').set('Cookie', free.cookie)).status, 302);
 });
