@@ -80,16 +80,11 @@ const record = (id, tree, message, keep) => queue(id, async () => {
 
 const exists = (id) => fs.existsSync(gitDir(id));
 const trimSite = (id, tree, keep) => queue(id, async () => { if (exists(id)) await trim(id, tree, keep); });
-// versions of one file, newest first: [{ sha, t }], and how many there are
-async function versions(id, tree, rel, skip, max) {
-  const none = { rows: [], total: 0 };
-  if (!exists(id)) return none;
-  const [log, count] = await Promise.all([
-    git(id, tree, ['log', `--skip=${skip}`, `--max-count=${max}`, '--format=%H %ct', '--', rel]),
-    git(id, tree, ['rev-list', '--count', 'HEAD', '--', rel]),
-  ]).catch(() => []); // no commits yet: a site with no text files
-  if (log === undefined) return none;
-  return { rows: log.trim().split('\n').filter(Boolean).map((l) => { const [sha, t] = l.split(' '); return { sha, t: t * 1000 }; }), total: Number(count) };
+// every kept version of one file, newest first: [{ sha, t }]; the commits that deleted it hold no version, so they are left out
+async function versions(id, tree, rel) {
+  if (!exists(id)) return [];
+  const log = await git(id, tree, ['log', '--no-renames', '--diff-filter=AMT', '--format=%H %ct', '--', rel]).catch(() => ''); // no commits yet
+  return log.trim().split('\n').filter(Boolean).map((l) => { const [sha, t] = l.split(' '); return { sha, t: t * 1000 }; });
 }
 // deleted files that are not back, newest deletion first: [{ rel, sha (the version before the delete), t }]
 async function deleted(id, tree) {

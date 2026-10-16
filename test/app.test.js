@@ -2146,12 +2146,14 @@ test('file history keeps each save of a text file, puts old versions back and br
   assert.match(back.headers.location, /ok=Restored/);
   assert.equal(fs.readFileSync(path.join(tree, 'a.html'), 'utf8'), '<p>first</p>');
   // the signup's starter page was kept before any edit
-  assert.ok((await H.versions(user.id, tree, 'index.html', 0, 10)).total >= 1);
+  assert.ok((await H.versions(user.id, tree, 'index.html')).length >= 1);
   // deleted files are listed and come back
   await until('/dashboard/history/file?path=a.html', /current version/);
   await post(m, '/dashboard/delete', { path: 'a.html' });
   const gone = await until('/dashboard/history', /<td>a\.html<\/td>/);
   const before = gone.text.match(/name="v" value="([0-9a-f]{40})"/)[1];
+  // the file's own page lists only versions that hold it, each one viewable
+  for (const v of await H.versions(user.id, tree, 'a.html')) assert.ok(await H.show(user.id, tree, v.sha, 'a.html'));
   await post(m, '/dashboard/history/restore', { path: 'a.html', v: before });
   assert.equal(fs.readFileSync(path.join(tree, 'a.html'), 'utf8'), '<p>first</p>');
   // pictures are not kept, and nobody reads another site's versions or a made-up one
@@ -2161,10 +2163,10 @@ test('file history keeps each save of a text file, puts old versions back and br
   // trimming forgets versions older than the cutoff but always keeps the newest, and keeps the repository small
   await until('/dashboard/history/file?path=a.html', /current version/);
   await H.trim(user.id, tree, { since: Date.now() + 1000, maxBytes: 1 << 20 });
-  const left = await H.versions(user.id, tree, 'a.html', 0, 10);
-  assert.equal(left.total, 1);
-  assert.equal((await H.show(user.id, tree, left.rows[0].sha, 'a.html')).toString(), '<p>first</p>');
-  assert.equal((await H.versions(user.id, tree, 'cat.png', 0, 10)).total, 0);
+  const left = await H.versions(user.id, tree, 'a.html');
+  assert.equal(left.length, 1);
+  assert.equal((await H.show(user.id, tree, left[0].sha, 'a.html')).toString(), '<p>first</p>');
+  assert.equal((await H.versions(user.id, tree, 'cat.png')).length, 0);
   // deleting the account deletes its history
   await post(m, '/dashboard/delete-account', { password: 'longpassword1' });
   assert.ok(!H.exists(user.id));

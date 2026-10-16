@@ -1197,9 +1197,9 @@ main.get('/dashboard/history/file', auth, async (req, res) => {
   const rel = U.safeRel(req.query.path);
   if (!rel || !U.TEXT_EXT.has(U.extOf(rel))) return showDashboard(req, res, { err: 'Only pages and other text files have a history.' }, 400);
   const tree = siteDir(user.username);
-  const { page, pages } = pageOf(req, (await H.versions(user.id, tree, rel, 0, 0)).total);
-  const { rows } = await H.versions(user.id, tree, rel, (page - 1) * PER_PAGE, PER_PAGE);
-  res.send(V.history(req.ctx, msgOf(req), { rel, rows, page, pages, exists: fs.existsSync(path.join(tree, rel)), days: historyDays(user) }));
+  const all = await H.versions(user.id, tree, rel);
+  const { page, pages } = pageOf(req, all.length);
+  res.send(V.history(req.ctx, msgOf(req), { rel, rows: all.slice((page - 1) * PER_PAGE, page * PER_PAGE), page, pages, exists: fs.existsSync(path.join(tree, rel)), days: historyDays(user) }));
 });
 main.get('/dashboard/history/view', auth, async (req, res) => {
   const rel = U.safeRel(req.query.path);
