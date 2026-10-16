@@ -1963,13 +1963,34 @@ test('the CLI pushes only changed files, deletes only with --delete, and pulls t
     fs.writeFileSync(path.join(src, 'index.html'), '<h1>changed</h1>');
     assert.match(await cli('push', src), /^upload {2}index\.html\nUploaded 1\./m); // extra.html stays without --delete
     assert.ok(fs.existsSync(path.join(live, 'extra.html')));
+    // a failed upload stops --delete, since what it would remove may be what the failed file replaces
+    fs.writeFileSync(path.join(src, 'huge.png'), Buffer.alloc(1048576 + 1));
+    await assert.rejects(cli('push', src, '--delete'), /huge\.png \(too big\).*Nothing was deleted/);
+    assert.ok(fs.existsSync(path.join(live, 'extra.html')));
+    fs.rmSync(path.join(src, 'huge.png'));
     assert.match(await cli('push', src, '--delete'), /delete {2}extra\.html/);
     assert.ok(!fs.existsSync(path.join(live, 'extra.html')));
+
+    // the server turns spaces into underscores; the CLI compares by that name so nothing is re-sent or deleted
+    fs.writeFileSync(path.join(src, 'my page.html'), 'spaced');
+    assert.match(await cli('push', src, '--delete'), /upload {2}my_page\.html\nUploaded 1, deleted 0\./);
+    assert.match(await cli('push', src, '--delete'), /is up to date/);
+    fs.writeFileSync(path.join(src, 'my  page.html'), 'clash');
+    await assert.rejects(cli('push', src), /would both be stored as my_page\.html/);
+    fs.rmSync(path.join(src, 'my  page.html'));
+    await cli('delete', 'my_page.html');
+    fs.rmSync(path.join(src, 'my page.html'));
 
     const back = path.join(tmp, 'back');
     assert.match(await cli('pull', back), /Downloaded 2 of 2/);
     assert.equal(fs.readFileSync(path.join(back, 'index.html'), 'utf8'), '<h1>changed</h1>');
     assert.match(await cli('pull', back), /already here/);
+    const trap = path.join(tmp, 'trap');
+    fs.mkdirSync(path.join(tmp, 'elsewhere'));
+    fs.mkdirSync(trap);
+    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(trap, 'pics'));
+    await assert.rejects(cli('pull', trap), /symlink/);
+    assert.ok(!fs.existsSync(path.join(tmp, 'elsewhere', 'cat.gif')));
     assert.match(await cli('delete', 'pics/cat.gif', 'nope.gif'), /deleted {2}pics\/cat\.gif\nnot found {2}nope\.gif/);
     assert.match(await cli('info'), /clidog {2}http:\/\/clidog\.pad\.test\//);
     assert.match(await cli('list'), /index\.html/);

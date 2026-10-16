@@ -89,45 +89,54 @@ async function push(api, dir, { delete: prune, 'dry-run': dry }) {
   const site = await api.call('GET', '/api/site');
   const remote = new Map((await api.call('GET', '/api/files')).files.map((f) => [f.path, f.sha256]));
   const allowed = new Set(site.allowed_types);
-  const local = localFiles(dir);
   const ext = (p) => (p.includes('.') ? p.split('.').pop().toLowerCase() : '');
-  const left = local.filter((p) => !allowed.has(ext(p)));
-  const big = local.filter((p) => allowed.has(ext(p)) && fs.statSync(path.join(dir, p)).size > site.max_file_bytes);
-  const send = local.filter((p) => allowed.has(ext(p)) && !big.includes(p) && remote.get(p) !== sha256(path.join(dir, p)));
-  const here = new Set(local);
-  const gone = prune ? [...remote.keys()].filter((p) => !here.has(p)) : [];
+  // the server stores "my page.html" as "my_page.html", so compare and delete by the stored name
+  const local = new Map();
+  for (const file of localFiles(dir)) {
+    const name = file.replace(/\s+/g, '_');
+    if (local.has(name)) throw new Fail(`${local.get(name)} and ${file} would both be stored as ${name}. Rename one.`);
+    local.set(name, file);
+  }
+  const left = [...local.values()].filter((f) => !allowed.has(ext(f)));
+  const big = [...local.values()].filter((f) => allowed.has(ext(f)) && fs.statSync(path.join(dir, f)).size > site.max_file_bytes);
+  const send = [...local].filter(([name, f]) => allowed.has(ext(f)) && !big.includes(f) && remote.get(name) !== sha256(path.join(dir, f)));
+  const gone = prune ? [...remote.keys()].filter((name) => !local.has(name)) : [];
 
   if (left.length) say(`Not uploading ${left.length} file${left.length === 1 ? '' : 's'} of a type PuppyPad does not host: ${left.slice(0, 10).join(', ')}${left.length > 10 ? ', ...' : ''}`);
-  for (const p of big) say(`Not uploading ${p}: bigger than ${site.max_file_bytes / 1048576} MB.`);
-  if (!send.length && !gone.length) return say(`${site.url} is up to date.`);
-  for (const p of send) say(`${dry ? 'would upload' : 'upload'}  ${p}`);
-  for (const p of gone) say(`${dry ? 'would delete' : 'delete'}  ${p}`);
+  for (const f of big) say(`Can't upload ${f}: bigger than ${site.max_file_bytes / 1048576} MB.`);
+  for (const [name] of send) say(`${dry ? 'would upload' : 'upload'}  ${name}`);
+  for (const name of gone) say(`${dry ? 'would delete' : 'delete'}  ${name}`);
   if (dry) return;
+  if (!send.length && !gone.length && !big.length) return say(`${site.url} is up to date.`);
 
-  const skipped = [];
+  const skipped = big.map((f) => `${f} (too big)`);
   let saved = 0;
   for (let i = 0; i < send.length; i += BATCH) {
     const form = new FormData();
-    for (const p of send.slice(i, i + BATCH)) form.append('files', await fs.openAsBlob(path.join(dir, p)), p);
+    for (const [name, f] of send.slice(i, i + BATCH)) form.append('files', await fs.openAsBlob(path.join(dir, f)), name);
     const r = await api.call('POST', '/api/upload', form);
     saved += r.saved.length;
     skipped.push(...r.skipped);
   }
+  // an upload that didn't land may be the replacement for a file --delete would remove, so delete nothing then
+  if (skipped.length) throw new Fail(`Uploaded ${saved}, but ${skipped.length} could not be: ${skipped.join(', ')}${gone.length ? '. Nothing was deleted.' : ''}`);
   let deleted = 0;
   for (let i = 0; i < gone.length; i += DELETE_BATCH) {
     deleted += (await api.call('POST', '/api/delete', new URLSearchParams(gone.slice(i, i + DELETE_BATCH).map((p) => ['paths', p])))).deleted.length;
   }
   say(`Uploaded ${saved}${prune ? `, deleted ${deleted}` : ''}. ${site.url}`);
-  if (skipped.length) throw new Fail(`PuppyPad skipped ${skipped.length}: ${skipped.join(', ')}`);
 }
 
 async function pull(api, dir) {
   const files = (await api.call('GET', '/api/files')).files;
+  const root = fs.realpathSync(dir);
   let got = 0;
   for (const f of files) {
     const to = path.join(dir, ...f.path.split('/'));
     if (fs.existsSync(to) && sha256(to) === f.sha256) continue;
     fs.mkdirSync(path.dirname(to), { recursive: true });
+    // a symlinked folder inside the destination must not carry a download somewhere else
+    if (path.relative(root, fs.realpathSync(path.dirname(to))).startsWith('..') || fs.lstatSync(to, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Fail(`Not writing ${f.path}: it leads outside ${dir} through a symlink.`);
     fs.writeFileSync(to, await api.call('GET', `/api/file?path=${encodeURIComponent(f.path)}`, undefined, true));
     say(`download  ${f.path}`);
     got++;
