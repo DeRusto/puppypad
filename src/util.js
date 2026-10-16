@@ -175,6 +175,22 @@ function phishSignals(html) {
   return found;
 }
 
+// two-factor login (RFC 6238 TOTP): 6 digits from a base32 secret and the 30-second step, as authenticator apps do it
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const newTotpSecret = () => Array.from(crypto.randomBytes(32), (b) => B32[b & 31]).join(''); // 160 bits
+const b32bytes = (s) => Buffer.from([...s].map((c) => B32.indexOf(c).toString(2).padStart(5, '0')).join('').match(/.{8}/g).map((b) => parseInt(b, 2)));
+function totp(secret, step) {
+  const c = Buffer.alloc(8);
+  c.writeBigUInt64BE(BigInt(step));
+  const h = crypto.createHmac('sha1', b32bytes(secret)).update(c).digest();
+  return String((h.readUInt32BE(h[19] & 15) & 0x7fffffff) % 1000000).padStart(6, '0');
+}
+// the step a code matches, allowing a step of clock drift either way; 0 when it matches none
+function totpStep(secret, code, t = Date.now()) {
+  const now = Math.floor(t / 30000);
+  return [now - 1, now, now + 1].find((s) => totp(secret, s) === code) || 0;
+}
+
 const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals };
+module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };

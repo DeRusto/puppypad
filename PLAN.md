@@ -208,9 +208,11 @@ signup. **Your step:** read both pages and make them match how you run things
   accounts from sites (today one `users` row is both), so decide before the member count grows.
 - Further storage increases beyond 500 MB, once members and supporter income can pay for the hardware.
 - Optional supporter tier: see §3.2.
-- "Log out everywhere" button on the profile page (password change and reset already do this).
-- Optional two-factor login (TOTP), mainly for admins and supporters with custom domains.
-- Favicon and link-preview defaults: a PuppyPad favicon and an `og:image` from the dog-park
+- ✅ "Log out everywhere" button on the profile page (password change and reset already do this).
+- ✅ Optional two-factor login (TOTP), mainly for admins and supporters with custom domains. Set up from the
+  profile page by scanning a QR code (or typing the key) in an app, with 10 one-time recovery codes;
+  a password reset no longer logs in on its own while it is on.
+- ✅ Favicon and link-preview defaults: a PuppyPad favicon and an `og:image` from the dog-park
   screenshot when the member has none.
 - Editor extras: tag autocomplete (Emmet) and find-and-replace, from CodeMirror addons.
 - Member-run webrings: any member can start a named ring that others join, with a ring page and snippet.

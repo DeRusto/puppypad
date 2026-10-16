@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
+const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -172,6 +173,8 @@ const stillCurrent = (req, user) => {
 };
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
+// logins waiting on their second step, which a password change or "log out everywhere" also ends
+const dropLogins = (userId) => db.prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'login2fa'").run(userId);
 function startSession(res, userId) {
   const t = U.newToken();
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
@@ -240,6 +243,15 @@ app.use((req, res, next) => {
 });
 
 // ================= member sites (name.BASE_HOST) =================
+// link previews: a page with a <head> but no og:image of its own gets the site's dog-park screenshot.
+// Worked on as latin1 so the member's bytes pass through unchanged whatever their charset.
+function withOgImage(buf, name) {
+  const html = buf.toString('latin1');
+  const head = /<head(\s[^>]*)?>/i.exec(html);
+  if (!head || /<meta[^>]+og:image/i.test(html.replace(/<!--[^]*?-->/g, ''))) return buf;
+  const at = head.index + head[0].length;
+  return Buffer.concat([buf.subarray(0, at), Buffer.from(`<meta property="og:image" content="${cfg.BASE_URL}/shots/${name}.jpg">`), buf.subarray(at)]);
+}
 const reportLink = (name) => `<p><small><a href="${cfg.BASE_URL}/report?site=${encodeURIComponent(name)}">Report this site</a></small></p>`;
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
@@ -321,6 +333,7 @@ site.use((req, res) => {
   });
   const root = siteDir(req.owner.username);
   const notFound = () => {
+    if (req.path === '/favicon.ico') return asset('favicon.svg', 'image/svg+xml')(req, res); // sites without an icon of their own get ours
     const custom = path.join(root, 'not_found.html');
     if (fs.existsSync(custom)) return res.status(404).sendFile(custom);
     res.status(404).send(V.sitePage(cfg, '404 - Page not found', `<p>That page does not exist on this site. <a href="/">Go to the front page.</a></p>${reportLink(req.owner.username)}`));
@@ -345,6 +358,9 @@ site.use((req, res) => {
     }
     page = /\.html?$/i.test(full);
     res.set('Cache-Control', 'public, max-age=60');
+    if (page && fs.existsSync(shotPath(req.owner.username))) {
+      return fs.readFile(full, (e, buf) => (e ? notFound() : res.type('html').send(withOgImage(buf, req.owner.username))));
+    }
     res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
   });
 });
@@ -510,8 +526,8 @@ function showProfile(req, res, name, m, status = 200) {
     blocking: !!me && blocked(me.id, p.id),
     comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
     events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
-    followers: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followed_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
-    follows: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.followed_id WHERE f.follower_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
+    followers: followPage(req, 'follower_id', 'followed_id', p.id, 'fpage'),
+    follows: followPage(req, 'followed_id', 'follower_id', p.id, 'gpage'),
   }));
 }
 // only the owner sees ?ok= notices, so a crafted link cannot show visitors a fake one
@@ -545,6 +561,12 @@ function commentPage(req, where, at, key) {
   const filter = `${where} AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}`;
   const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${COMMENTS} ${filter}`).get(at).n, key);
   return { rows: db.prepare(`SELECT c.*, u.username ${COMMENTS} ${filter} ORDER BY c.id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(at), page, pages };
+}
+// one page of the members on the `who` side of a site's follows, newest first
+function followPage(req, who, side, id, key) {
+  const from = `FROM follows f JOIN users u ON u.id = f.${who} WHERE f.${side} = ? AND ${LIVE}`;
+  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${from}`).get(id).n, key);
+  return { rows: db.prepare(`SELECT u.username ${from} ORDER BY f.created_at DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(id), page, pages };
 }
 const PREVIEW = 5; // comments shown under each update on the feed and profile; the update's own page has them all
 // feed events with their newest comments and comment count, like count, and whether the viewer liked them
@@ -752,6 +774,7 @@ main.get('/verify', (req, res) => {
   if (!user) return res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That confirmation link is no longer valid. <a href="/login">Log in</a> to get a new one.</p>'));
   db.prepare('UPDATE users SET verified = 1, updated_at = ?, shot_dirty = 1 WHERE id = ?').run(now(), user.id);
   if (!user.verified) db.prepare("INSERT INTO events (user_id, kind, created_at) VALUES (?, 'join', ?)").run(user.id, now());
+  if (user.totp_secret) return res.redirect('/login'); // an old signup link must not skip the second factor
   startSession(res, user.id);
   res.redirect('/dashboard');
 });
@@ -764,7 +787,9 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash)) || q.userById.get(user.id)?.pw_hash !== user.pw_hash) {
+  const ok = !!user && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
+  const cur = ok && q.userById.get(user.id); // re-read: two-factor may have been turned on while the hash ran
+  if (!cur || cur.pw_hash !== user.pw_hash) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
   }
   if (!user.verified) {
@@ -773,7 +798,21 @@ main.post('/login', async (req, res) => {
     }
     return res.send(V.notice(req.ctx, 'Confirm your email first', '<p>We sent you a fresh confirmation link. Click it to finish setting up.</p>'));
   }
+  if (cur.totp_secret) return res.send(V.login2fa(req.ctx, null, makeToken(user.id, 'login2fa', 600000)));
   startSession(res, user.id);
+  res.redirect('/dashboard');
+});
+// the second login step: the password was right, and the token says for whom, until a code from their app or a recovery code matches
+main.post('/login/2fa', (req, res) => {
+  const token = String(req.body.token || '');
+  const row = db.prepare("SELECT user_id FROM tokens WHERE token_hash = ? AND kind = 'login2fa' AND expires >= ?").get(U.sha(token), now());
+  if (!row) return res.status(400).send(V.notice(req.ctx, 'Log in again', '<p>That login took too long. <a href="/login">Log in again.</a></p>'));
+  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login2fa:${row.user_id}`, 10, 900000)) {
+    return res.status(429).send(V.login2fa(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, token));
+  }
+  if (!useCode(q.userById.get(row.user_id), req.body.code)) return res.status(401).send(V.login2fa(req.ctx, { err: 'That code is not right. Codes change every 30 seconds.' }, token));
+  if (!useToken(token, 'login2fa')) return res.redirect('/login');
+  startSession(res, row.user_id);
   res.redirect('/dashboard');
 });
 main.post('/logout', (req, res) => {
@@ -801,6 +840,9 @@ main.post('/reset', async (req, res) => {
   if (!user) return expired();
   db.prepare("UPDATE users SET pw_hash = ?, verified = 1, api_key = '' WHERE id = ?").run(pwHash, user.id); // a reset may follow a break-in, so the API key goes too
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+  dropLogins(user.id);
+  // the reset link proves the email only; with two-factor on, logging in still takes a code
+  if (user.totp_secret) return res.send(V.notice(req.ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'));
   startSession(res, user.id);
   res.redirect('/dashboard');
 });
@@ -1187,6 +1229,7 @@ main.post('/account/password', auth, async (req, res) => {
   db.prepare("UPDATE users SET pw_hash = ?, api_key = '' WHERE id = ?").run(pwHash, user.id);
   // log out everywhere else and switch off the API key, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
+  dropLogins(user.id);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
@@ -1216,6 +1259,63 @@ main.get('/account/email/confirm', (req, res) => {
   sendMail(user.email, `Your ${cfg.SITE_NAME} email was changed`,
     `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
   done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
+});
+// every session of this member ends, this one too: for a login left open on a computer that isn't theirs
+main.post('/account/logout-all', auth, (req, res) => {
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.ctx.user.id);
+  dropLogins(req.ctx.user.id);
+  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  res.send(V.notice(req.ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'));
+});
+// a code from the member's app, used at most once (its step must be newer than the last one used), or one of their recovery codes
+function useCode(user, raw) {
+  if (!user || !user.totp_secret) return false;
+  const code = String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (/^\d{6}$/.test(code)) {
+    const step = U.totpStep(user.totp_secret, code);
+    return !!step && db.prepare('UPDATE users SET totp_step = ? WHERE id = ? AND totp_step < ?').run(step, user.id, step).changes === 1;
+  }
+  const codes = lines(user.totp_codes);
+  const left = codes.filter((h) => h !== U.sha(code));
+  return code.length === 10 && left.length < codes.length &&
+    db.prepare('UPDATE users SET totp_codes = ? WHERE id = ? AND totp_codes = ?').run(left.join('\n'), user.id, user.totp_codes).changes === 1;
+}
+const otpauth = (user, secret) => `otpauth://totp/${encodeURIComponent(`${cfg.SITE_NAME}:${user.username}`)}?secret=${secret}&issuer=${encodeURIComponent(cfg.SITE_NAME)}`;
+// the setup page: the key as text, a link and a QR code, all for the same otpauth address
+const twoFactorPage = async (req, m, secret) => {
+  const uri = otpauth(req.ctx.user, secret);
+  return V.twoFactor(req.ctx, m, secret, uri, await QRCode.toString(uri, { type: 'svg', margin: 2 }));
+};
+main.get('/account/2fa', auth, async (req, res) => {
+  if (req.ctx.user.totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
+  const secret = U.newTotpSecret();
+  res.set('Cache-Control', 'no-store').send(await twoFactorPage(req, null, secret));
+});
+main.post('/account/2fa/on', auth, async (req, res) => {
+  const user = req.ctx.user;
+  const secret = String(req.body.secret || '');
+  if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
+  const fail = async (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(await twoFactorPage(req, { err }, secret));
+  if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still off.');
+  const step = U.totpStep(secret, String(req.body.code || '').replace(/\D/g, ''));
+  if (!step) return fail('That code is not right. Check the key in your app and try the newest code.');
+  if (!stillCurrent(req, user)) return res.redirect('/login');
+  const codes = Array.from({ length: 10 }, () => U.newTotpSecret().slice(0, 10).toLowerCase());
+  if (!db.prepare("UPDATE users SET totp_secret = ?, totp_step = ?, totp_codes = ? WHERE id = ? AND totp_secret = ''").run(secret, step, codes.map(U.sha).join('\n'), user.id).changes) {
+    return res.redirect(`/site/${user.username}#security`); // already on, from another tab
+  }
+  res.set('Cache-Control', 'no-store').send(V.recoveryCodes(req.ctx, codes.map((c) => `${c.slice(0, 5)}-${c.slice(5)}`)));
+});
+main.post('/account/2fa/off', auth, async (req, res) => {
+  const user = req.ctx.user;
+  const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
+  if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still on.');
+  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!useCode(q.userById.get(user.id), req.body.code)) return fail('That code is not right. Two-factor login is still on.');
+  db.prepare("UPDATE users SET totp_secret = '', totp_step = 0, totp_codes = '' WHERE id = ?").run(user.id);
+  res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Two-factor login is off.')}#security`);
 });
 // a new site name: the folder, screenshot and open reports follow, and the old name is held for 90 days, redirecting here
 main.post('/dashboard/rename', auth, canEdit, async (req, res) => {

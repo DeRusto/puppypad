@@ -50,6 +50,11 @@ member can hide their site from all of these and from search engines. Members co
 and on feed updates, like updates, and block members they don't want to hear from. `/notifications`
 lists new followers, comments and likes, with optional email for each and an opt-in weekly digest of
 followed sites. Admins set staff picks and a site of the week for the home page from `/admin`.
+Member sites without a favicon get PuppyPad's, and pages without an `og:image` get the site's
+screenshot for link previews.
+
+**Accounts.** Members can turn on two-factor login (any TOTP authenticator app, with 10 recovery
+codes) and log out everywhere from their profile page.
 
 **Moderation.** A public report form (linked from the default 404/410 pages), an `/admin` queue,
 take down / restore / delete, signup IPs and a log of every moderator action. HTML that looks like

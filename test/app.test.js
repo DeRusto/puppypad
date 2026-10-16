@@ -660,7 +660,7 @@ test('rename and move files and folders', async () => {
 });
 
 test('screenshot worker API needs its token, stores only JPEGs, and clears the dirty flag', async () => {
-  await member('shotdog');
+  const dog = await member('shotdog');
   // make shotdog the oldest dirty site so /internal/shots/next picks it
   db.prepare('UPDATE users SET shot_dirty = 1, updated_at = 1000 WHERE username = ?').run('shotdog');
   assert.equal((await req('get', '/internal/shots/next')).status, 403);
@@ -677,6 +677,19 @@ test('screenshot worker API needs its token, stores only JPEGs, and clears the d
   const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7)]);
   assert.equal((await req('post', '/internal/shots/shotdog').set('x-shot-token', 'test-shot-token').set('Content-Type', 'application/octet-stream').send(jpg)).status, 204);
   assert.equal((await req('get', '/shots/shotdog.jpg')).status, 200);
+  // link previews use the screenshot unless the page names its own image; the member's bytes are otherwise untouched
+  await upload(dog, 'index.html', '<html><head lang="x"><title>caf\xe9</title></head></html>');
+  await upload(dog, 'own.html', '<head><meta property="og:image" content="http://x/me.png"></head>');
+  const home = await req('get', '/', 'shotdog.pad.test').buffer(true).parse((r, cb) => { const b = []; r.on('data', (c) => b.push(c)); r.on('end', () => cb(null, Buffer.concat(b))); });
+  assert.deepEqual(home.body, Buffer.from('<html><head lang="x"><meta property="og:image" content="http://pad.test/shots/shotdog.jpg"><title>caf\xe9</title></head></html>'));
+  assert.equal((await req('get', '/', 'shotdog.pad.test').set('If-None-Match', home.headers.etag)).status, 304);
+  assert.doesNotMatch((await req('get', '/own', 'shotdog.pad.test')).text, /shots/);
+  await upload(dog, 'old.html', '<head><!-- <meta property="og:image" content="x.png"> --></head>');
+  assert.match((await req('get', '/old', 'shotdog.pad.test')).text, /shots\/shotdog\.jpg/);
+  // and sites without a favicon get ours
+  const icon = await req('get', '/favicon.ico', 'shotdog.pad.test');
+  assert.equal(icon.status, 200);
+  assert.match(icon.headers['content-type'], /svg/);
 });
 
 test('two signups racing for one name: one wins, the other is told it is taken, and the app survives', async () => {
@@ -1725,6 +1738,22 @@ test('long lists page: notifications, profile comments, and every comment on an 
   const second = (await req('get', `/notifications?page=2&since=${since}`).set('Cookie', me.cookie)).text;
   assert.match(second, /<li class="new">/);
   assert.doesNotMatch((await req('get', '/notifications').set('Cookie', me.cookie)).text, /<li class="new">/);
+  // followers and following: everyone reachable, 50 a page
+  const fanIns = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES (?, ?, 'x', 1, ?, ?)");
+  const follow = db.prepare('INSERT INTO follows (follower_id, followed_id, created_at) VALUES (?,?,?)');
+  for (let i = 1; i <= 55; i++) {
+    const id = fanIns.run(`fan${i}`, `fan${i}@example.com`, t, t).lastInsertRowid;
+    follow.run(id, ids[0], t + i);
+    follow.run(ids[0], id, t + i);
+  }
+  prof = (await req('get', '/site/popular')).text;
+  assert.match(prof, />fan55</);
+  assert.doesNotMatch(prof, />fan2</);
+  assert.match(prof, /page 1 of 2 <a href="\/site\/popular\?fpage=2#followers">Older/);
+  assert.match(prof, /page 1 of 2 <a href="\/site\/popular\?gpage=2#following">Older/);
+  prof = (await req('get', '/site/popular?fpage=2&gpage=2')).text;
+  assert.match(prof, />fan2</);
+  assert.doesNotMatch(prof, />fan55</);
   // a form's way back never leads off the site
   assert.equal((await post(fan, '/comment', { site: 'popular', body: 'x', back: '//evil.example' })).headers.location, '/site/popular');
 });
@@ -1869,4 +1898,70 @@ test('the HTTP API: a per-member key uploads, lists, deletes and reads site info
   assert.equal((await call('get', '/api/site', key2)).status, 200);
   await req('post', '/account/password').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
   assert.equal((await call('get', '/api/site', key2)).status, 401);
+});
+
+test('TOTP codes match RFC 6238', () => {
+  const s = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'; // "12345678901234567890"
+  assert.equal(U.totp(s, 1), '287082');
+  assert.equal(U.totp(s, Math.floor(1111111109 / 30)), '081804');
+  assert.equal(U.totpStep(s, '287082', 59000), 1);
+  assert.equal(U.totpStep(s, '287082', 200000), 0);
+  assert.match(U.newTotpSecret(), /^[A-Z2-7]{32}$/);
+});
+
+test('two-factor login: turning it on, logging in with a code or a recovery code, resets, turning it off, and logging out everywhere', async () => {
+  const m = await member('twofa');
+  const step = () => Math.floor(Date.now() / 30000);
+  const setup = await req('get', '/account/2fa').set('Cookie', m.cookie);
+  assert.equal(setup.headers['cache-control'], 'no-store');
+  assert.match(setup.text, /aria-label="QR code for your two-factor key"[^>]*><svg [^]*<\/svg>/);
+  const secret = setup.text.match(/name="secret" value="([A-Z2-7]{32})"/)[1];
+  const on = (code, password = 'longpassword1') => post(m, '/account/2fa/on', { secret, code, password });
+  assert.equal((await on(U.totp(secret, step() + 5))).status, 400);
+  assert.equal((await on(U.totp(secret, step()), 'wrongpassword')).status, 400);
+  const onStep = step();
+  const shown = await on(U.totp(secret, onStep));
+  const codes = shown.text.match(/<pre>([^<]+)<\/pre>/)[1].split('\n');
+  assert.equal(codes.length, 10);
+  assert.match((await req('get', '/site/twofa').set('Cookie', m.cookie)).text, /Recovery codes left: 10\./);
+
+  const login = async () => (await req('post', '/login').type('form').send({ username: 'twofa', password: 'longpassword1' })).text.match(/name="token" value="([^"]+)"/)[1];
+  const second = (token, code) => req('post', '/login/2fa').type('form').send({ token, code });
+  let token = await login();
+  assert.equal((await second(token, U.totp(secret, onStep))).status, 401); // the code that turned it on works once
+  assert.equal((await second('nope', U.totp(secret, onStep + 1))).status, 400);
+  const ok = await second(token, U.totp(secret, onStep + 1));
+  assert.equal(ok.headers.location, '/dashboard');
+  const other = { cookie: ok.headers['set-cookie'][0].split(';')[0] };
+  token = await login();
+  assert.equal((await second(token, codes[0].toUpperCase())).status, 302); // recovery code, any case
+  token = await login();
+  assert.equal((await second(token, codes[0])).status, 401); // each works once
+
+  // an old signup link doesn't skip the code either
+  db.prepare("INSERT INTO tokens (token_hash, user_id, kind, expires) VALUES (?, (SELECT id FROM users WHERE username = 'twofa'), 'verify', ?)").run(U.sha('oldlink'), Date.now() + 60000);
+  const verify = await req('get', '/verify?token=oldlink');
+  assert.equal(verify.headers.location, '/login');
+  assert.equal(verify.headers['set-cookie'], undefined);
+
+  // a reset link proves the email, not the phone, and ends logins waiting on their code
+  const pending = await login();
+  await req('post', '/forgot').type('form').send({ email: 'twofa@example.com' });
+  const reset = await req('post', '/reset').type('form').send({ token: lastLink('reset'), password: 'longpassword1' });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.headers['set-cookie'], undefined);
+  assert.equal((await req('get', '/dashboard').set('Cookie', other.cookie)).status, 302);
+  assert.equal((await second(pending, codes[3])).status, 400);
+
+  // log back in, turn it off with a recovery code, then log out everywhere
+  token = await login();
+  const back = await second(token, codes[1]);
+  const me = { cookie: back.headers['set-cookie'][0].split(';')[0] };
+  me.csrf = (await req('get', '/dashboard').set('Cookie', me.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  assert.equal((await post(me, '/account/2fa/off', { code: codes[1], password: 'longpassword1' })).status, 400); // already used
+  assert.equal((await post(me, '/account/2fa/off', { code: codes[2], password: 'longpassword1' })).status, 302);
+  const plain = await req('post', '/login').type('form').send({ username: 'twofa', password: 'longpassword1' });
+  assert.equal(plain.headers.location, '/dashboard');
+  assert.equal((await post(me, '/account/logout-all', {})).status, 200);
+  for (const c of [me.cookie, plain.headers['set-cookie'][0].split(';')[0]]) assert.equal((await req('get', '/dashboard').set('Cookie', c)).status, 302);
 });
