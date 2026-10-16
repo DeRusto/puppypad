@@ -38,7 +38,10 @@ Members can follow sites and read a feed of their updates, which names the files
 and every site has a profile page (`/site/name`). Atom feeds: `/site/name/feed.xml` per site and
 `/feed.xml` for recently updated sites. A new site joins Explore, the home page, the
 webring and `/random` after its first edit, once it is `NEW_SITE_HOURS` old (24 by default). A
-member can hide their site from all of these and from search engines.
+member can hide their site from all of these and from search engines. Members comment on profiles
+and on feed updates, like updates, and block members they don't want to hear from. `/notifications`
+lists new followers, comments and likes, with optional email for each and an opt-in weekly digest of
+followed sites. Admins set staff picks and a site of the week for the home page from `/admin`.
 
 **Moderation.** A public report form (linked from the default 404/410 pages), an `/admin` queue,
 take down / restore / delete, signup IPs and a log of every moderator action. HTML that looks like

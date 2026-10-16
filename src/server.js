@@ -412,7 +412,10 @@ main.use((req, res, next) => {
     const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
-      if (user) { req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce }; req.sessionHash = s.token_hash; }
+      if (user) {
+        req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n };
+        req.sessionHash = s.token_hash;
+      }
     }
   }
   next();
@@ -460,6 +463,8 @@ main.get('/sitemap.xml', (req, res) => {
 
 // ----- public pages -----
 main.get('/', (req, res) => res.send(V.home(req.ctx, {
+  sotw: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} AND u.sotw_at > 0`).all().map(hasShot)[0],
+  picks: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} AND u.staff_pick > 0 ORDER BY u.staff_pick DESC LIMIT 8`).all().map(hasShot),
   recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
   newest: db.prepare(`SELECT * FROM users WHERE ${listed()} ORDER BY id DESC LIMIT 10`).all(),
   total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${LIVE}`).get().n,
@@ -486,11 +491,14 @@ function showProfile(req, res, name, m, status = 200) {
     return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
   }
   const me = req.ctx.user;
+  const viewer = me ? me.id : 0;
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   res.status(status).send(V.profile(req.ctx, m, {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
-    events: db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id),
+    blocking: !!me && blocked(me.id, p.id),
+    comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
+    events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
     followers: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followed_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
     follows: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.followed_id WHERE f.follower_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
   }));
@@ -504,14 +512,142 @@ main.post('/follow', (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').toLowerCase());
   if (!target || !target.verified || target.banned || target.id === me.id || me.banned) return res.redirect('/browse');
   if (req.body.action === 'unfollow') db.prepare('DELETE FROM follows WHERE follower_id = ? AND followed_id = ?').run(me.id, target.id);
-  else if (U.limit(`follow:${me.id}`, 60, 3600000)) db.prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at) VALUES (?,?,?)').run(me.id, target.id, now());
+  else if (!blocked(target.id, me.id) && !blocked(me.id, target.id) && U.limit(`follow:${me.id}`, 60, 3600000)) {
+    if (db.prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at) VALUES (?,?,?)').run(me.id, target.id, now()).changes) notify(target, me, 'follow');
+  }
   res.redirect(`/site/${target.username}`);
+});
+
+// ----- comments, likes, blocks, notifications -----
+const blocked = (blocker, who) => !!db.prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?').get(blocker, who);
+// a comment or like is hidden when the member whose space it is, or the one looking (@viewer), blocked its author
+const unblocked = (col, owner) => `${col} NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ${owner} OR blocker_id = @viewer)`;
+const PER_PAGE = 50;
+// the page asked for in ?<key>=, kept within the pages there are
+const pageOf = (req, total, key = 'page') => {
+  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
+  return { page: Math.min(pages, Math.max(1, parseInt(req.query[key], 10) || 1)), pages };
+};
+const COMMENTS = 'FROM comments c JOIN users u ON u.id = c.author_id WHERE';
+// one page of the comments matching `where`, newest first, without those from banned or blocked members
+function commentPage(req, where, at, key) {
+  const filter = `${where} AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}`;
+  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${COMMENTS} ${filter}`).get(at).n, key);
+  return { rows: db.prepare(`SELECT c.*, u.username ${COMMENTS} ${filter} ORDER BY c.id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(at), page, pages };
+}
+const PREVIEW = 5; // comments shown under each update on the feed and profile; the update's own page has them all
+// feed events with their newest comments and comment count, like count, and whether the viewer liked them
+function withSocial(events, viewer) {
+  const at = { ids: JSON.stringify(events.map((e) => e.id)), viewer };
+  const comments = db.prepare(`SELECT * FROM (SELECT c.*, u.username, ROW_NUMBER() OVER (PARTITION BY c.event_id ORDER BY c.id DESC) rn, COUNT(*) OVER (PARTITION BY c.event_id) total
+    ${COMMENTS} c.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}) WHERE rn <= ${PREVIEW} ORDER BY id`).all(at);
+  const likes = db.prepare(`SELECT l.event_id, COUNT(*) n, MAX(l.user_id = @viewer) mine FROM likes l JOIN events e ON e.id = l.event_id JOIN users u ON u.id = l.user_id
+    WHERE l.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('l.user_id', 'e.user_id')} GROUP BY l.event_id`).all(at);
+  return events.map((e) => {
+    const l = likes.find((x) => x.event_id === e.id);
+    const mine = comments.filter((c) => c.event_id === e.id);
+    return { ...e, comments: mine, commentCount: mine.length ? mine[0].total : 0, likes: l ? l.n : 0, liked: !!(l && l.mine) };
+  });
+}
+// a member's notifications, worked out from the follows, comments and likes themselves, so deletes and blocks apply at once
+const notes = (user, cols, since = 0, tail = '') => db.prepare(`SELECT ${cols} FROM (
+    SELECT 'follow' kind, follower_id actor, NULL event_id, NULL comment_id, '' body, created_at FROM follows WHERE followed_id = @me
+    UNION ALL SELECT 'comment', author_id, event_id, id, body, created_at FROM comments WHERE user_id = @me
+    UNION ALL SELECT 'like', l.user_id, l.event_id, NULL, '', l.created_at FROM likes l JOIN events e ON e.id = l.event_id WHERE e.user_id = @me
+  ) n JOIN users u ON u.id = n.actor
+  WHERE ${LIVE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me) AND n.created_at > @since ${tail}`).bind({ me: user.id, since });
+const NOTE_KINDS = ['follow', 'comment', 'like'];
+const NOTE_TEXT = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
+// the optional email for one kind of notification; capped like guestbook mail so a burst can't flood the inbox
+function notify(owner, actor, kind, extra = '') {
+  if (owner.id === actor.id || !owner.note_mail.split(' ').includes(kind) || !U.limit(`notemail:${owner.id}`, 10, 3600000)) return;
+  sendMail(owner.email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
+    `${actor.username} ${NOTE_TEXT[kind]}.${extra ? `\n\n${extra}` : ''}\n\nSee your notifications, or change which ones we email you about: ${cfg.BASE_URL}/notifications`);
+}
+// a comment or like lands back on the page of ours it was made from, never on another site
+const BACK = /^\/(feed|notifications|site\/[a-z0-9-]+(\/update\/\d+)?)$/;
+const backTo = (req, owner) => (BACK.test(String(req.body.back || '')) ? req.body.back : `/site/${owner.username}`);
+// the event a comment or like is about, with its site's owner; null unless both are live
+const eventOwner = (id) => {
+  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(Number(id) || 0);
+  const owner = ev && q.userById.get(ev.user_id);
+  return owner && owner.verified && !owner.banned ? { ev, owner } : null;
+};
+main.post('/comment', (req, res) => {
+  const me = req.ctx.user;
+  if (!me) return res.redirect('/login');
+  const on = req.body.event ? eventOwner(req.body.event) : null;
+  const owner = req.body.event ? on && on.owner : q.userByName.get(String(req.body.site || '').toLowerCase());
+  if (!owner || !owner.verified || owner.banned || me.banned) return res.redirect('/browse');
+  const body = String(req.body.body || '').trim().slice(0, 500);
+  if (req.body.website || !body) return res.redirect(backTo(req, owner)); // bot filled the hidden field, or nothing written
+  if (!U.limit(`comment:${req.ip}`, 3, 600000)) return res.status(429).send(V.notice(req.ctx, 'Slow down', '<p>Too many comments from you. Try again in ten minutes.</p>'));
+  if (!blocked(owner.id, me.id)) { // blocked: look like success
+    db.prepare('INSERT INTO comments (user_id, author_id, event_id, body, created_at) VALUES (?,?,?,?,?)').run(owner.id, me.id, on ? on.ev.id : null, body, now());
+    notify(owner, me, 'comment', body);
+  }
+  res.redirect(backTo(req, owner));
+});
+// the member whose profile or update it is can delete any comment there
+main.post('/comment/delete', auth, (req, res) => {
+  db.prepare('DELETE FROM comments WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  res.redirect(backTo(req, req.ctx.user));
+});
+main.post('/like', (req, res) => {
+  const me = req.ctx.user;
+  if (!me) return res.redirect('/login');
+  const on = eventOwner(req.body.event);
+  if (!on || me.banned) return res.redirect('/feed');
+  if (req.body.action === 'unlike') db.prepare('DELETE FROM likes WHERE event_id = ? AND user_id = ?').run(on.ev.id, me.id);
+  else if (!blocked(on.owner.id, me.id) && U.limit(`like:${me.id}`, 60, 3600000)) {
+    if (db.prepare('INSERT OR IGNORE INTO likes (event_id, user_id, created_at) VALUES (?,?,?)').run(on.ev.id, me.id, now()).changes) notify(on.owner, me, 'like');
+  }
+  res.redirect(backTo(req, on.owner));
+});
+// blocking hides the other member's comments and likes and stops new ones; follows between the two end
+main.post('/block', auth, (req, res) => {
+  const me = req.ctx.user;
+  const target = q.userByName.get(String(req.body.site || '').toLowerCase());
+  if (!target || target.id === me.id) return res.redirect('/browse');
+  if (req.body.action === 'unblock') db.prepare('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?').run(me.id, target.id);
+  else {
+    db.transaction(() => {
+      db.prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at) VALUES (?,?,?)').run(me.id, target.id, now());
+      db.prepare('DELETE FROM follows WHERE (follower_id = @a AND followed_id = @b) OR (follower_id = @b AND followed_id = @a)').run({ a: me.id, b: target.id });
+    })();
+  }
+  res.redirect(`/site/${target.username}`);
+});
+// one update with every comment on it, a page at a time
+main.get('/site/:name/update/:id', (req, res) => {
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  const ev = p && db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(Number(req.params.id) || 0, p.id);
+  if (!ev) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>That update is gone. <a href="/browse">Browse sites.</a></p>'));
+  const viewer = req.ctx.user ? req.ctx.user.id : 0;
+  if (p.hidden) res.set('X-Robots-Tag', 'noindex');
+  res.send(V.update(req.ctx, { p, e: withSocial([ev], viewer)[0], comments: commentPage(req, 'c.event_id = @ev', { ev: ev.id, viewer }) }));
+});
+// the newest page marks everything read; older pages carry ?since= so they still show what was new on arrival
+main.get('/notifications', auth, (req, res) => {
+  const user = req.ctx.user;
+  const { page, pages } = pageOf(req, notes(user, 'COUNT(*) n').get().n);
+  const rows = notes(user, 'n.*, u.username', 0, `ORDER BY n.created_at DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all();
+  const seenAt = req.query.since !== undefined ? Number(req.query.since) || 0 : user.notes_seen_at;
+  if (page === 1) db.prepare('UPDATE users SET notes_seen_at = ? WHERE id = ?').run(now(), user.id);
+  res.send(V.notifications(page === 1 ? { ...req.ctx, unread: 0 } : req.ctx, { rows, page, pages, seenAt }));
+});
+main.post('/notifications/settings', auth, (req, res) => {
+  const digest = req.body.digest ? 1 : 0;
+  // the first digest covers the week after opting in, not everything from before
+  db.prepare('UPDATE users SET note_mail = @mail, digest_at = CASE WHEN digest = 0 AND @digest = 1 THEN @t ELSE digest_at END, digest = @digest WHERE id = @id')
+    .run({ mail: NOTE_KINDS.filter((k) => req.body[k]).join(' '), digest, t: now(), id: req.ctx.user.id });
+  res.redirect('/notifications');
 });
 main.get('/feed', (req, res) => {
   if (!req.ctx.user) return res.redirect('/login');
   const events = db.prepare(`SELECT e.*, u.username, u.tagline FROM events e JOIN users u ON u.id = e.user_id
     WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 AND u.hidden = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
-  res.send(V.feed(req.ctx, { events, count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
+  res.send(V.feed(req.ctx, { events: withSocial(events, req.ctx.user.id), count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
 });
 // Atom feeds: one per site (hidden sites too, like their profile), and the recently updated list without hidden or new sites
 const atom = (res, feed) => res.set('Cache-Control', 'public, max-age=300').type('application/atom+xml').send(V.atom(cfg, feed));
@@ -1142,6 +1278,8 @@ const showAdmin = (req, res, m) => {
       open: db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n,
     },
     upgrade: upgrade.readState(DATA_DIR),
+    sotw: db.prepare('SELECT username FROM users WHERE sotw_at > 0').get(),
+    picks: db.prepare('SELECT username FROM users WHERE staff_pick > 0 ORDER BY staff_pick DESC').all(),
   }));
 };
 // ?ok= and ?err= carry the result of an upgrade request, redirected so a reload never re-sends the form
@@ -1165,6 +1303,26 @@ main.post('/admin/upgrade', auth, adminOnly, (req, res) => {
     return back('ok', 'Upgrade queued. The server backs up the database, then switches to the new release; the site blips for a few seconds.');
   }
   res.redirect('/admin');
+});
+// staff picks and the one site of the week, shown on the home page while the site is listed
+main.post('/admin/feature', auth, adminOnly, (req, res) => {
+  const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
+  const action = req.body.action;
+  if (action === 'unsotw') {
+    const was = db.prepare('SELECT username FROM users WHERE sotw_at > 0').get();
+    if (was) db.transaction(() => { db.prepare('UPDATE users SET sotw_at = 0').run(); adminLog(req, 'clear site of the week', was.username); })();
+    return showAdmin(req, res, { ok: 'No site of the week now.' });
+  }
+  // a pick can be removed from a site that was taken down since, so it doesn't come back with a restore
+  if (!target || (action !== 'unpick' && (!target.verified || target.banned))) return showAdmin(req, res, { err: 'No live site with that name.' });
+  const set = {
+    pick: ['staff pick', 'UPDATE users SET staff_pick = @t WHERE id = @id', `${target.username} is a staff pick.`],
+    unpick: ['remove staff pick', 'UPDATE users SET staff_pick = 0 WHERE id = @id', `${target.username} is no longer a staff pick.`],
+    sotw: ['site of the week', 'UPDATE users SET sotw_at = CASE WHEN id = @id THEN @t ELSE 0 END', `${target.username} is the site of the week.`],
+  }[action];
+  if (!set) return res.redirect('/admin');
+  db.transaction(() => { db.prepare(set[1]).run({ id: target.id, t: now() }); adminLog(req, set[0], target.username); })();
+  showAdmin(req, res, { ok: set[2] });
 });
 main.post('/admin/report-close', auth, adminOnly, (req, res) => {
   const r = db.prepare("SELECT * FROM reports WHERE id = ? AND status = 'open'").get(Number(req.body.id) || 0);
@@ -1230,6 +1388,18 @@ const housekeeping = () => {
         `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(gbEntryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${gbMailFooter}`)
         // only a digest that went out moves the cutoff, so a failed one is retried at the next hourly run
         .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
+    }
+    // weekly digests of updates from followed sites, for members who opted in; a quiet week sends nothing
+    for (const u of db.prepare(`SELECT * FROM users WHERE digest = 1 AND digest_at < ? AND ${LIVE}`).all(now() - 7 * DAY)) {
+      const cutoff = now();
+      const done = () => db.prepare('UPDATE users SET digest_at = ? WHERE id = ?').run(cutoff, u.id);
+      const rows = db.prepare(`SELECT e.*, s.username FROM events e JOIN users s ON s.id = e.user_id
+        WHERE e.kind = 'update' AND e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND s.verified = 1 AND s.banned = 0 AND s.hidden = 0
+        AND e.created_at > ? AND e.created_at <= ? ORDER BY e.id DESC`).all(u.id, u.digest_at, cutoff);
+      if (!rows.length) { done(); continue; }
+      sendMail(u.email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,
+        `${rows.slice(0, 100).map((e) => `${e.username} ${V.eventText(e, (f) => f)}\n${cfg.siteUrl(e.username)}/`).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\nStop these emails: ${cfg.BASE_URL}/notifications`)
+        .then((sent) => { if (sent) done(); }); // a failed digest is retried at the next hourly run
     }
     // temp files are removed when their request ends; anything an hour old was orphaned
     for (const f of fs.readdirSync(UPLOAD_TMP)) {

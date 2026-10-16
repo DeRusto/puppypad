@@ -56,7 +56,8 @@ footer{text-align:center;font-size:13px}
 .prof{display:flex;flex-wrap:wrap;gap:14px}.prof>.pic{flex:1 1 260px;max-width:420px}.prof>.info{flex:2 1 260px;min-width:0}
 .names{display:flex;flex-wrap:wrap;gap:4px 12px}
 .feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
-.feed li{display:flex;gap:10px;align-items:center}.feed .shot{width:96px;flex:none;border-width:2px}
+.feed li{display:flex;gap:10px;align-items:flex-start}
+.cmt{border-left:3px solid var(--edge);padding:2px 8px;margin:6px 0;background:#fff}.social{font-size:14px;margin-top:4px}.new{background:var(--pee)}.feed .shot{width:96px;flex:none;border-width:2px}
 .edwrap{display:flex;gap:10px;flex-wrap:wrap}.edwrap>div{flex:1 1 420px;min-width:0}
 .CodeMirror{height:65vh;border:2px inset var(--edge);font:14px/1.4 "Courier New",monospace}
 .drop{display:flex;flex-direction:column;gap:6px;border:3px dashed var(--edge);padding:12px;background:#fff}.drop.over{background:var(--pee)}
@@ -86,7 +87,7 @@ function layout(ctx, title, body, opts = {}) {
   const nav = [
     `<a href="/">Home</a>`, `<a href="/browse">Dog park</a>`, `<a href="/random">Fetch a random pad</a>`, `<a href="/rules">Rules</a>`,
     ...(user
-      ? [`<a href="/feed">Feed</a>`, `<a href="/dashboard">My pad</a>`, ...(ctx.isAdmin ? [`<a href="/admin">Admin</a>`] : []),
+      ? [`<a href="/feed">Feed</a>`, `<a href="/notifications">Notifications${ctx.unread ? ` (${ctx.unread})` : ''}</a>`, `<a href="/dashboard">My pad</a>`, ...(ctx.isAdmin ? [`<a href="/admin">Admin</a>`] : []),
         `<form class="inline" method="post" action="/logout"><input type="hidden" name="_csrf" value="${esc(csrf)}"><button class="link">Log out (${esc(user.username)})</button></form>`]
       : [`<a href="/signup">Get a free pad</a>`, `<a href="/login">Log in</a>`]),
   ].join(' ');
@@ -122,10 +123,12 @@ ${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div cla
   : `<p>The pad is clean. Make the first mess.</p>`);
 
 const ATOM_LINK = (title, href) => `<link rel="alternate" type="application/atom+xml" title="${esc(title)}" href="${esc(href)}">`;
-const home = (ctx, { recent, newest, total }) => layout(ctx, 'Home', `
+const home = (ctx, { sotw, picks, recent, newest, total }) => layout(ctx, 'Home', `
 <section class="box"><img class="pup" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"><img class="pup left" src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"><h2>Your own pad on the web</h2>
 <p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
 <p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far</p><div style="clear:both"></div></section>
+${sotw ? `<section class="box"><h2>Site of the week</h2>${cards(ctx, [sotw])}</section>` : ''}
+${picks.length ? `<section class="box"><h2>Staff picks</h2>${cards(ctx, picks)}</section>` : ''}
 <section class="box"><img class="pup" src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"><h2>Fresh accidents <small>(recently updated)</small></h2><div style="clear:right"></div>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
 <section class="box"><img class="pup" src="/img/pup-guestbook.webp" alt="Cartoon puppy with a pencil next to an open guestbook" width="180" height="114" loading="lazy"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}<div style="clear:both"></div></section>`, {
   fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
@@ -156,8 +159,25 @@ const eventText = (e, link) => {
   return `updated ${files.slice(0, 5).map(link).join(', ')}${files.length > 5 ? ` and ${files.length - 5} more` : ''}`;
 };
 const fileLinks = (e, url) => eventText(e, (f) => `<a href="${esc(url)}/${esc(f)}">${esc(f)}</a>`);
+// newer/older links for a paged list; href(n) is page n's address
+const pager = (href, page, pages) => (pages > 1 ? `<p>${page > 1 ? `<a href="${esc(href(page - 1))}">&lt;&lt; Newer</a> ` : ''}page ${page} of ${pages}${page < pages ? ` <a href="${esc(href(page + 1))}">Older &gt;&gt;</a>` : ''}</p>` : '');
+const updateUrl = (owner, e) => `/site/${owner}/update/${e.id}`;
+// comments: the member whose profile or update it is (canDelete) may delete them; back says where the form returns to
+const commentHtml = (ctx, c, canDelete, back) => `<div class="cmt"><a href="/site/${esc(c.username)}">${esc(c.username)}</a> <small>${ago(c.created_at)}</small>${canDelete
+  ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${c.id}"><input type="hidden" name="back" value="${back}"><button class="link">delete</button></form>` : ''}<div>${esc(c.body)}</div></div>`;
+const commentForm = (ctx, target, back) => `<form class="stack" method="post" action="/comment">${csrfField(ctx)}${target}<input type="hidden" name="back" value="${back}">
+<textarea name="body" rows="2" maxlength="500" required aria-label="Your comment"></textarea>
+<div class="hp" aria-hidden="true"><input name="website" tabindex="-1" autocomplete="off"></div><button>Comment</button></form>`;
+// likes and comments under a feed update
+const social = (ctx, e, owner, back) => {
+  const like = ctx.user ? ` <form class="inline" method="post" action="/like">${csrfField(ctx)}<input type="hidden" name="event" value="${e.id}"><input type="hidden" name="back" value="${back}"><button class="link" name="action" value="${e.liked ? 'unlike' : 'like'}">${e.liked ? 'unlike' : 'like'}</button></form>` : '';
+  return `<div class="social">${e.likes} like${e.likes === 1 ? '' : 's'}${like}
+${e.commentCount > e.comments.length ? `<p class="note"><a href="${esc(updateUrl(owner, e))}">See all ${e.commentCount} comments</a></p>` : ''}
+${e.comments.map((c) => commentHtml(ctx, c, !!ctx.user && ctx.user.username === owner, back)).join('')}
+${ctx.user ? `<details><summary>Comment</summary>${commentForm(ctx, `<input type="hidden" name="event" value="${e.id}">`, back)}</details>` : ''}</div>`;
+};
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
-const profile = (ctx, m, { p, following, events, followers, follows }) => {
+const profile = (ctx, m, { p, following, blocking, comments, events, followers, follows }) => {
   const url = ctx.cfg.siteUrl(p.username);
   const mine = ctx.user && ctx.user.id === p.id;
   return layout(ctx, p.username, `
@@ -168,9 +188,14 @@ ${p.tagline ? `<p>${esc(p.tagline)}</p>` : ''}${p.tags ? `<p>${tagLinks(p.tags)}
 <p>${p.followers} follower${p.followers === 1 ? '' : 's'} | ${p.updates} update${p.updates === 1 ? '' : 's'} | ${p.hits} hits<br>Joined ${ago(p.created_at)}, last updated ${ago(p.updated_at)}</p>
 ${mine ? '<p><a href="/dashboard">Edit my site</a></p>' : `<form class="inline" method="post" action="/follow">${csrfField(ctx)}<input type="hidden" name="site" value="${esc(p.username)}">
 <button name="action" value="${following ? 'unfollow' : 'follow'}">${following ? 'Unfollow' : ctx.user ? 'Follow' : 'Log in to follow'}</button></form>
+${ctx.user ? `<form class="inline" method="post" action="/block">${csrfField(ctx)}<input type="hidden" name="site" value="${esc(p.username)}"><button class="link" name="action" value="${blocking ? 'unblock' : 'block'}">${blocking ? 'Unblock' : 'Block'}</button></form>` : ''}
+${blocking ? `<p class="note">You blocked ${esc(p.username)}. Their comments and likes are hidden from you, and they can't comment on, like or follow your site.</p>` : ''}
 <p style="margin-top:10px"><a href="/report?site=${esc(p.username)}">Report this site</a></p>`}</div></div></section>
-<section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${fileLinks(e, url)} ${ago(e.created_at)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}
+<section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${fileLinks(e, url)} <a href="${esc(updateUrl(p.username, e))}" class="note">${ago(e.created_at)}</a>${social(ctx, e, p.username, `/site/${p.username}`)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}
 <p class="note"><a href="/site/${esc(p.username)}/feed.xml">Follow ${esc(p.username)} in a feed reader</a> (Atom).</p></section>
+<section class="box" id="comments"><h2>Comments</h2>${comments.rows.map((c) => commentHtml(ctx, c, mine, `/site/${p.username}`)).join('') || '<p class="note">No comments yet.</p>'}
+${pager((n) => `/site/${p.username}?cpage=${n}#comments`, comments.page, comments.pages)}
+${ctx.user ? commentForm(ctx, `<input type="hidden" name="site" value="${esc(p.username)}">`, `/site/${p.username}`) : '<p><a href="/login">Log in</a> to leave a comment.</p>'}</section>
 <section class="box"><h2>Followers</h2>${nameLinks(followers)}<h3>Following</h3>${nameLinks(follows)}</section>
 ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/password">${csrfField(ctx)}<label for="curpw">Current password</label>
@@ -193,9 +218,37 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
 <section class="box"><h2>Your feed</h2>
-${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} ${ago(e.created_at)}${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}</div></li>`).join('')}</ul>`
+${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} <a href="${esc(updateUrl(e.username, e))}" class="note">${ago(e.created_at)}</a>${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, '/feed')}</div></li>`).join('')}</ul>`
     : count ? '<p>The sites you follow have been quiet. Updates show up here.</p>'
       : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`);
+
+const NOTE_LINE = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
+// one update with its likes and every comment, newest first, a page at a time
+const update = (ctx, { p, e, comments }) => {
+  const url = ctx.cfg.siteUrl(p.username);
+  const here = updateUrl(p.username, e);
+  const mine = !!ctx.user && ctx.user.id === p.id;
+  return layout(ctx, `${p.username}'s update`, `
+<section class="box"><h2><a href="/site/${esc(p.username)}">${esc(p.username)}</a> ${fileLinks(e, url)}</h2><p class="note">${ago(e.created_at)}</p>
+${social(ctx, { ...e, comments: [], commentCount: 0 }, p.username, here)}
+<h3>Comments</h3>${comments.rows.map((c) => commentHtml(ctx, c, mine, here)).join('') || '<p class="note">No comments yet.</p>'}
+${pager((n) => `${here}?page=${n}`, comments.page, comments.pages)}</section>`, { noindex: true });
+};
+
+const notifications = (ctx, { rows, page, pages, seenAt }) => {
+  const u = ctx.user;
+  const box = (k, label) => `<label><input type="checkbox" name="${k}" value="1"${u.note_mail.split(' ').includes(k) ? ' checked' : ''}> ${label}</label>`;
+  return layout(ctx, 'Notifications', `
+<section class="box"><h2>Notifications</h2>
+${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${esc(n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="${esc(n.event_id ? updateUrl(u.username, { id: n.event_id }) : `/site/${u.username}#comments`)}">see it</a>`}</small>${n.comment_id ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${n.comment_id}"><input type="hidden" name="back" value="/notifications"><button class="link">delete</button></form>` : ''}</li>`).join('')}</ul>`
+    : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}
+${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</section>
+<section class="box"><h2>Email me</h2>
+<form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(u.email)}.</p>
+${box('follow', 'when someone follows my site')}${box('comment', 'when someone comments on my site or my updates')}${box('like', 'when someone likes one of my updates')}
+<label><input type="checkbox" name="digest" value="1"${u.digest ? ' checked' : ''}> a weekly digest of updates from the sites I follow</label>
+<button>Save</button></form></section>`);
+};
 
 const signup = (ctx, m, v = {}) => layout(ctx, 'Sign up', `
 <section class="box"><h2>Get a free pad</h2>${msg(m)}
@@ -604,13 +657,13 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <h3>What we store</h3>
 <ul>
 <li><b>Your account:</b> site name, email address, and a scrambled (hashed) copy of your password. We use your email only for confirmation, password resets and messages about your site.</li>
-<li><b>Your site:</b> the files you upload, your description, your hit count, who you follow, and a screenshot of your front page for the directory.</li>
+<li><b>Your site:</b> the files you upload, your description, your hit count, who you follow or block, and a screenshot of your front page for the directory.</li>
 <li><b>Network addresses:</b> the IP address you signed up from, and the IP address behind each guestbook entry and abuse report. These help us stop spam and abuse. Guestbook and report addresses are erased after 90 days; your signup address is kept until you delete your account.</li>
 <li><b>Visitor counts:</b> each site counts its page views per day and the names of the websites visitors came from, without cookies or IP addresses. Only the site's owner sees them, and they are deleted after 30 days.</li>
 <li><b>One cookie</b> that keeps you logged in. No tracking or advertising cookies.</li>
 </ul>
 <h3>Who else sees it</h3>
-<p>Your site, its files, your site name, description, followers and hit count are public. Guestbook entries are public on the site they were left on. We do not sell or share your data. Our email provider delivers our messages${ctx.cfg.TURNSTILE_SITE_KEY ? ', and Cloudflare Turnstile checks that people signing up are human' : ''}.</p>
+<p>Your site, its files, your site name, description, followers and hit count are public. Guestbook entries are public on the site they were left on, and comments and likes you leave are public too. We do not sell or share your data. Our email provider delivers our messages${ctx.cfg.TURNSTILE_SITE_KEY ? ', and Cloudflare Turnstile checks that people signing up are human' : ''}.</p>
 <h3>Deleting it</h3>
 <p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
@@ -638,7 +691,7 @@ ${u.behind ? `<p>Release ${release} is out${u.publishedAt ? ` (published ${ago(u
 ${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll">${esc(u.log)}</pre></details>` : ''}`;
 };
 
-const admin = (ctx, m, { q, reports, users, signups, stats, log, upgrade }) => layout(ctx, 'Admin', `
+const admin = (ctx, m, { q, reports, users, signups, stats, log, upgrade, sotw, picks }) => layout(ctx, 'Admin', `
 <section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
 <h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
 ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
@@ -647,6 +700,11 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}<label for="bsite">Site name</label><input type="text" id="bsite" name="site" required>
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
 <div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
+<h3>Staff picks and site of the week</h3>
+<p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
+The home page shows them while they are listed (not hidden, and past the new-site wait).</p>
+<form class="stack" method="post" action="/admin/feature">${csrfField(ctx)}<label for="fsite">Site name</label><input type="text" id="fsite" name="site">
+<div><button name="action" value="sotw">Make site of the week</button> <button name="action" value="pick">Add to staff picks</button> <button name="action" value="unpick">Remove from staff picks</button> <button name="action" value="unsotw">Clear site of the week</button></div></form>
 <h3>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h3>
 <form class="inline" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label> <input type="search" id="q" name="q" value="${esc(q)}"> <button>Search</button>${q ? ' <a href="/admin">clear</a>' : ''}</form>
 <div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th></tr>
@@ -694,4 +752,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
+module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
