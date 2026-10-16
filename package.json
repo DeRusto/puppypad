@@ -20,6 +20,7 @@
     "yazl": "^3.3.1"
   },
   "devDependencies": {
+    "playwright": "^1.56.1",
     "supertest": "^7.3.1"
   }
 }
