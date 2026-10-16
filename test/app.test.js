@@ -1859,7 +1859,7 @@ test('the HTTP API: a per-member key uploads, lists, deletes and reads site info
   assert.match((await make('wrongpassword')).text, /Wrong password/);
   const page = (await make('longpassword1')).text;
   const key = page.match(/<pre>(pp_[\w-]+)<\/pre>/)[1];
-  assert.match(page, /npx puppypad login --url http:\/\/pad\.test/);
+  assert.match(page, /npx @puppypad\/cli login --url http:\/\/pad\.test/);
   assert.match(page, /api_key: \$\{\{ secrets\.PUPPYPAD_API_KEY \}\}/); // GitHub's syntax, not a template slot
   assert.equal(db.prepare('SELECT api_key FROM users WHERE username = ?').get('apidog').api_key, U.sha(key)); // only its hash is kept
 

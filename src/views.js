@@ -628,10 +628,10 @@ curl -H "Authorization: Bearer $KEY" -F "files=@index.html" -F "files=@cat.png;f
 curl -H "Authorization: Bearer $KEY" -d "path=pics/cat.png" ${esc(base)}/api/delete</pre>
 <p>Uploads follow the dashboard's rules: allowed file types only, ${ctx.cfg.MAX_FILE_MB} MB a file, your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
 <section class="box"><h2>Edit on your computer</h2><p>The <code>puppypad</code> command-line tool uploads a folder for you, sending only the files that changed. It needs <a href="https://nodejs.org/">Node.js</a>.</p>
-<pre>npx puppypad login --url ${esc(base)}   # paste your key
-npx puppypad push           # upload new and changed files from this folder
-npx puppypad push --delete  # also delete files your folder doesn't have
-npx puppypad pull           # download your whole site</pre>
+<pre>npx @puppypad/cli login --url ${esc(base)}   # paste your key
+npx @puppypad/cli push           # upload new and changed files from this folder
+npx @puppypad/cli push --delete  # also delete files your folder doesn't have
+npx @puppypad/cli pull           # download your whole site</pre>
 <p>To publish from a GitHub repository on every push, save the key as a secret called <code>PUPPYPAD_API_KEY</code> and add <code>.github/workflows/deploy.yml</code>:</p>
 <pre>on: { push: { branches: [main] } }
 jobs:

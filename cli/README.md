@@ -1,14 +1,14 @@
-# puppypad
+# @puppypad/cli
 
 Upload a folder to your [PuppyPad](https://puppypad.org) site from the command line. Edit your site in any
 editor, then push the changes.
 
 ```sh
-npx puppypad login      # paste the API key from your dashboard's API key page
-npx puppypad push       # upload new and changed files from this folder
+npx @puppypad/cli login      # paste the API key from your dashboard's API key page
+npx @puppypad/cli push       # upload new and changed files from this folder
 ```
 
-Or install it once with `npm install -g puppypad` and run `puppypad push`. Needs Node 20 or newer.
+Or install it once with `npm install -g @puppypad/cli` and run `puppypad push`. Needs Node 20 or newer.
 
 | Command | What it does |
 | --- | --- |

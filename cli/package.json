@@ -1,5 +1,5 @@
 {
-  "name": "puppypad",
+  "name": "@puppypad/cli",
   "version": "0.0.0",
   "description": "Upload a folder to your PuppyPad site from the command line",
   "bin": { "puppypad": "puppypad.js" },
