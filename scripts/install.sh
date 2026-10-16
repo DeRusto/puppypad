@@ -15,7 +15,7 @@
 # It downloads the release, pulls its images, backs up, switches, and switches back if the app
 # doesn't come up healthy.
 #
-# Needs docker (with compose), curl, jq, flock, sha256sum, tar, timeout and crontab. Releases come from
+# Needs docker (with compose), curl, jq, flock, sha256sum, tar, timeout, crontab and rsync. Releases come from
 # UPGRADE_REPO (in .env or the environment), DeRusto/puppypad by default.
 set -eu
 
@@ -41,7 +41,7 @@ esac
 root=$(pwd)
 
 missing=""
-for c in docker curl jq flock sha256sum tar timeout crontab; do command -v "$c" >/dev/null 2>&1 || missing="$missing $c"; done
+for c in docker curl jq flock sha256sum tar timeout crontab rsync; do command -v "$c" >/dev/null 2>&1 || missing="$missing $c"; done
 docker compose version >/dev/null 2>&1 || missing="$missing docker-compose-plugin"
 [ -z "$missing" ] || { echo "install these first:$missing"; exit 1; }
 
@@ -274,7 +274,7 @@ set_images "$(prev_env 2)" "$(prev_env 3)" "$(prev_env 4)"
 rm -f "$prevenv" # back on the last working state, so the next attempt starts from here
 docker compose up -d --remove-orphans || true
 # the database stays as the new release left it: schema changes are new tables and columns, which
-# older code ignores. If a release ever needs more, the backup from before the upgrade is the newest archive in ./backups.
+# older code ignores. If a release ever needs more, backups/latest still holds the database from before the upgrade.
 if healthy; then echo "$target failed its health check; went back to ${old:-the git checkout}"
 else echo "went back to ${old:-the git checkout}, but it is not healthy either; check docker compose logs app"; fi
 exit 1
