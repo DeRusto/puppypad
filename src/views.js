@@ -178,7 +178,7 @@ ${e.comments.map((c) => commentHtml(ctx, c, !!ctx.user && ctx.user.username === 
 ${ctx.user ? `<details><summary>Comment</summary>${commentForm(ctx, `<input type="hidden" name="event" value="${e.id}">`, back)}</details>` : ''}</div>`;
 };
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
-const profile = (ctx, m, { p, following, blocking, comments, events, followers, follows }) => {
+const profile = (ctx, m, { p, following, blocking, login, comments, events, followers, follows }) => {
   const url = ctx.cfg.siteUrl(p.username);
   const mine = ctx.user && ctx.user.id === p.id;
   return layout(ctx, p.username, `
@@ -208,14 +208,14 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 <input type="password" id="newpw" name="new_password" minlength="10" maxlength="200" required autocomplete="new-password">
 <label for="newpw2">New password again</label>
 <input type="password" id="newpw2" name="confirm_password" minlength="10" maxlength="200" required autocomplete="new-password"><button>Change password</button></form></section>
-<section class="box"><h2>Change email</h2><p>Your email is <b>${esc(ctx.user.email)}</b>.${ctx.user.new_email ? ` Waiting for <b>${esc(ctx.user.new_email)}</b> to confirm.` : ''}</p>
+<section class="box"><h2>Change email</h2><p>Your email is <b>${esc(ctx.login.email)}</b>.${ctx.login.new_email ? ` Waiting for <b>${esc(ctx.login.new_email)}</b> to confirm.` : ''}</p>
 <form class="stack" method="post" action="/account/email">${csrfField(ctx)}<label for="newemail">New email (we send a link there to confirm it)</label>
 <input type="email" id="newemail" name="email" maxlength="200" required autocomplete="email">
 <label for="emailpw">Your password</label>
 <input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>
 <section class="box" id="security"><h2>Logging in</h2>
 <form method="post" action="/account/logout-all">${csrfField(ctx)}<button>Log out everywhere</button> <span class="note">Every browser and device logged in to your site, this one too.</span></form>
-<h3>Two-factor login</h3>${ctx.user.totp_secret ? `<p>On. Logging in takes your password and a code from your authenticator app. Recovery codes left: ${ctx.user.totp_codes.split('\n').filter(Boolean).length}.</p>
+<h3>Two-factor login</h3>${login.totp_secret ? `<p>On. Logging in takes your password and a code from your authenticator app. Recovery codes left: ${login.totp_codes.split('\n').filter(Boolean).length}.</p>
 <form class="stack" method="post" action="/account/2fa/off">${csrfField(ctx)}<label for="offcode">A code from your app, or a recovery code</label>
 <input type="text" id="offcode" name="code" required inputmode="numeric" autocomplete="one-time-code">
 <label for="offpw">Your password</label><input type="password" id="offpw" name="password" required autocomplete="current-password"><button>Turn off two-factor login</button></form>`
@@ -255,7 +255,7 @@ ${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt
     : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}
 ${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</section>
 <section class="box"><h2>Email me</h2>
-<form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(u.email)}.</p>
+<form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(ctx.login.email)}.</p>
 ${box('follow', 'when someone follows my site')}${box('comment', 'when someone comments on my site or my updates')}${box('like', 'when someone likes one of my updates')}
 <label><input type="checkbox" name="digest" value="1"${u.digest ? ' checked' : ''}> a weekly digest of updates from the sites I follow</label>
 <button>Save</button></form></section>`);
@@ -407,6 +407,8 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   ].join('');
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
+${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
+${d.canAdd ? `<form class="stack" method="post" action="/dashboard/sites/new">${csrfField(ctx)}<label for="newsite">Add another site to this login (supporters, up to 5)</label><input type="text" id="newsite" name="username" required maxlength="30"><button>Add site</button></form>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
 <p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
@@ -458,7 +460,7 @@ ${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
 <input type="text" id="newname" name="username" required maxlength="30">
 <label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</section>
 
-`}<section class="box"><h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>
+`}<section class="box">${user.owner_id ? '<h2>Delete this site</h2><p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>'}
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
 }
@@ -644,7 +646,7 @@ const guestbookAdmin = (ctx, m, rows, blocked = []) => layout(ctx, 'Guestbook en
 ${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
 </table></div>
 <h3>Email me about new entries</h3>
-<form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.user.email)}. Entries waiting for your approval are marked.</label>
+<form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.login.email)}. Entries waiting for your approval are marked.</label>
 <select id="gn" name="notify">${[['instant', 'Right away, one email per entry'], ['daily', 'Once a day, a digest'], ['off', 'Never']].map(([v, l]) => `<option value="${v}"${ctx.user.gb_notify === v ? ' selected' : ''}>${l}</option>`).join('')}</select><button>Save</button></form>
 <h3>Moderation</h3><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused (one per line). Posts from a blocked IP are silently dropped; visitor IPs are only kept for 90 days.</p>
 <p>Blocked IPs: ${blocked.map((ip) => `${esc(ip)} <form class="inline" method="post" action="/dashboard/guestbook/unblock-ip">${csrfField(ctx)}<input type="hidden" name="ip" value="${esc(ip)}"><button class="link">unblock</button></form>`).join(', ') || 'none'}</p>
@@ -787,6 +789,9 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}<label for="bsite">Site name</label><input type="text" id="bsite" name="site" required>
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
 <div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
+<h3>Supporters</h3>
+<form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}<label for="ssite">Site name of the login</label><input type="text" id="ssite" name="site" required>
+<label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365" required><button>Set supporter</button></form>
 <h3>Staff picks and site of the week</h3>
 <p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
 The home page shows them while they are listed (not hidden, and past the new-site wait).</p>

@@ -180,13 +180,22 @@ function startSession(res, userId) {
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
   res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
 }
+const MAX_SITES = 5;
+const isSupporter = (user) => user.supporter_until > now() || isAdmin(user);
+const ownerRow = (user) => (user.owner_id ? q.userById.get(user.owner_id) : user);
+// a login row and its extra sites: for its sessions, API keys and bans
+const loginIds = '(SELECT id FROM users WHERE id = ? OR owner_id = ?)';
+const sitesOf = (user) => { const id = user.owner_id || user.id; return db.prepare('SELECT * FROM users WHERE id = ? OR owner_id = ? ORDER BY id').all(id, id); };
 function deleteAccountRows(user) {
+  for (const s of db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id)) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(s.username, now());
   db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
   // never-confirmed accounts were never online, so their names are free again at once
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
 }
 function deleteAccount(user, rows = deleteAccountRows) {
+  const extra = db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id);
   rows(user);
+  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); }
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
   usageCache.delete(user.username);
@@ -300,7 +309,7 @@ site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }
   db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
   // capped so a spam wave from many addresses can't flood the owner's inbox
   if (req.owner.gb_notify === 'instant' && U.limit(`gbmail:${req.owner.id}`, 10, 3600000)) {
-    sendMail(req.owner.email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
+    sendMail(ownerRow(req.owner).email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
   }
   res.redirect(back);
 });
@@ -439,7 +448,8 @@ main.use((req, res, next) => {
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
       if (user) {
-        req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n };
+        const login = ownerRow(user); // an extra site's admin rights and email are its login's
+        req.ctx = { cfg, user, login, csrf: s.csrf, isAdmin: isAdmin(login), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n };
         req.sessionHash = s.token_hash;
       }
     }
@@ -526,6 +536,7 @@ function showProfile(req, res, name, m, status = 200) {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
     blocking: !!me && blocked(me.id, p.id),
+    login: me && ownerRow(me),
     comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
     events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
     followers: followPage(req, 'follower_id', 'followed_id', p.id, 'fpage'),
@@ -596,7 +607,7 @@ const NOTE_TEXT = { follow: 'started following you', comment: 'commented on your
 // the optional email for one kind of notification; capped like guestbook mail so a burst can't flood the inbox
 function notify(owner, actor, kind, extra = '') {
   if (owner.id === actor.id || !owner.note_mail.split(' ').includes(kind) || !U.limit(`notemail:${owner.id}`, 10, 3600000)) return;
-  sendMail(owner.email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
+  sendMail(ownerRow(owner).email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
     `${actor.username} ${NOTE_TEXT[kind]}.${extra ? `\n\n${extra}` : ''}\n\nSee your notifications, or change which ones we email you about: ${cfg.BASE_URL}/notifications`);
 }
 // a comment or like lands back on the page of ours it was made from, never on another site
@@ -789,7 +800,7 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  const ok = !!user && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
+  const ok = !!user && !user.owner_id && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
   const cur = ok && q.userById.get(user.id); // re-read: two-factor may have been turned on while the hash ran
   if (!cur || cur.pw_hash !== user.pw_hash) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
@@ -840,8 +851,9 @@ main.post('/reset', async (req, res) => {
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
   if (!user) return expired();
-  db.prepare("UPDATE users SET pw_hash = ?, verified = 1, api_key = '' WHERE id = ?").run(pwHash, user.id); // a reset may follow a break-in, so the API key goes too
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+  db.prepare("UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?").run(pwHash, user.id);
+  db.prepare(`UPDATE users SET api_key = '' WHERE id IN ${loginIds}`).run(user.id, user.id); // a reset may follow a break-in, so the API keys of all its sites go too
+  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(user.id, user.id);
   dropLogins(user.id);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
   if (user.totp_secret) return res.send(V.notice(req.ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'));
@@ -858,7 +870,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: quotaMB(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: quotaMB(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1178,6 +1190,35 @@ main.post('/dashboard/webring', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET webring = ? WHERE id = ?').run(join ? 1 : 0, req.ctx.user.id);
   res.redirect(`/dashboard/widgets?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
 });
+// several sites under one login (supporters): each extra site is a users row owned by the login row
+main.post('/dashboard/sites/new', auth, canEdit, (req, res) => {
+  const owner = ownerRow(req.ctx.user);
+  const username = String(req.body.username || '').trim().toLowerCase();
+  const fail = (e) => res.redirect(`/dashboard?err=${encodeURIComponent(e)}`);
+  if (!isSupporter(owner)) return fail('Several sites under one login is for supporters.');
+  if (sitesOf(owner).length >= MAX_SITES) return fail(`You can have up to ${MAX_SITES} sites.`);
+  if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
+  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
+  const t = now();
+  try {
+    db.prepare("INSERT INTO users (username, email, pw_hash, verified, owner_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
+      .run(username, `${username}@sites.invalid`, owner.id, req.ip, starters.DEFAULT, cfg.QUOTA_MB, t, t);
+  } catch (err) { if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); throw err; }
+  try {
+    fs.mkdirSync(siteDir(username), { recursive: true });
+    fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starters.DEFAULT, username, cfg));
+  } catch {
+    db.prepare('DELETE FROM users WHERE username = ?').run(username);
+    fs.rmSync(siteDir(username), { recursive: true, force: true });
+    return fail('Something went wrong making that site. Nothing was changed.');
+  }
+  res.redirect(`/dashboard?ok=${encodeURIComponent(`Made ${username}. Switch to it from the list at the top.`)}`);
+});
+main.post('/dashboard/sites/switch', auth, (req, res) => {
+  const target = sitesOf(req.ctx.user).find((s) => s.id === Number(req.body.id));
+  if (target) db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(target.id, req.sessionHash);
+  res.redirect('/dashboard');
+});
 main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   const hide = req.body.hidden === '1';
   db.prepare('UPDATE users SET hidden = ? WHERE id = ?').run(hide ? 1 : 0, req.ctx.user.id);
@@ -1218,7 +1259,7 @@ main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   res.redirect('/dashboard/guestbook');
 });
 main.post('/account/password', auth, async (req, res) => {
-  const user = req.ctx.user;
+  const user = ownerRow(req.ctx.user); // an extra site has no password, email or 2FA of its own
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const password = String(req.body.new_password || '');
   if (!U.limit(`pwchange:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
@@ -1228,15 +1269,16 @@ main.post('/account/password', auth, async (req, res) => {
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   const pwHash = await U.hashPw(password);
   if (!stillCurrent(req, user)) return res.redirect('/login');
-  db.prepare("UPDATE users SET pw_hash = ?, api_key = '' WHERE id = ?").run(pwHash, user.id);
+  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
+  db.prepare(`UPDATE users SET api_key = '' WHERE id IN ${loginIds}`).run(user.id, user.id);
   // log out everywhere else and switch off the API key, in case the old password leaked
-  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
+  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds} AND token_hash != ?`).run(user.id, user.id, req.sessionHash);
   dropLogins(user.id);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
 main.post('/account/email', auth, async (req, res) => {
-  const user = req.ctx.user;
+  const user = ownerRow(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
@@ -1264,8 +1306,8 @@ main.get('/account/email/confirm', (req, res) => {
 });
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.ctx.user.id);
-  dropLogins(req.ctx.user.id);
+  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(ownerRow(req.ctx.user).id, ownerRow(req.ctx.user).id);
+  dropLogins(ownerRow(req.ctx.user).id);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice(req.ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'));
 });
@@ -1289,12 +1331,12 @@ const twoFactorPage = async (req, m, secret) => {
   return V.twoFactor(req.ctx, m, secret, uri, await QRCode.toString(uri, { type: 'svg', margin: 2 }));
 };
 main.get('/account/2fa', auth, async (req, res) => {
-  if (req.ctx.user.totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
+  if (ownerRow(req.ctx.user).totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
   const secret = U.newTotpSecret();
   res.set('Cache-Control', 'no-store').send(await twoFactorPage(req, null, secret));
 });
 main.post('/account/2fa/on', auth, async (req, res) => {
-  const user = req.ctx.user;
+  const user = ownerRow(req.ctx.user);
   const secret = String(req.body.secret || '');
   if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
   const fail = async (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(await twoFactorPage(req, { err }, secret));
@@ -1310,7 +1352,7 @@ main.post('/account/2fa/on', auth, async (req, res) => {
   res.set('Cache-Control', 'no-store').send(V.recoveryCodes(req.ctx, codes.map((c) => `${c.slice(0, 5)}-${c.slice(5)}`)));
 });
 main.post('/account/2fa/off', auth, async (req, res) => {
-  const user = req.ctx.user;
+  const user = ownerRow(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
   if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still on.');
@@ -1329,7 +1371,7 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   if (name === user.username) return fail('That is already your site name.');
   if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
   if (!U.limit(`rename:${user.id}`, 5, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Wrong password. Nothing was changed.');
+  if (!(await U.checkPw(String(req.body.password || ''), ownerRow(user).pw_hash))) return fail('Wrong password. Nothing was changed.');
   if (!stillCurrent(req, user)) return res.redirect('/login');
   // a member may take back a name they gave up themselves
   const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
@@ -1355,8 +1397,13 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
-  if (!(await U.checkPw(String(req.body.password || ''), req.ctx.user.pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
+  if (!(await U.checkPw(String(req.body.password || ''), ownerRow(req.ctx.user).pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
   if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
+  if (req.ctx.user.owner_id) { // an extra site goes alone, and the session moves back to the login
+    db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(req.ctx.user.owner_id, req.sessionHash);
+    deleteAccount(req.ctx.user);
+    return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
+  }
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
@@ -1400,7 +1447,7 @@ main.post('/dashboard/api', auth, async (req, res) => {
   if (user.banned) return res.redirect('/dashboard');
   if (!U.limit(`apikey:${user.id}`, 5, 900000)) return show({ err: 'Too many attempts. Wait 15 minutes and try again.' }, '', 429);
   // a key outlives the session, so making one takes the password, as a rename does
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
+  if (!(await U.checkPw(String(req.body.password || ''), ownerRow(user).pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
   if (!stillCurrent(req, user)) return res.redirect('/login');
   const key = `pp_${U.newToken()}`;
   db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(U.sha(key), user.id);
@@ -1561,10 +1608,18 @@ main.post('/admin/report-close', auth, adminOnly, (req, res) => {
   }
   res.redirect('/admin');
 });
+main.post('/admin/supporter', auth, adminOnly, (req, res) => {
+  const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
+  if (!target || target.owner_id) return showAdmin(req, res, { err: 'No login with that site name.' });
+  const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
+  db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
+  showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
+});
 main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
-  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
+  const login = ownerRow(target);
+  if (isAdmin(login)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
@@ -1574,13 +1629,18 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   }
   const ban = action === 'ban' ? 1 : 0;
   // the state change and its log entry commit together, so no take-down or restore goes unrecorded
+  // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login
+  const sites = target.owner_id ? [target] : sitesOf(target);
   db.transaction(() => {
-    db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, target.id);
+    for (const s of sites) {
+      db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, s.id);
+      if (ban) db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
+      else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(s.id);
+    }
     adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
-    if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id); }
-    else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
+    if (ban) db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(login.id, login.id);
   })();
-  if (ban) fs.rmSync(shotPath(target.username), { force: true });
+  if (ban) for (const s of sites) fs.rmSync(shotPath(s.username), { force: true });
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
 });
 
@@ -1611,7 +1671,7 @@ const housekeeping = () => {
       const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
       if (!rows.length) continue;
       const held = rows.filter((e) => !e.approved).length;
-      sendMail(u.email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
+      sendMail(ownerRow(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
         `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(gbEntryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${gbMailFooter}`)
         // only a digest that went out moves the cutoff, so a failed one is retried at the next hourly run
         .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
@@ -1624,7 +1684,7 @@ const housekeeping = () => {
         WHERE e.kind = 'update' AND e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND s.verified = 1 AND s.banned = 0 AND s.hidden = 0
         AND e.created_at > ? AND e.created_at <= ? ORDER BY e.id DESC`).all(u.id, u.digest_at, cutoff);
       if (!rows.length) { done(); continue; }
-      sendMail(u.email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,
+      sendMail(ownerRow(u).email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,
         `${rows.slice(0, 100).map((e) => `${e.username} ${V.eventText(e, (f) => f)}\n${cfg.siteUrl(e.username)}/`).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\nStop these emails: ${cfg.BASE_URL}/notifications`)
         .then((sent) => { if (sent) done(); }); // a failed digest is retried at the next hourly run
     }

@@ -1978,3 +1978,89 @@ test('the editor loads CodeMirror and its addons from our own server, cached for
     assert.match(res.headers['cache-control'], /immutable/);
   }
 });
+
+test('supporters run several sites under one login; free members cannot', async () => {
+  const free = await member('freebie');
+  const add = (m, username) => req('post', '/dashboard/sites/new').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username });
+  const pick = (m, id) => req('post', '/dashboard/sites/switch').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, id });
+  const dash = async () => (await req('get', '/dashboard').set('Cookie', free.cookie)).text;
+  assert.match((await add(free, 'freebie-two')).headers.location, /err=/);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('freebie-two'), undefined);
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'freebie');
+  assert.match((await add(free, 'freebie-two')).headers.location, /ok=/);
+  const second = db.prepare('SELECT * FROM users WHERE username = ?').get('freebie-two');
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'freebie-two', 'index.html')));
+  // the extra site is not a login of its own
+  assert.equal((await req('post', '/login').type('form').send({ username: 'freebie-two', password: 'longpassword1' })).status, 401);
+  await pick(free, second.id);
+  assert.match(await dash(), /<b>freebie-two<\/b>/);
+  // a lapsed supporter keeps the sites but cannot add more
+  db.prepare('UPDATE users SET supporter_until = 1 WHERE username = ?').run('freebie');
+  assert.match((await add(free, 'freebie-three')).headers.location, /err=/);
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'freebie');
+  for (const username of ['freebie-three', 'freebie-four', 'freebie-five']) {
+    assert.match((await add(free, username)).headers.location, /ok=/);
+  }
+  assert.match((await add(free, 'freebie-six')).headers.location, /err=/);
+  db.prepare('UPDATE users SET supporter_until = 1 WHERE username = ?').run('freebie');
+  // someone else's site is not switchable
+  await member('stranger');
+  await pick(free, db.prepare('SELECT id FROM users WHERE username = ?').get('stranger').id);
+  assert.match(await dash(), /<b>freebie-two<\/b>/);
+  // "log out everywhere" reaches a session that is switched to an extra site
+  await req('post', '/account/logout-all').set('Cookie', free.cookie).type('form').send({ _csrf: free.csrf });
+  assert.equal((await req('get', '/dashboard').set('Cookie', free.cookie)).status, 302);
+});
+
+test('two-factor login shows its real state on an extra site', async () => {
+  const m = await member('twofaextra');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'twofaextra');
+  assert.match((await post(m, '/dashboard/sites/new', { username: 'twofaextra-two' })).headers.location, /ok=/);
+  const child = db.prepare('SELECT id FROM users WHERE username = ?').get('twofaextra-two');
+  assert.equal((await post(m, '/dashboard/sites/switch', { id: child.id })).status, 302);
+  const setup = await req('get', '/account/2fa').set('Cookie', m.cookie);
+  assert.equal(setup.status, 200);
+  const secret = setup.text.match(/name="secret" value="([A-Z2-7]{32})"/)[1];
+  const shown = await post(m, '/account/2fa/on', { secret, code: U.totp(secret, Math.floor(Date.now() / 30000)), password: 'longpassword1' });
+  assert.equal(shown.status, 200);
+  assert.equal(shown.text.match(/<pre>([^<]+)<\/pre>/)[1].split('\n').length, 10);
+  assert.ok(db.prepare('SELECT totp_secret FROM users WHERE username = ?').get('twofaextra').totp_secret);
+  assert.equal(db.prepare('SELECT totp_secret FROM users WHERE id = ?').get(child.id).totp_secret, '');
+  const profile = await req('get', '/site/twofaextra-two').set('Cookie', m.cookie);
+  assert.match(profile.text, /Recovery codes left: 10\./);
+  assert.doesNotMatch(profile.text, /Turn on two-factor login/);
+  const enabled = await req('get', '/account/2fa').set('Cookie', m.cookie);
+  assert.equal(enabled.status, 302);
+  assert.equal(enabled.headers.location, '/site/twofaextra-two#security');
+});
+
+test('extra sites follow their login for admin rights, bans, API keys and deletion', async () => {
+  const boss = { cookie: (await req('post', '/login').type('form').send({ username: 'boss', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0] };
+  boss.csrf = (await req('get', '/dashboard').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  // an admin switched to an extra site is still an admin
+  assert.match((await post(boss, '/dashboard/sites/new', { username: 'boss-two' })).headers.location, /ok=/);
+  await post(boss, '/dashboard/sites/switch', { id: db.prepare('SELECT id FROM users WHERE username = ?').get('boss-two').id });
+  assert.equal((await req('get', '/admin').set('Cookie', boss.cookie)).status, 200);
+
+  const m = await member('multi');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'multi');
+  for (const username of ['multi-two', 'multi-three']) assert.match((await post(m, '/dashboard/sites/new', { username })).headers.location, /ok=/);
+  const id = (name) => db.prepare('SELECT id FROM users WHERE username = ?').get(name).id;
+  // a password change switches off the API keys of every site
+  db.prepare("UPDATE users SET api_key = 'k' || id WHERE username LIKE 'multi%'").run();
+  await post(m, '/account/password', { password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username LIKE 'multi%' AND api_key != ''").get().n, 0);
+  // deleting while on an extra site removes only that site and keeps the login signed in
+  await post(m, '/dashboard/sites/switch', { id: id('multi-three') });
+  assert.match((await post(m, '/dashboard/delete-account', { password: 'longpassword2' })).headers.location, /ok=/);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('multi-three'), undefined);
+  assert.ok(id('multi'));
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 200);
+  // taking down the login takes down its extra sites and ends its sessions; restore brings them back
+  await post(m, '/dashboard/sites/switch', { id: id('multi-two') });
+  await post(boss, '/admin/ban', { site: 'multi', action: 'ban', reason: 'test' });
+  assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 302);
+  await post(boss, '/admin/ban', { site: 'multi', action: 'unban' });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username LIKE 'multi%' AND banned = 1").get().n, 0);
+});
