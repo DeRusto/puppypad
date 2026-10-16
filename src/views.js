@@ -784,7 +784,7 @@ const admin = (ctx, m, { q, reports, users, signups, stats, log, upgrade, sotw, 
 <section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
 <h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
 ${reports.rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
-<td><form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">close</button></form></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>${pager((n) => `/admin?${q ? `q=${encodeURIComponent(q)}&` : ''}rpage=${n}`, reports.page, reports.pages)}
+<td><form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="rpage" value="${reports.page}"><button class="link">close</button></form></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>${pager((n) => `/admin?${q ? `q=${encodeURIComponent(q)}&` : ''}rpage=${n}`, reports.page, reports.pages)}
 <h3>Take a site down or restore it</h3>
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}<label for="bsite">Site name</label><input type="text" id="bsite" name="site" required>
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">

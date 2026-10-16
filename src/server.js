@@ -119,7 +119,9 @@ fs.mkdirSync(UPLOAD_TMP, { recursive: true });
 // Temp files sit outside every member's quota, so running uploads share one budget: each reserves its largest
 // possible size up front and is turned away while that would eat into the 5% of the disk /healthz keeps free.
 let tempReserved = 0;
-const tempBudget = (bytes) => (req, res, next) => {
+// bytes is a number, or a function of the request when the most a request can unpack depends on the member
+const tempBudget = (most) => (req, res, next) => {
+  const bytes = typeof most === 'function' ? most(req) : most;
   let spare = 0;
   try { const s = fs.statfsSync(UPLOAD_TMP); spare = (s.bavail - s.blocks * HEALTH_MIN_FREE) * s.bsize; } catch { /* unknown: refuse */ }
   if (spare - tempReserved < bytes) {
@@ -971,7 +973,7 @@ async function handleUpload(req, res, err) {
 
 // Import a whole site from one .zip, unpacked into the current folder
 const zipUpload = multer({ storage: tmpStorage, limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
-main.post('/dashboard/import', auth, canEdit, tempBudget((cfg.ZIP_MAX_MB + cfg.QUOTA_MB) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
+main.post('/dashboard/import', auth, canEdit, tempBudget((req) => (cfg.ZIP_MAX_MB + quotaMB(req.ctx.user)) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
 async function importZip(req, res, err) {
   if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
@@ -1608,7 +1610,7 @@ main.post('/admin/report-close', auth, adminOnly, (req, res) => {
       adminLog(req, 'close report', r.site, `${r.reason}: ${r.details}`.slice(0, 200));
     })();
   }
-  res.redirect('/admin');
+  res.redirect(Number(req.body.rpage) > 1 ? `/admin?rpage=${Number(req.body.rpage)}` : '/admin'); // back to the page it was closed from
 });
 main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());

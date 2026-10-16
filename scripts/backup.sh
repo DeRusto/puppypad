@@ -26,11 +26,12 @@ tar -czf "backups/puppypad-$stamp.tar.gz" -C data backup.db sites shots || [ $? 
 docker compose run --rm -T --no-deps app rm -f /data/backup.db
 echo "wrote backups/puppypad-$stamp.tar.gz"
 
-keep=${BACKUP_REMOTE:+3}
-ls -1t backups/puppypad-*.tar.gz | tail -n +$((${keep:-14} + 1)) | xargs -r rm --
+prune() { ls -1t backups/puppypad-*.tar.gz | tail -n +$(($1 + 1)) | xargs -r rm --; }
+prune 14
 
 if [ -n "${BACKUP_REMOTE:-}" ]; then
   rclone copy backups "$BACKUP_REMOTE" # copy, not sync: a wiped local folder must not delete the remote copies
   rclone delete "$BACKUP_REMOTE" --include 'puppypad-*.tar.gz' --min-age 14d # copy never prunes, so roll the remote over by hand
   echo "copied to $BACKUP_REMOTE"
+  prune 3 # only now that they are safely off the server; a failed copy stops above and keeps 14
 fi
