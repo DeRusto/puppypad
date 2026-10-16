@@ -433,8 +433,8 @@ ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is on
 <section class="box"><h2>Files in /${esc(d.dir)}</h2>
 <div class="scroll"><table><tr><th>Name</th><th>Size</th><th>Actions</th></tr>${rows || '<tr><td colspan="3">This folder is empty.</td></tr>'}</table></div>
 <h3>Upload files</h3>
-<form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${cfg.MAX_FILE_MB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
-<div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${cfg.MAX_FILE_MB} MB each at most. Files with the same name are replaced.</label>
+<form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${d.fileMB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
+<div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${d.fileMB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
 <label><input type="checkbox" id="shrink" name="shrink" value="1"> Shrink photos bigger than ${SHRINK_PX} pixels across and drop their hidden camera details (smaller files load faster and save space)</label>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
@@ -656,7 +656,7 @@ curl -H "Authorization: Bearer $KEY" -F "files=@index.html" -F "files=@cat.png;f
 
 # delete one file
 curl -H "Authorization: Bearer $KEY" -d "path=pics/cat.png" ${esc(base)}/api/delete</pre>
-<p>Uploads follow the dashboard's rules: allowed file types only, ${ctx.cfg.MAX_FILE_MB} MB a file, your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
+<p>Uploads follow the dashboard's rules: allowed file types only (any type for supporters), your file size limit (${ctx.cfg.MAX_FILE_MB} MB, more for supporters), your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
 <section class="box"><h2>Edit on your computer</h2><p>The <code>puppypad</code> command-line tool uploads a folder for you, sending only the files that changed. It needs <a href="https://nodejs.org/">Node.js</a>.</p>
 <pre>npx @puppypad/cli login --url ${esc(base)}   # paste your key
 npx @puppypad/cli push           # upload new and changed files from this folder

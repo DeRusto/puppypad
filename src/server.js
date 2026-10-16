@@ -962,7 +962,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: limitsFor(user).quotaMB, support: cfg.SUPPORT_ON || isSupporter(ownerRow(user)), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(ownerRow(user)), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1533,12 +1533,26 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
     deleteAccount(req.ctx.user);
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
+  if (!(await cancelBilling(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
 });
 
 // ----- supporter tier (Stripe) -----
+// a deleted login must stop paying: its subscriptions are cancelled first, and the account stays if Stripe can't be reached
+async function cancelBilling(user) {
+  if (user.owner_id || !user.stripe_customer_id || !stripe) return true;
+  try {
+    for await (const sub of stripe.subscriptions.list({ customer: user.stripe_customer_id, status: 'all' })) {
+      if (!['canceled', 'incomplete_expired'].includes(sub.status)) await stripe.subscriptions.cancel(sub.id);
+    }
+    return true;
+  } catch (e) {
+    console.error('stripe cancel failed:', e.message);
+    return false;
+  }
+}
 // supporting is per login: an extra site's page shows and pays for the login that owns it
 const supportPage = (req, res, m, status = 200) => res.status(status).send(V.support(req.ctx, m, {
   until: req.ctx.login.supporter_until, customer: !!req.ctx.login.stripe_customer_id, limits: limitsFor(req.ctx.user),
@@ -1547,15 +1561,28 @@ main.get('/dashboard/support', auth, (req, res) => (cfg.SUPPORT_ON || isSupporte
 // Stripe's hosted Checkout takes the card; the webhook above turns the perks on once it is paid
 main.post('/dashboard/support', auth, async (req, res) => {
   if (!stripe) return res.redirect('/dashboard');
-  const login = req.ctx.login;
-  if (login.supporter_until > now() && login.stripe_customer_id) return supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
+  const already = () => supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
+  let login = req.ctx.login;
+  if (login.supporter_until > now() && login.stripe_customer_id) return already();
   try {
+    // one Stripe customer per login, made before checkout, so a second tab or a payment the webhook hasn't reported yet
+    // finds the same customer: an open checkout is reused and a live subscription refuses another
+    if (!login.stripe_customer_id) {
+      const customer = await stripe.customers.create({ email: login.email, metadata: { user_id: String(login.id) } });
+      // two requests at once: the first stored wins, the other customer is left unused
+      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id = ''").run(customer.id, login.id);
+      login = q.userById.get(login.id);
+    }
+    const subs = await stripe.subscriptions.list({ customer: login.stripe_customer_id, status: 'all', limit: 10 });
+    if (subs.data.some((x) => ['active', 'trialing', 'past_due', 'incomplete'].includes(x.status))) return already();
+    const open = (await stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 1 })).data[0];
+    if (open) return res.redirect(303, open.url);
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: env.STRIPE_PRICE_ID, quantity: 1 }],
       client_reference_id: String(login.id),
       subscription_data: { metadata: { user_id: String(login.id) } },
-      ...(login.stripe_customer_id ? { customer: login.stripe_customer_id } : { customer_email: login.email }),
+      customer: login.stripe_customer_id,
       success_url: `${cfg.BASE_URL}/dashboard/support?ok=${encodeURIComponent('Thank you! Your supporter perks switch on as soon as Stripe confirms the payment.')}`,
       cancel_url: `${cfg.BASE_URL}/dashboard/support`,
     });
@@ -1812,7 +1839,7 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
   showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
 });
-main.post('/admin/ban', auth, adminOnly, (req, res) => {
+main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
   const login = ownerRow(target);
@@ -1820,6 +1847,7 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
+    if (!(await cancelBilling(target))) return showAdmin(req, res, { err: `Stripe could not be reached to cancel ${target.username}'s supporter payments, so nothing was deleted.` });
     // the rows and the log entry commit together; the files go only after both have
     deleteAccount(target, db.transaction((u) => { deleteAccountRows(u); adminLog(req, 'delete', u.username, reason); }));
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
