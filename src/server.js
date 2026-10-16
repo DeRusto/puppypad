@@ -1136,11 +1136,10 @@ function deleteFile(user, rel) {
   usageCache.set(user.username, { total: used.total - size, count: used.count - 1 });
   const root = siteDir(user.username);
   for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
-  markUpdated(user.id);
   return true;
 }
 main.post('/dashboard/delete', auth, canEdit, (req, res) => {
-  deleteFile(req.ctx.user, U.safeRel(req.body.path));
+  if (deleteFile(req.ctx.user, U.safeRel(req.body.path))) markUpdated(req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent('File deleted.')}`);
 });
 // rename or move a file or folder; folders keep their contents, and nothing is ever overwritten
@@ -1537,6 +1536,7 @@ api.get('/site', (req, res) => {
     name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: isListed(u), hidden: !!u.hidden,
     used_bytes: used.total, quota_bytes: quotaMB(u) * 1048576, files: used.count, max_files: MAX_FILES, max_file_bytes: cfg.MAX_FILE_MB * 1048576,
     bandwidth_today_bytes: bwToday(u), bandwidth_cap_bytes: cfg.BANDWIDTH_MB * 1048576, hits: u.hits, updated_at: new Date(u.updated_at).toISOString(),
+    allowed_types: [...U.ALLOWED_EXT],
   });
 });
 api.get('/files', async (req, res) => {
@@ -1544,8 +1544,12 @@ api.get('/files', async (req, res) => {
   const files = [];
   for (const f of (await U.listFiles(root)).sort()) {
     try {
-      const st = await fs.promises.stat(path.join(root, f));
-      files.push({ path: f, size: st.size, modified: st.mtime.toISOString() });
+      const full = path.join(root, f);
+      const st = await fs.promises.stat(full);
+      // the CLI compares hashes to skip unchanged files; mtimes mean nothing after a git checkout
+      // shortcut: hashes the whole site on every listing (500 MB at most); cache by size and mtime if listings get slow
+      const sha256 = crypto.createHash('sha256').update(await fs.promises.readFile(full)).digest('hex');
+      files.push({ path: f, size: st.size, modified: st.mtime.toISOString(), sha256 });
     } catch { /* deleted meanwhile */ }
   }
   res.json({ files });
@@ -1564,14 +1568,36 @@ api.post('/upload', tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next)
     res.json({ saved, skipped });
   } catch (e) { next(e); } finally { dropTemp(req.files || []); }
 }));
+// one file as { path }, or up to 100 as { paths: [...] } with one history entry for the lot
 api.post('/delete', express.urlencoded({ extended: false }), express.json(), (req, res) => {
   if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
+  const user = req.ctx.user;
+  if (req.body?.paths !== undefined) {
+    const list = [req.body.paths].flat();
+    if (!list.length || list.length > 100) return res.status(400).json({ error: 'Send between 1 and 100 paths at a time.' });
+    const rels = list.map((p) => U.safeRel(p));
+    const bad = list.find((p, i) => !rels[i]);
+    if (bad !== undefined) return res.status(400).json({ error: `That path is not allowed: ${String(bad).slice(0, 100)}` });
+    const deleted = [];
+    const missing = [];
+    for (const rel of new Set(rels)) (deleteFile(user, rel) ? deleted : missing).push(rel);
+    if (deleted.length) markUpdated(user.id);
+    return res.json({ deleted, missing });
+  }
   const rel = U.safeRel(req.body?.path);
   if (!rel) return res.status(400).json({ error: 'Send the path of one file, like pics/cat.png.' });
-  if (!deleteFile(req.ctx.user, rel)) return res.status(404).json({ error: `There is no file called ${rel}.` });
+  if (!deleteFile(user, rel)) return res.status(404).json({ error: `There is no file called ${rel}.` });
+  markUpdated(user.id);
   res.json({ deleted: rel });
 });
-api.use((req, res) => res.status(404).json({ error: 'No such API endpoint. There are GET /api/site, GET /api/files, POST /api/upload and POST /api/delete.' }));
+// a file's bytes as stored, for the CLI's pull; served as a download so a member's page never runs on this origin
+api.get('/file', (req, res) => {
+  const rel = U.safeRel(req.query.path);
+  const full = rel && resolveIn(req.ctx.user, rel);
+  if (!full || !fs.existsSync(full) || !fs.statSync(full).isFile()) return res.status(404).json({ error: `There is no file called ${String(req.query.path ?? '').slice(0, 100)}.` });
+  res.set({ 'Cache-Control': 'no-store', 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment' }).sendFile(full);
+});
+api.use((req, res) => res.status(404).json({ error: 'No such API endpoint. There are GET /api/site, GET /api/files, GET /api/file, POST /api/upload and POST /api/delete.' }));
 // a bad body (malformed JSON, too big) answers in JSON with its own status, like every other API error
 api.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   if (!err.status || err.status >= 500) console.error(err);

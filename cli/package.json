@@ -1,0 +1,11 @@
+{
+  "name": "puppypad",
+  "version": "0.0.0",
+  "description": "Upload a folder to your PuppyPad site from the command line",
+  "bin": { "puppypad": "puppypad.js" },
+  "files": ["puppypad.js"],
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/DeRusto/puppypad.git", "directory": "cli" },
+  "homepage": "https://github.com/DeRusto/puppypad/tree/main/cli#readme",
+  "license": "AGPL-3.0-only"
+}

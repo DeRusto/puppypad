@@ -39,9 +39,15 @@ style editor also sets a tiling background from `src/assets/bg/` or the member's
 
 **HTTP API.** A member makes an API key on `/dashboard/api` (with their password; only its sha256 is
 kept, and a password change or reset switches it off). With `Authorization: Bearer <key>`:
-`GET /api/site` (address, space, file count), `GET /api/files`, `POST /api/upload` (multipart `files`,
-up to 20, the filename may include folders) and `POST /api/delete` (`path`). Uploads go through the
+`GET /api/site` (address, space, file count, allowed types), `GET /api/files` (with a sha256 per file),
+`GET /api/file?path=` (one file's bytes), `POST /api/upload` (multipart `files`, up to 20, the filename
+may include folders) and `POST /api/delete` (`path`, or up to 100 `paths`). Uploads go through the
 dashboard's name, type, quota and phishing checks; 120 requests a minute per member.
+
+**CLI and deploy Action.** `npx puppypad push` uploads a folder's new and changed files (`--delete`
+mirrors it, `--dry-run` previews), and `pull` downloads the site; see [`cli/README.md`](cli/README.md).
+The same CLI runs as a GitHub Action (`uses: DeRusto/puppypad@main`, `action.yml`) to deploy a
+repository on every push. Releases publish the CLI to npm when the `NPM_TOKEN` secret is set.
 
 **Community.** The Explore page shows a screenshot of every site, sortable by recently updated,
 newest, most followed and most visited, with a search by site name or tag (members add up to 5 tags).

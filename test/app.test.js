@@ -1857,7 +1857,10 @@ test('the HTTP API: a per-member key uploads, lists, deletes and reads site info
 
   const make = (password) => req('post', '/dashboard/api').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, action: 'new', password });
   assert.match((await make('wrongpassword')).text, /Wrong password/);
-  const key = (await make('longpassword1')).text.match(/<pre>(pp_[\w-]+)<\/pre>/)[1];
+  const page = (await make('longpassword1')).text;
+  const key = page.match(/<pre>(pp_[\w-]+)<\/pre>/)[1];
+  assert.match(page, /npx puppypad login --url http:\/\/pad\.test/);
+  assert.match(page, /api_key: \$\{\{ secrets\.PUPPYPAD_API_KEY \}\}/); // GitHub's syntax, not a template slot
   assert.equal(db.prepare('SELECT api_key FROM users WHERE username = ?').get('apidog').api_key, U.sha(key)); // only its hash is kept
 
   const site = await call('get', '/api/site', key);
@@ -1880,8 +1883,23 @@ test('the HTTP API: a per-member key uploads, lists, deletes and reads site info
   const big = await call('post', '/api/upload', key).attach('files', Buffer.alloc(1048576 + 1), 'big.png');
   assert.equal(big.status, 400);
 
-  const files = (await call('get', '/api/files', key)).body.files.map((f) => f.path);
-  assert.deepEqual(files, ['index.html', 'login.html', 'pics/about.html', 'pics/old/cat.gif']);
+  const listing = (await call('get', '/api/files', key)).body.files;
+  assert.deepEqual(listing.map((f) => f.path), ['index.html', 'login.html', 'pics/about.html', 'pics/old/cat.gif']);
+  assert.equal(listing[2].sha256, U.sha('<p>hi</p>')); // the CLI skips files whose hash matches
+
+  // a file's bytes come back as a download, never as a page on this origin
+  const got = await call('get', '/api/file?path=pics/about.html', key).buffer(true);
+  assert.equal(got.body.toString(), '<p>hi</p>');
+  assert.equal(got.headers['content-type'], 'application/octet-stream');
+  assert.equal(got.headers['content-disposition'], 'attachment');
+  for (const bad of ['nope.html', '../apidog/index.html', '']) assert.equal((await call('get', `/api/file?path=${bad}`, key)).status, 404, bad);
+
+  // many paths at once, as JSON or as a repeated form field
+  await call('post', '/api/upload', key).attach('files', Buffer.from('a'), 'a.txt').attach('files', Buffer.from('b'), 'b.txt');
+  assert.deepEqual((await call('post', '/api/delete', key).send({ paths: ['a.txt', 'gone.txt'] })).body, { deleted: ['a.txt'], missing: ['gone.txt'] });
+  assert.deepEqual((await call('post', '/api/delete', key).type('form').send('paths=b.txt')).body, { deleted: ['b.txt'], missing: [] });
+  assert.equal((await call('post', '/api/delete', key).send({ paths: ['../x.html'] })).status, 400);
+  assert.equal((await call('post', '/api/delete', key).send({ paths: Array(101).fill('x.txt') })).status, 400);
 
   assert.deepEqual((await call('post', '/api/delete', key).send({ path: 'pics/old/cat.gif' })).body, { deleted: 'pics/old/cat.gif' });
   assert.ok(!fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'apidog', 'pics', 'old'))); // the empty folder goes too
@@ -1903,6 +1921,94 @@ test('the HTTP API: a per-member key uploads, lists, deletes and reads site info
   assert.equal((await call('get', '/api/site', key2)).status, 200);
   await req('post', '/account/password').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
   assert.equal((await call('get', '/api/site', key2)).status, 401);
+});
+
+test('the CLI pushes only changed files, deletes only with --delete, and pulls the site back', async () => {
+  const m = await member('clidog');
+  const key = (await req('post', '/dashboard/api').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, action: 'new', password: 'longpassword1' }))
+    .text.match(/<pre>(pp_[\w-]+)<\/pre>/)[1];
+  // the app picks the site by Host, and fetch can't set that header, so a tiny front door sets it
+  const server = require('http').createServer((rq, rs) => { rq.headers.host = 'pad.test'; app(rq, rs); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-cli-'));
+  Object.assign(process.env, { PUPPYPAD_API_KEY: key, PUPPYPAD_URL: `http://127.0.0.1:${server.address().port}`, XDG_CONFIG_HOME: tmp });
+  const out = [];
+  const write = process.stdout.write;
+  const cli = async (...args) => {
+    out.length = 0;
+    process.stdout.write = (s) => out.push(s);
+    try { await require('../cli/puppypad').main(args); } finally { process.stdout.write = write; }
+    return out.join('');
+  };
+  const live = path.join(process.env.DATA_DIR, 'sites', 'clidog');
+  const src = path.join(tmp, 'site');
+  try {
+    fs.mkdirSync(path.join(src, 'pics'), { recursive: true });
+    fs.mkdirSync(path.join(src, '.git'));
+    fs.writeFileSync(path.join(src, 'index.html'), '<h1>mine</h1>');
+    fs.writeFileSync(path.join(src, 'pics', 'cat.gif'), 'gif');
+    fs.writeFileSync(path.join(src, '.git', 'HEAD'), 'ref');
+    fs.writeFileSync(path.join(src, 'run.php'), 'x');
+
+    assert.match(await cli('push', src, '--dry-run'), /would upload {2}index\.html/);
+    assert.equal(fs.readFileSync(path.join(live, 'index.html'), 'utf8') === '<h1>mine</h1>', false);
+    const first = await cli('push', src);
+    assert.match(first, /Not uploading 1 file .*run\.php/);
+    assert.match(first, /Uploaded 2\./);
+    assert.equal(fs.readFileSync(path.join(live, 'pics', 'cat.gif'), 'utf8'), 'gif');
+    assert.ok(!fs.existsSync(path.join(live, '.git')));
+    assert.match(await cli('push', src), /is up to date/);
+
+    fs.writeFileSync(path.join(live, 'extra.html'), 'made on the dashboard');
+    fs.writeFileSync(path.join(src, 'index.html'), '<h1>changed</h1>');
+    assert.match(await cli('push', src), /^upload {2}index\.html\nUploaded 1\./m); // extra.html stays without --delete
+    assert.ok(fs.existsSync(path.join(live, 'extra.html')));
+    // a failed upload stops --delete, since what it would remove may be what the failed file replaces
+    fs.writeFileSync(path.join(src, 'huge.png'), Buffer.alloc(1048576 + 1));
+    await assert.rejects(cli('push', src, '--delete'), /huge\.png \(too big\).*Nothing was deleted/);
+    assert.ok(fs.existsSync(path.join(live, 'extra.html')));
+    fs.rmSync(path.join(src, 'huge.png'));
+    assert.match(await cli('push', src, '--delete'), /delete {2}extra\.html/);
+    assert.ok(!fs.existsSync(path.join(live, 'extra.html')));
+
+    // the server turns spaces into underscores; the CLI compares by that name so nothing is re-sent or deleted
+    fs.writeFileSync(path.join(src, 'my page.html'), 'spaced');
+    assert.match(await cli('push', src, '--delete'), /upload {2}my_page\.html\nUploaded 1, deleted 0\./);
+    assert.match(await cli('push', src, '--delete'), /is up to date/);
+    fs.writeFileSync(path.join(src, 'my  page.html'), 'clash');
+    await assert.rejects(cli('push', src), /would both be stored as my_page\.html/);
+    fs.rmSync(path.join(src, 'my  page.html'));
+    await cli('delete', 'my_page.html');
+    fs.rmSync(path.join(src, 'my page.html'));
+
+    const back = path.join(tmp, 'back');
+    assert.match(await cli('pull', back), /Downloaded 2 of 2/);
+    assert.equal(fs.readFileSync(path.join(back, 'index.html'), 'utf8'), '<h1>changed</h1>');
+    assert.match(await cli('pull', back), /already here/);
+    const trap = path.join(tmp, 'trap');
+    fs.mkdirSync(path.join(tmp, 'elsewhere'));
+    fs.mkdirSync(trap);
+    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(trap, 'pics'));
+    await assert.rejects(cli('pull', trap), /symlink/);
+    assert.ok(!fs.existsSync(path.join(tmp, 'elsewhere', 'cat.gif')));
+    assert.match(await cli('delete', 'pics/cat.gif', 'nope.gif'), /deleted {2}pics\/cat\.gif\nnot found {2}nope\.gif/);
+    assert.match(await cli('info'), /clidog {2}http:\/\/clidog\.pad\.test\//);
+    assert.match(await cli('list'), /index\.html/);
+
+    await cli('login'); // takes the key from PUPPYPAD_API_KEY and saves it privately
+    const saved = path.join(tmp, 'puppypad', 'config.json');
+    assert.equal(JSON.parse(fs.readFileSync(saved, 'utf8')).key, key);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(saved).mode & 0o777, 0o600);
+    await cli('logout');
+    assert.ok(!fs.existsSync(saved));
+
+    process.env.PUPPYPAD_API_KEY = 'pp_wrong';
+    await assert.rejects(cli('info'), /unknown API key/);
+  } finally {
+    for (const k of ['PUPPYPAD_API_KEY', 'PUPPYPAD_URL', 'XDG_CONFIG_HOME']) delete process.env[k];
+    server.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('TOTP codes match RFC 6238', () => {

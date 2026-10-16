@@ -2,6 +2,7 @@ name: Release
 # Publishing a release tagged vX.Y.Z builds the app, shots and caddy images, pushes them to
 # ghcr.io/<owner>/puppypad-{app,shots,caddy}:vX.Y.Z, and attaches the deploy bundle, install.sh and
 # SHA256SUMS to the release. Servers install and upgrade from those with scripts/install.sh.
+# It also publishes the CLI in cli/ to npm as puppypad@X.Y.Z, once an NPM_TOKEN repository secret is set.
 on:
   release:
     types: [published]
@@ -9,6 +10,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write # npm provenance
 
 jobs:
   release:
@@ -25,6 +27,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npx playwright install --with-deps chromium # for test/editor.browser.test.js
       - run: npm test
@@ -55,3 +58,12 @@ jobs:
         run: |
           scripts/make-bundle.sh "$TAG" dist "$RUNNER_TEMP/IMAGES"
           gh release upload "$TAG" dist/* --clobber
+      - name: Publish the CLI to npm
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: cli
+        run: |
+          [ -n "$NODE_AUTH_TOKEN" ] || { echo "No NPM_TOKEN secret, so the CLI is not published."; exit 0; }
+          npm version --no-git-tag-version "${TAG#v}"
+          npm publish --provenance --access public
