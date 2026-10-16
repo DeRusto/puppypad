@@ -36,6 +36,7 @@ require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
   } };
   s.subscriptions = {
     list: stripeCall(({ customer }) => listed(fake.subs.filter((o) => o.customer === customer))),
+    retrieve: stripeCall(async (id) => fake.subs.find((o) => o.id === id)),
     cancel: stripeCall(async (id) => { fake.cancelled.push(id); return { id, status: 'canceled' }; }),
   };
   s.billingPortal = { sessions: { create: stripeCall(async () => ({ url: 'https://billing.stripe.com/p/session/test' })) } };
@@ -2345,6 +2346,8 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
     return req('post', '/stripe/webhook').set('Content-Type', 'application/json')
       .set('Stripe-Signature', signer.generateTestHeaderString({ payload, secret })).send(payload);
   };
+  // Stripe now holds sub as it is, and sends an event about it
+  const subHook = (type, sub) => { fake.subs = fake.subs.filter((o) => o.id !== sub.id).concat(sub); return hook(type, sub); };
   const row = () => db.prepare('SELECT * FROM users WHERE username = ?').get('goodboy');
   const page = await req('get', '/dashboard/support').set('Cookie', m.cookie);
   assert.match(page.text, /Become a supporter/);
@@ -2371,12 +2374,13 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
 
   // forged or unsigned webhooks change nothing
   const before = row().supporter_until;
-  assert.equal((await hook('customer.subscription.created', { customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: 2e9 }] } }, 'whsec_wrong')).status, 400);
+  assert.equal((await hook('customer.subscription.created', { id: 'sub_1', customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: 2e9 }] } }, 'whsec_wrong')).status, 400);
   assert.equal(row().supporter_until, before);
   assert.equal((await hook('checkout.session.completed', { customer: cus, client_reference_id: String(row().id) })).status, 200);
   assert.equal(row().stripe_customer_id, cus);
   const end = Math.floor(Date.now() / 1000) + 30 * 86400;
-  await hook('customer.subscription.created', { customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  const live = { id: 'sub_1', customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } };
+  await subHook('customer.subscription.created', live);
   assert.ok(row().supporter_until > end * 1000);
 
   // flair wherever the name shows, and the count on the home page
@@ -2392,24 +2396,28 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.equal(stripeCalls.at(-1).customer, cus);
 
   // cancelled: the perks and the flair stop at once
-  await hook('customer.subscription.deleted', { customer: cus, status: 'canceled', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  await subHook('customer.subscription.deleted', { ...live, status: 'canceled' });
+  assert.ok(row().supporter_until <= Date.now());
+  // an older event arriving late can't bring the perks back: what Stripe holds now wins
+  await hook('customer.subscription.updated', live);
   assert.ok(row().supporter_until <= Date.now());
   assert.doesNotMatch((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
   assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /Your support ended/);
   // a subscription carries its member in metadata, so it lands even before checkout's event links the customer
   await member('latepup');
   const pupId = db.prepare('SELECT id FROM users WHERE username = ?').get('latepup').id;
-  await hook('customer.subscription.created', { customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
+  await subHook('customer.subscription.created', { id: 'sub_2', customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
   assert.ok(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until > Date.now());
 
-  // deleting the login cancels its subscription first, and keeps the account if Stripe can't be reached
+  // deleting the login cancels its live subscription first (one the webhooks haven't reported yet too), and keeps the account if Stripe can't be reached
+  fake.subs.push({ id: 'sub_3', customer: cus, status: 'active' });
   const del = () => req('post', '/dashboard/delete-account').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'longpassword1' });
   fake.fail = true;
   assert.equal((await del()).status, 502);
   assert.ok(row());
   fake.fail = false;
   assert.equal((await del()).status, 200);
-  assert.deepEqual(fake.cancelled, ['sub_1']);
+  assert.deepEqual(fake.cancelled, ['sub_3']);
   assert.equal(row(), undefined);
 
   // the terms and the privacy page say what supporting means and who takes the money

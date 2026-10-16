@@ -493,7 +493,8 @@ main.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (
     if (event.type === 'checkout.session.completed' && o.customer) {
       db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND owner_id IS NULL").run(String(o.customer), Number(o.client_reference_id) || 0);
     } else if (event.type.startsWith('customer.subscription.')) {
-      applySubscription(o);
+      // the payload may be stale (Stripe can deliver or retry events out of order), so apply the subscription as it is now
+      applySubscription(await stripe.subscriptions.retrieve(o.id));
     }
     res.json({ received: true });
   } catch (e) {
@@ -503,7 +504,6 @@ main.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (
 });
 // a subscription's state sets supporter_until: paid up to the period's end (plus a few days for a late renewal), or over now
 function applySubscription(sub) {
-  // shortcut: events apply in arrival order; Stripe can reorder them, so compare event.created if a stale one ever revives a lapsed member
   const user = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer)) ||
     db.prepare('SELECT * FROM users WHERE id = ? AND owner_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
   if (!user) return;

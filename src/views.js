@@ -769,7 +769,7 @@ Deleting your account removes it.</p>
 <li>No pirated or cracked software, and no "unblocked games" or other copies of things you don't own.</li>
 <li>No file dumps. Your ${c.QUOTA_MB} MB is for the files your website uses.</li>
 <li>No attacks on ${name} or other members: no break-in attempts, no flooding, nothing meant to knock the site over.</li>
-<li>One account per person for one site. Don't create accounts in bulk or to hold names.</li>
+<li>One account per person, with one site (supporters can add up to 5 under the same login). Don't create accounts in bulk or to hold names.</li>
 </ol>
 
 <h3>When we remove a site</h3>
