@@ -1997,6 +1997,12 @@ test('supporters run several sites under one login; free members cannot', async 
   // a lapsed supporter keeps the sites but cannot add more
   db.prepare('UPDATE users SET supporter_until = 1 WHERE username = ?').run('freebie');
   assert.match((await add(free, 'freebie-three')).headers.location, /err=/);
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'freebie');
+  for (const username of ['freebie-three', 'freebie-four', 'freebie-five']) {
+    assert.match((await add(free, username)).headers.location, /ok=/);
+  }
+  assert.match((await add(free, 'freebie-six')).headers.location, /err=/);
+  db.prepare('UPDATE users SET supporter_until = 1 WHERE username = ?').run('freebie');
   // someone else's site is not switchable
   await member('stranger');
   await pick(free, db.prepare('SELECT id FROM users WHERE username = ?').get('stranger').id);
