@@ -535,6 +535,7 @@ function showProfile(req, res, name, m, status = 200) {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
     blocking: !!me && blocked(me.id, p.id),
+    login: me && ownerRow(me),
     comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
     events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
     followers: followPage(req, 'follower_id', 'followed_id', p.id, 'fpage'),
@@ -1327,7 +1328,7 @@ const twoFactorPage = async (req, m, secret) => {
   return V.twoFactor(req.ctx, m, secret, uri, await QRCode.toString(uri, { type: 'svg', margin: 2 }));
 };
 main.get('/account/2fa', auth, async (req, res) => {
-  if (req.ctx.user.totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
+  if (ownerRow(req.ctx.user).totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
   const secret = U.newTotpSecret();
   res.set('Cache-Control', 'no-store').send(await twoFactorPage(req, null, secret));
 });

@@ -178,7 +178,7 @@ ${e.comments.map((c) => commentHtml(ctx, c, !!ctx.user && ctx.user.username === 
 ${ctx.user ? `<details><summary>Comment</summary>${commentForm(ctx, `<input type="hidden" name="event" value="${e.id}">`, back)}</details>` : ''}</div>`;
 };
 const nameLinks = (rows) => (rows.length ? `<div class="names">${rows.map((r) => `<a href="/site/${esc(r.username)}">${esc(r.username)}</a>`).join('')}</div>` : '<p class="note">Nobody yet.</p>');
-const profile = (ctx, m, { p, following, blocking, comments, events, followers, follows }) => {
+const profile = (ctx, m, { p, following, blocking, login, comments, events, followers, follows }) => {
   const url = ctx.cfg.siteUrl(p.username);
   const mine = ctx.user && ctx.user.id === p.id;
   return layout(ctx, p.username, `
@@ -215,7 +215,7 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 <input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>
 <section class="box" id="security"><h2>Logging in</h2>
 <form method="post" action="/account/logout-all">${csrfField(ctx)}<button>Log out everywhere</button> <span class="note">Every browser and device logged in to your site, this one too.</span></form>
-<h3>Two-factor login</h3>${ctx.user.totp_secret ? `<p>On. Logging in takes your password and a code from your authenticator app. Recovery codes left: ${ctx.user.totp_codes.split('\n').filter(Boolean).length}.</p>
+<h3>Two-factor login</h3>${login.totp_secret ? `<p>On. Logging in takes your password and a code from your authenticator app. Recovery codes left: ${login.totp_codes.split('\n').filter(Boolean).length}.</p>
 <form class="stack" method="post" action="/account/2fa/off">${csrfField(ctx)}<label for="offcode">A code from your app, or a recovery code</label>
 <input type="text" id="offcode" name="code" required inputmode="numeric" autocomplete="one-time-code">
 <label for="offpw">Your password</label><input type="password" id="offpw" name="password" required autocomplete="current-password"><button>Turn off two-factor login</button></form>`

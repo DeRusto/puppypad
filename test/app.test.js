@@ -2011,3 +2011,25 @@ test('supporters run several sites under one login; free members cannot', async 
   await req('post', '/account/logout-all').set('Cookie', free.cookie).type('form').send({ _csrf: free.csrf });
   assert.equal((await req('get', '/dashboard').set('Cookie', free.cookie)).status, 302);
 });
+
+test('two-factor login shows its real state on an extra site', async () => {
+  const m = await member('twofaextra');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'twofaextra');
+  assert.match((await post(m, '/dashboard/sites/new', { username: 'twofaextra-two' })).headers.location, /ok=/);
+  const child = db.prepare('SELECT id FROM users WHERE username = ?').get('twofaextra-two');
+  assert.equal((await post(m, '/dashboard/sites/switch', { id: child.id })).status, 302);
+  const setup = await req('get', '/account/2fa').set('Cookie', m.cookie);
+  assert.equal(setup.status, 200);
+  const secret = setup.text.match(/name="secret" value="([A-Z2-7]{32})"/)[1];
+  const shown = await post(m, '/account/2fa/on', { secret, code: U.totp(secret, Math.floor(Date.now() / 30000)), password: 'longpassword1' });
+  assert.equal(shown.status, 200);
+  assert.equal(shown.text.match(/<pre>([^<]+)<\/pre>/)[1].split('\n').length, 10);
+  assert.ok(db.prepare('SELECT totp_secret FROM users WHERE username = ?').get('twofaextra').totp_secret);
+  assert.equal(db.prepare('SELECT totp_secret FROM users WHERE id = ?').get(child.id).totp_secret, '');
+  const profile = await req('get', '/site/twofaextra-two').set('Cookie', m.cookie);
+  assert.match(profile.text, /Recovery codes left: 10\./);
+  assert.doesNotMatch(profile.text, /Turn on two-factor login/);
+  const enabled = await req('get', '/account/2fa').set('Cookie', m.cookie);
+  assert.equal(enabled.status, 302);
+  assert.equal(enabled.headers.location, '/site/twofaextra-two#security');
+});
