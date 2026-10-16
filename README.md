@@ -30,7 +30,15 @@ and an optional custom `not_found.html`. Members see views per page per day and 
 came from for the last 30 days, counted without cookies or IP addresses. A member can rename their
 site once every `RENAME_DAYS` (30 by default); the old address redirects for the 90 days it is held. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
 (the owner can delete entries, and is emailed about new ones right away, in a daily digest or not at
-all) and webring prev/next/random links.
+all, and themed with `?theme=`), `/_hw/updated.svg`, `/_hw/status.svg`, webring prev/next/random links,
+88×31 buttons, stamps and two effect scripts, all handed out as snippets on `/dashboard/widgets`. The
+style editor also sets a tiling background from `src/assets/bg/` or the member's own pictures.
+
+**HTTP API.** A member makes an API key on `/dashboard/api` (with their password; only its sha256 is
+kept, and a password change or reset switches it off). With `Authorization: Bearer <key>`:
+`GET /api/site` (address, space, file count), `GET /api/files`, `POST /api/upload` (multipart `files`,
+up to 20, the filename may include folders) and `POST /api/delete` (`path`). Uploads go through the
+dashboard's name, type, quota and phishing checks; 120 requests a minute per member.
 
 **Community.** The Explore page shows a screenshot of every site, sortable by recently updated,
 newest, most followed and most visited, with a search by site name or tag (members add up to 5 tags).

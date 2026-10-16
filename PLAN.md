@@ -195,7 +195,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - ✅ The feed names the files an update changed and links to them (`events.files`).
 - ✅ Notifications: an in-site list of new followers, comments and likes (`/notifications`, worked out from those tables), with optional email for each.
 - ✅ Block a member: hides their comments and likes on your profile and updates from everyone (and theirs elsewhere from you), stops new ones, and ends follows between you.
-- HTTP API with a per-member API key: upload, delete, list files and site info. The CLI and deploy
+- ✅ HTTP API with a per-member API key (`/dashboard/api`, `/api/*`): upload, delete, list files and site info. The CLI and deploy
   Action in Phase C are thin clients over it.
 
 **Phase C — growth (later)**
@@ -225,7 +225,7 @@ Members add these without writing code, but every one of them still produces pla
 gets injected into member pages behind their back, and anything a widget writes passes the same
 name, type, quota and phishing checks as an upload.
 
-**How a widget gets onto a page.** A new dashboard page, `/dashboard/widgets`, lists each widget
+**How a widget gets onto a page.** ✅ A new dashboard page, `/dashboard/widgets`, lists each widget
 with a preview and a copy-paste snippet, plus an "Add to a page" button that opens the editor
 with the snippet inserted at the cursor. No auto-editing of member HTML.
 
@@ -240,7 +240,7 @@ with the snippet inserted at the cursor. No auto-editing of member HTML.
 - Ship a handful of presets (the starter's sky blue, Geocities black-and-lime, notebook paper,
   pastel, night mode) as one-click starting points.
 
-**Background image selector**
+**Background image selector** ✅ (built)
 - A gallery of tiling backgrounds (stars, clouds, paw prints, checkerboards, notebook lines),
   served from `puppypad.org/assets/bg/` with long cache headers. Picking one writes the
   `background` rule into `puppypad.css`; tile vs. fixed vs. cover is a radio button.
@@ -248,9 +248,10 @@ with the snippet inserted at the cursor. No auto-editing of member HTML.
 - Gallery images must be ones we may redistribute (made for PuppyPad, or CC0); keep the source
   and licence for each in `assets/bg/CREDITS.md`.
 
-**Smaller widgets, in rough order**
+**Smaller widgets, in rough order** ✅ (built; `/dashboard/widgets` has them all)
 - Stamp and 88×31 button gallery, same model as backgrounds: pick one, get an `<img>` snippet.
-- "Last updated" badge: `/_hw/updated.svg`, drawn from the newest file's mtime.
+- "Last updated" badge: `/_hw/updated.svg`, drawn from the site's last change (`users.updated_at`, bumped by every save,
+  upload, delete and move) rather than by walking the folder's mtimes on each view.
 - Status/mood line: one short line the member sets on the dashboard, served as
   `/_hw/status.svg` (SVG, so no script runs on the member's page).
 - Webring bar snippet (prev / random / next) using the existing `/webring/*` routes.

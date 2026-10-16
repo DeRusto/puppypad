@@ -1225,9 +1225,9 @@ test('the webring holds only sites that joined it', async () => {
   const a = await member('ringer');
   await member('loner');
   for (const n of ['ringer', 'loner']) db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, n);
-  assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Join the webring/);
+  assert.match((await req('get', '/dashboard/widgets').set('Cookie', a.cookie)).text, /Join the webring/);
   await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
-  assert.match((await req('get', '/dashboard').set('Cookie', a.cookie)).text, /Leave the webring/);
+  assert.match((await req('get', '/dashboard/widgets').set('Cookie', a.cookie)).text, /Leave the webring/);
   for (let i = 0; i < 10; i++) {
     const to = (await req('get', '/webring/random')).headers.location;
     assert.notEqual(to, '/'); // lands on a joined site
@@ -1727,4 +1727,143 @@ test('long lists page: notifications, profile comments, and every comment on an 
   assert.doesNotMatch((await req('get', '/notifications').set('Cookie', me.cookie)).text, /<li class="new">/);
   // a form's way back never leads off the site
   assert.equal((await post(fan, '/comment', { site: 'popular', body: 'x', back: '//evil.example' })).headers.location, '/site/popular');
+});
+
+test('the widgets page hands out snippets, keeps a status line, and the new /_hw/ badges draw from the site', async () => {
+  const m = await member('widgety');
+  const page = (await req('get', '/dashboard/widgets').set('Cookie', m.cookie)).text;
+  for (const s of ['/_hw/counter.svg', '/_hw/guestbook?theme=night', '/_hw/updated.svg', '/_hw/status.svg', '/webring/next?from=widgety', '/assets/buttons/made-with.svg', '/snow.js']) assert.ok(page.includes(U.esc(s)), s);
+  assert.match(page, /<option value="index.html">/); // "Add to a page" suggests the member's pages
+
+  const save = await req('post', '/dashboard/widgets/status').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, status: ' eating <b>snacks</b>\u0007 ' + 'x'.repeat(80) });
+  assert.match(decodeURIComponent(save.headers.location), /Status saved/);
+  const svg = async (url) => { const r = await req('get', url, 'widgety.pad.test').buffer(true); return { type: r.headers['content-type'], text: String(r.body) }; };
+  const status = await svg('/_hw/status.svg');
+  assert.equal(status.type, 'image/svg+xml; charset=utf-8');
+  assert.match(status.text, />eating &lt;b&gt;snacks&lt;\/b&gt; x+</); // escaped, one line, cut to 60 characters
+  assert.equal(db.prepare('SELECT status FROM users WHERE username = ?').get('widgety').status.length, 60);
+
+  db.prepare('UPDATE users SET updated_at = ? WHERE username = ?').run(Date.parse('2026-03-04T10:00:00Z'), 'widgety');
+  assert.match((await svg('/_hw/updated.svg')).text, /updated 2026-03-04/);
+});
+
+test('guestbook themes come from a fixed list and stay on after signing', async () => {
+  await member('gbthemes');
+  const night = await req('get', '/_hw/guestbook?theme=night', 'gbthemes.pad.test');
+  assert.match(night.text, /background:#14141f/);
+  assert.match(night.text, /action="\/_hw\/guestbook\?theme=night"/);
+  const odd = await req('get', '/_hw/guestbook?theme=%3C/style%3E', 'gbthemes.pad.test');
+  assert.match(odd.text, /action="\/_hw\/guestbook"/); // unknown: the classic look
+  assert.doesNotMatch(odd.text, /<\/style><\/style>/);
+  const sign = await req('post', '/_hw/guestbook?theme=night', 'gbthemes.pad.test').type('form').send({ name: 'V', message: 'hi' });
+  assert.equal(sign.headers.location, '/_hw/guestbook?theme=night');
+});
+
+test('"Add to a page" offers the snippet in the editor without touching the page', async () => {
+  const m = await member('addwidget');
+  const before = fs.readFileSync(path.join(process.env.DATA_DIR, 'sites', 'addwidget', 'index.html'), 'utf8');
+  const ed = await req('get', '/dashboard/edit?path=index.html&widget=stamp-tea').set('Cookie', m.cookie);
+  assert.match(ed.text, /Insert the Fuelled by tea at the cursor/);
+  assert.match(ed.text, /snip="\\u003ca href=\\"http:\/\/pad.test\\">\\u003cimg src=\\"http:\/\/pad.test\/assets\/buttons\/stamp-tea.svg\\"/);
+  assert.doesNotMatch((await req('get', '/dashboard/edit?path=index.html&widget=nope').set('Cookie', m.cookie)).text, /id="insert"/);
+  assert.equal(fs.readFileSync(path.join(process.env.DATA_DIR, 'sites', 'addwidget', 'index.html'), 'utf8'), before);
+});
+
+test('effects are copied into the site once, through the save checks', async () => {
+  const m = await member('sparkly');
+  const copy = (fx) => req('post', '/dashboard/widgets/copy').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, fx });
+  assert.match(decodeURIComponent((await copy('sparkle')).headers.location), /ok=Copied sparkle.js/);
+  const file = path.join(process.env.DATA_DIR, 'sites', 'sparkly', 'sparkle.js');
+  assert.match(fs.readFileSync(file, 'utf8'), /prefers-reduced-motion/);
+  fs.writeFileSync(file, '// mine');
+  assert.match(decodeURIComponent((await copy('sparkle')).headers.location), /err=You already have sparkle.js/);
+  assert.equal(fs.readFileSync(file, 'utf8'), '// mine');
+  assert.match(decodeURIComponent((await copy('../x')).headers.location), /err=Pick one of the effects/);
+});
+
+test('gallery files are served with long cache headers, and nothing else under /assets', async () => {
+  const bg = await req('get', '/assets/bg/stars.svg');
+  assert.equal(bg.status, 200);
+  assert.match(bg.headers['cache-control'], /max-age=2592000/);
+  assert.equal((await req('get', '/assets/fx/snow.js')).headers['content-type'], 'text/javascript; charset=utf-8');
+  for (const bad of ['/assets/bg/CREDITS.md', '/assets/bg/..%2F..%2Fserver.js', '/assets/og.png/x']) assert.equal((await req('get', bad)).status, 404, bad);
+});
+
+test('the style editor sets a gallery or own background picture', async () => {
+  const m = await member('bgpicker');
+  const style = require('../src/style');
+  const css = path.join(process.env.DATA_DIR, 'sites', 'bgpicker', 'puppypad.css');
+  const night = { ...style.PRESETS.night };
+  delete night.name;
+  const save = (s) => req('post', '/dashboard/style').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...night, ...s });
+  await upload(m, 'sky.png', 'png');
+  assert.match((await req('get', '/dashboard/style').set('Cookie', m.cookie)).text, /<option value="\/sky.png">sky.png<\/option>/);
+
+  await save({ bg: 'stars', bgmode: 'fixed' });
+  assert.match(fs.readFileSync(css, 'utf8'), /body \{ background-image: url\("http:\/\/pad.test\/assets\/bg\/stars.svg"\); background-repeat: repeat; background-attachment: fixed; \}/);
+  assert.deepEqual(style.parse(fs.readFileSync(css, 'utf8')), { ...night, bg: 'stars', bgmode: 'fixed' });
+  assert.match((await req('get', '/dashboard/style').set('Cookie', m.cookie)).text, /value="stars" checked/);
+
+  await save({ bg: 'own', ownbg: '/sky.png', bgmode: 'cover' });
+  assert.match(fs.readFileSync(css, 'utf8'), /url\("\/sky.png"\); background-size: cover/);
+  assert.match((await req('get', '/dashboard/style').set('Cookie', m.cookie)).text, /value="own" checked/);
+
+  await save({ bg: '' });
+  assert.doesNotMatch(fs.readFileSync(css, 'utf8'), /background-image/);
+  for (const bad of [{ bg: 'own', ownbg: '/x.html' }, { bg: 'own', ownbg: '/a"); } body { x: url("b.png' }, { bg: 'nope' }, { bg: 'stars', bgmode: 'wobble' }]) {
+    assert.match(decodeURIComponent((await save(bad)).headers.location), /err=Pick each setting/);
+  }
+});
+
+test('the HTTP API: a per-member key uploads, lists, deletes and reads site info through the dashboard checks', async () => {
+  const m = await member('apidog');
+  const call = (method, url, key) => req(method, url).set('Authorization', `Bearer ${key}`);
+  assert.equal((await req('get', '/api/site')).status, 401);
+  assert.equal((await req('get', '/api/site').set('Cookie', m.cookie)).status, 401); // the login cookie is not a key
+
+  const make = (password) => req('post', '/dashboard/api').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, action: 'new', password });
+  assert.match((await make('wrongpassword')).text, /Wrong password/);
+  const key = (await make('longpassword1')).text.match(/<pre>(pp_[\w-]+)<\/pre>/)[1];
+  assert.equal(db.prepare('SELECT api_key FROM users WHERE username = ?').get('apidog').api_key, U.sha(key)); // only its hash is kept
+
+  const site = await call('get', '/api/site', key);
+  assert.equal(site.body.name, 'apidog');
+  assert.equal(site.body.url, 'http://apidog.pad.test/');
+  assert.equal(site.body.quota_bytes, 1048576);
+
+  const up = await call('post', '/api/upload', key).field('dir', 'pics')
+    .attach('files', Buffer.from('<p>hi</p>'), 'about.html').attach('files', Buffer.from('gif'), { filepath: 'old/cat.gif' })
+    .attach('files', Buffer.from('x'), 'evil.php').attach('files', Buffer.from('x'), { filepath: '../../escape.html' });
+  assert.equal(up.status, 200);
+  assert.deepEqual(up.body.saved, ['pics/about.html', 'pics/old/cat.gif']);
+  assert.equal(up.body.skipped.length, 2);
+  assert.ok(!fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'escape.html')));
+
+  const phish = await call('post', '/api/upload', key).attach('files', Buffer.from('<title>PayPal login</title>'), 'login.html');
+  assert.deepEqual(phish.body.saved, ['login.html']);
+  assert.ok(db.prepare("SELECT 1 FROM reports WHERE site = 'apidog' AND reason = 'Auto-flag'").get()); // the same phishing check
+
+  const big = await call('post', '/api/upload', key).attach('files', Buffer.alloc(1048576 + 1), 'big.png');
+  assert.equal(big.status, 400);
+
+  const files = (await call('get', '/api/files', key)).body.files.map((f) => f.path);
+  assert.deepEqual(files, ['index.html', 'login.html', 'pics/about.html', 'pics/old/cat.gif']);
+
+  assert.deepEqual((await call('post', '/api/delete', key).send({ path: 'pics/old/cat.gif' })).body, { deleted: 'pics/old/cat.gif' });
+  assert.ok(!fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'apidog', 'pics', 'old'))); // the empty folder goes too
+  assert.equal((await call('post', '/api/delete', key).type('form').send({ path: 'nope.html' })).status, 404);
+  assert.equal((await call('get', '/api/nothing', key)).status, 404);
+
+  // a moderator take-down stops it; a restore brings it back
+  db.prepare('UPDATE users SET banned = 1 WHERE username = ?').run('apidog');
+  assert.equal((await call('get', '/api/site', key)).status, 403);
+  db.prepare('UPDATE users SET banned = 0 WHERE username = ?').run('apidog');
+
+  // switching it off, or changing the password, ends the key
+  await req('post', '/dashboard/api').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, action: 'revoke' });
+  assert.equal((await call('get', '/api/site', key)).status, 401);
+  const key2 = (await make('longpassword1')).text.match(/<pre>(pp_[\w-]+)<\/pre>/)[1];
+  assert.equal((await call('get', '/api/site', key2)).status, 200);
+  await req('post', '/account/password').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
+  assert.equal((await call('get', '/api/site', key2)).status, 401);
 });
