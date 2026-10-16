@@ -71,7 +71,7 @@ guestbooks, honeypot fields, and unconfirmed accounts are purged after 3 days.
 1. In Cloudflare DNS, point `A example.com` and `A *.example.com` at the server, set to **DNS only**
    (grey cloud). Create an API token with the "Edit zone DNS" template for that zone; Caddy uses it to
    get one wildcard certificate.
-2. Install Docker (with the compose plugin), `curl`, `jq` and `cron`, then install the newest release:
+2. Install Docker (with the compose plugin), `curl`, `jq`, `rsync` and `cron`, then install the newest release:
 
    ```
    sudo mkdir -p /srv/puppypad && sudo chown "$USER" /srv/puppypad && cd /srv/puppypad
@@ -94,21 +94,21 @@ the checkout with the app running. It treats this as an upgrade (below) and leav
 
 ## Backups
 
-`scripts/backup.sh` takes a consistent copy of the database while the app runs, archives it with
-every member's files into `./backups`, and keeps the last 3. Set `BACKUP_REMOTE` to an
-[rclone](https://rclone.org) remote to copy the archives off the server too; the remote keeps
-14 days. Each archive is about the size of `data/sites`, and pictures
-don't compress, so leave room for that many copies on the server's disk: once less than 5% is free,
-`/healthz` fails and uploads are turned away. The installer schedules it every night at 03:15,
-logging to `backups/backup.log`.
+`scripts/backup.sh` takes a consistent copy of the database while the app runs and brings one copy
+of it, every member's files, the screenshots and the file history (`data/history`) up to date in
+`backups/latest` with rsync, so each night only writes what changed. Older versions of members' pages
+come from their file history rather than from older backups. Set `BACKUP_REMOTE` to an
+[rclone](https://rclone.org) remote to mirror it off the server too: the remote keeps `latest/`
+plus whatever each night changed or deleted in `old/<date>/`, for 14 days. Leave room for one more
+copy of `data/` on the server's disk: once less than 5% is free, `/healthz` fails and uploads are
+turned away. The installer schedules it every night at 03:15, logging to `backups/backup.log`.
 
 To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/puppypad.db-shm`
-(left over, they would be replayed onto the restored database and corrupt it), unpack an archive
-into `./data`, rename `backup.db` to `puppypad.db`, and `docker compose start app`.
+(left over, they would be replayed onto the restored database and corrupt it),
+`rsync -a --delete backups/latest/ data/` (after `rclone copy <remote>/latest backups/latest` if the
+server's copy is gone), rename `data/backup.db` to `data/puppypad.db`, and `docker compose start app`.
+A file as it was before a given night is in the remote's `old/<that night>/`.
 `docs/launch-checklist.md` has a restore test that doesn't touch the live data.
-
-The archives leave out `data/history`: members' file history covers their own mistakes between backups,
-and the app starts a fresh history for any site restored without one.
 
 ## Releases and upgrades
 
@@ -140,8 +140,8 @@ loads both, and upgrades never touch it. Don't use `docker-compose.override.yml`
 refuses it, since a source checkout uses that name to build images from source.
 
 Every download and pull has a time limit. A rollback leaves the database as the new release left it,
-which is fine while schema changes only add tables and columns; the backup from step 3 is the newest
-archive in `./backups` if it isn't.
+which is fine while schema changes only add tables and columns; the backup from step 3 is in
+`backups/latest`, until the next nightly backup, if it isn't.
 
 **From /admin.** The "Server version" box at the bottom of `/admin` shows the running release, the
 newest one with its notes, and a button that runs the upgrade above. The app never upgrades itself:

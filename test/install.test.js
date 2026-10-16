@@ -57,7 +57,7 @@ case "$*" in
   *) exit 0 ;;
 esac`);
   sh(path.join(bin, 'crontab'), `if [ "$1" = -l ]; then cat ${tmp}/crontab 2>/dev/null; else cat > ${tmp}/crontab; fi`);
-  sh(path.join(bin, 'rclone'), 'exit 0');
+  sh(path.join(bin, 'rclone'), `echo "rclone $*" >> ${log}`);
   // a release is the bundle make-bundle.sh would build, with VERSION and docker-compose.yml marking which one it is
   const release = (tag) => {
     const stage = path.join(tmp, `stage-${tag}`);
@@ -98,9 +98,9 @@ test('installer: an upgrade that does not come up puts every file and .env value
   fs.mkdirSync(path.join(s.root, 'data/sites/pup'), { recursive: true });
   fs.mkdirSync(path.join(s.root, 'data/shots'));
   fs.writeFileSync(path.join(s.root, 'data/sites/pup/index.html'), 'hi');
-  // tar reporting a file changed while read (exit 1) must not stop the backup or the upgrade
-  const realTar = execFileSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).trim();
-  sh(path.join(s.bin, 'tar'), `${realTar} "$@" || exit; case "$*" in *backups/puppypad-*) exit 1 ;; esac`);
+  // rsync reporting a file vanished while it ran (exit 24) must not stop the backup or the upgrade
+  const realRsync = execFileSync('sh', ['-c', 'command -v rsync'], { encoding: 'utf8' }).trim();
+  sh(path.join(s.bin, 'rsync'), `${realRsync} "$@" || exit; exit 24`);
   const up = s.run('scripts/install.sh', ['v0.0.2']);
   assert.equal(up.status, 1, up.stdout + up.stderr);
   assert.match(up.stdout, /did not come up healthy; going back/);
@@ -108,21 +108,23 @@ test('installer: an upgrade that does not come up puts every file and .env value
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
   assert.match(s.read('.env'), /^PUPPYPAD_VERSION=v0.0.1$/m);
   assert.ok(!fs.existsSync(path.join(s.root, 'ADDED.txt')));
-  assert.equal(fs.readdirSync(path.join(s.root, 'backups')).filter((f) => f.endsWith('.tar.gz')).length, 1);
+  assert.equal(s.read('backups/latest/sites/pup/index.html'), 'hi');
+  assert.ok(fs.existsSync(path.join(s.root, 'backups/latest/backup.db')));
   assert.ok(!fs.existsSync(path.join(s.root, 'data/backup.db')));
   // the database copy runs in a throwaway container, so it works while the app is down
   assert.match(fs.readFileSync(s.log, 'utf8'), /compose run --rm -T --no-deps app node/);
   assert.doesNotMatch(fs.readFileSync(s.log, 'utf8'), /compose exec -T app (node -e "require\('better|rm)/);
 
-  // only the newest 3 archives stay on the server, and they are copied to the remote
-  for (let i = 1; i <= 5; i++) {
-    const f = path.join(s.root, `backups/puppypad-2000010${i}-0315.tar.gz`);
-    fs.writeFileSync(f, '');
-    fs.utimesSync(f, i, i);
-  }
+  // one copy, kept current: deleted files and old full archives go, history comes along, and the remote mirrors it
+  fs.writeFileSync(path.join(s.root, 'backups/puppypad-20000101-0315.tar.gz'), '');
+  fs.rmSync(path.join(s.root, 'data/sites/pup/index.html'));
+  fs.mkdirSync(path.join(s.root, 'data/history/1.git'), { recursive: true });
   const b = s.run('scripts/backup.sh', [], { BACKUP_REMOTE: 'r:bucket' });
   assert.equal(b.status, 0, b.stdout + b.stderr);
-  assert.equal(fs.readdirSync(path.join(s.root, 'backups')).filter((f) => f.endsWith('.tar.gz')).length, 3);
+  assert.deepEqual(fs.readdirSync(path.join(s.root, 'backups')).sort(), ['latest']);
+  assert.ok(!fs.existsSync(path.join(s.root, 'backups/latest/sites/pup/index.html')));
+  assert.ok(fs.existsSync(path.join(s.root, 'backups/latest/history/1.git')));
+  assert.match(fs.readFileSync(s.log, 'utf8'), /rclone sync backups\/latest r:bucket\/latest --backup-dir r:bucket\/old\/\d{8}-\d{4}/);
 
   // the watcher runs the installer only for the newest release it found itself, never for what the app asks
   sh(path.join(s.root, 'scripts/install.sh'), 'echo "$1" > ran');

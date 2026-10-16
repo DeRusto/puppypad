@@ -97,14 +97,14 @@ which is reserved too.
 
 ## 2. Backups with an off-server copy (PLAN §2.6)
 
-`scripts/backup.sh` already makes the archive. These steps put a copy somewhere that survives
+`scripts/backup.sh` already keeps one up-to-date copy in `backups/latest`. These steps put a copy somewhere that survives
 losing the VPS, then prove a restore works. Cloudflare R2 is suggested because you already have
 the account and 10 GB is free; Backblaze B2 works the same way.
 
 ### 2a. Create the bucket and key
 
 1. Cloudflare → **R2** → **Create bucket** → `puppypad-backups`. Leave public access **off**: the
-   archives hold emails, password hashes and IP addresses.
+   backups hold emails, password hashes and IP addresses.
 2. R2 → **Manage API tokens** → **Create API token** → *Object Read & Write*, limited to
    `puppypad-backups`. Note the *Access Key ID*, *Secret Access Key* and the S3 endpoint
    (`https://<account id>.r2.cloudflarestorage.com`).
@@ -134,11 +134,11 @@ BACKUP_REMOTE=r2:puppypad-backups/nightly
 sudo /srv/puppypad/scripts/backup.sh
 ```
 
-It should print `database copied`, `wrote backups/puppypad-….tar.gz` and
+It should print `database copied`, `updated backups/latest` and
 `synced to r2:puppypad-backups/nightly`. Check the copy is there:
 
 ```
-sudo rclone ls r2:puppypad-backups/nightly
+sudo rclone lsd r2:puppypad-backups/nightly/latest   # sites, shots, history
 ```
 
 `scripts/install.sh` already added the nightly line (03:15, logging to `backups/backup.log`) to the
@@ -151,14 +151,12 @@ Optional but worth it: a free check at healthchecks.io that emails you when a ni
 
 ### 2d. Test a restore once (doesn't touch the live site)
 
-This pulls the newest archive **back from R2**, so it proves the off-server copy too.
+This pulls the copy **back from R2**, so it proves the off-server copy too.
 
 ```
 cd /srv/puppypad
 sudo rm -rf /tmp/restore-test && sudo mkdir -p /tmp/restore-test
-latest=$(sudo rclone lsf r2:puppypad-backups/nightly | sort | tail -n 1)
-sudo rclone copy "r2:puppypad-backups/nightly/$latest" /tmp/restore-test
-sudo tar -xzf "/tmp/restore-test/$latest" -C /tmp/restore-test
+sudo rclone copy r2:puppypad-backups/nightly/latest /tmp/restore-test
 
 sudo docker compose run --rm --no-deps --user root -v /tmp/restore-test:/restore app node -e "
   const d = require('better-sqlite3')('/restore/backup.db');
@@ -192,8 +190,8 @@ points. The ones in **bold** are things the current text gets wrong or leaves ou
 - [ ] **Name the services that see data.** It mentions "our email provider" and Turnstile. Also
       true: Resend sends mail, Cloudflare runs DNS, forwards abuse mail and stores the backups
       (R2). (The editor's CodeMirror is served by PuppyPad itself, so no third party sees editor visits.)
-- [ ] "Backups roll over within 14 days" holds with R2 as set up above (`rclone sync` deletes old
-      archives, and R2 keeps no old versions). With B2, set the bucket lifecycle to *keep only the
+- [ ] "Backups roll over within 14 days" holds with R2 as set up above (`rclone sync` drops deleted
+      files from `latest/`, `backup.sh` purges `old/` folders after 14 days, and R2 keeps no old versions). With B2, set the bucket lifecycle to *keep only the
       last version*, or it stays false.
 - [ ] Delete the grey "Review this page before you launch…" note at the bottom. It shows publicly.
 
