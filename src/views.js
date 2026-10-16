@@ -407,6 +407,8 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   ].join('');
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
+${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
+${d.canAdd ? `<form class="stack" method="post" action="/dashboard/sites/new">${csrfField(ctx)}<label for="newsite">Add another site to this login (supporters, up to 5)</label><input type="text" id="newsite" name="username" required maxlength="30"><button>Add site</button></form>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
 <p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
@@ -787,6 +789,9 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}<label for="bsite">Site name</label><input type="text" id="bsite" name="site" required>
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
 <div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
+<h3>Supporters</h3>
+<form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}<label for="ssite">Site name of the login</label><input type="text" id="ssite" name="site" required>
+<label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365"><button>Set supporter</button></form>
 <h3>Staff picks and site of the week</h3>
 <p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
 The home page shows them while they are listed (not hidden, and past the new-site wait).</p>

@@ -180,13 +180,20 @@ function startSession(res, userId) {
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
   res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
 }
+const MAX_SITES = 5;
+const isSupporter = (user) => user.supporter_until > now() || isAdmin(user);
+const ownerRow = (user) => (user.owner_id ? q.userById.get(user.owner_id) : user);
+const sitesOf = (user) => { const id = user.owner_id || user.id; return db.prepare('SELECT * FROM users WHERE id = ? OR owner_id = ? ORDER BY id').all(id, id); };
 function deleteAccountRows(user) {
+  for (const s of db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id)) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(s.username, now());
   db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
   // never-confirmed accounts were never online, so their names are free again at once
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
 }
 function deleteAccount(user, rows = deleteAccountRows) {
+  const extra = db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id);
   rows(user);
+  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); }
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
   fs.rmSync(shotPath(user.username), { force: true });
   usageCache.delete(user.username);
@@ -789,7 +796,7 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  const ok = !!user && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
+  const ok = !!user && !user.owner_id && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
   const cur = ok && q.userById.get(user.id); // re-read: two-factor may have been turned on while the hash ran
   if (!cur || cur.pw_hash !== user.pw_hash) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
@@ -858,7 +865,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: quotaMB(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user) }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: quotaMB(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1177,6 +1184,29 @@ main.post('/dashboard/webring', auth, canEdit, (req, res) => {
   const join = req.body.webring === '1';
   db.prepare('UPDATE users SET webring = ? WHERE id = ?').run(join ? 1 : 0, req.ctx.user.id);
   res.redirect(`/dashboard/widgets?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
+});
+// several sites under one login (supporters): each extra site is a users row owned by the login row
+main.post('/dashboard/sites/new', auth, canEdit, (req, res) => {
+  const owner = ownerRow(req.ctx.user);
+  const username = String(req.body.username || '').trim().toLowerCase();
+  const fail = (e) => res.redirect(`/dashboard?err=${encodeURIComponent(e)}`);
+  if (!isSupporter(owner)) return fail('Several sites under one login is for supporters.');
+  if (sitesOf(owner).length >= MAX_SITES) return fail(`You can have up to ${MAX_SITES} sites.`);
+  if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
+  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
+  const t = now();
+  try {
+    db.prepare("INSERT INTO users (username, email, pw_hash, verified, owner_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
+      .run(username, `${username}@sites.invalid`, owner.id, req.ip, starters.DEFAULT, cfg.QUOTA_MB, t, t);
+  } catch { return fail('That site name is taken.'); }
+  fs.mkdirSync(siteDir(username), { recursive: true });
+  fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starters.DEFAULT, username, cfg));
+  res.redirect(`/dashboard?ok=${encodeURIComponent(`Made ${username}. Switch to it from the list at the top.`)}`);
+});
+main.post('/dashboard/sites/switch', auth, (req, res) => {
+  const target = sitesOf(req.ctx.user).find((s) => s.id === Number(req.body.id));
+  if (target) db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(target.id, req.sessionHash);
+  res.redirect('/dashboard');
 });
 main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   const hide = req.body.hidden === '1';
@@ -1560,6 +1590,13 @@ main.post('/admin/report-close', auth, adminOnly, (req, res) => {
     })();
   }
   res.redirect('/admin');
+});
+main.post('/admin/supporter', auth, adminOnly, (req, res) => {
+  const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
+  if (!target || target.owner_id) return showAdmin(req, res, { err: 'No login with that site name.' });
+  const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
+  db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
+  showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
 });
 main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());

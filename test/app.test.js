@@ -1978,3 +1978,27 @@ test('the editor loads CodeMirror and its addons from our own server, cached for
     assert.match(res.headers['cache-control'], /immutable/);
   }
 });
+
+test('supporters run several sites under one login; free members cannot', async () => {
+  const free = await member('freebie');
+  const add = (m, username) => req('post', '/dashboard/sites/new').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username });
+  const pick = (m, id) => req('post', '/dashboard/sites/switch').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, id });
+  const dash = async () => (await req('get', '/dashboard').set('Cookie', free.cookie)).text;
+  assert.match((await add(free, 'freebie-two')).headers.location, /err=/);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('freebie-two'), undefined);
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'freebie');
+  assert.match((await add(free, 'freebie-two')).headers.location, /ok=/);
+  const second = db.prepare('SELECT * FROM users WHERE username = ?').get('freebie-two');
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'freebie-two', 'index.html')));
+  // the extra site is not a login of its own
+  assert.equal((await req('post', '/login').type('form').send({ username: 'freebie-two', password: 'longpassword1' })).status, 401);
+  await pick(free, second.id);
+  assert.match(await dash(), /<b>freebie-two<\/b>/);
+  // a lapsed supporter keeps the sites but cannot add more
+  db.prepare('UPDATE users SET supporter_until = 1 WHERE username = ?').run('freebie');
+  assert.match((await add(free, 'freebie-three')).headers.location, /err=/);
+  // someone else's site is not switchable
+  await member('stranger');
+  await pick(free, db.prepare('SELECT id FROM users WHERE username = ?').get('stranger').id);
+  assert.match(await dash(), /<b>freebie-two<\/b>/);
+});
