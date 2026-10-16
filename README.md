@@ -16,7 +16,7 @@ deleted site's name is held for 90 days.
 - File manager: drag-and-drop uploads with a progress bar, folders, rename and move, zip import, and
   a one-click download of the whole site as a zip. Uploads can shrink big photos on the server
   (sharp) and strip their camera details, and the dashboard lists links and images that point at missing files.
-- Code editor (CodeMirror, from cdnjs) with a sandboxed live preview. New pages start from the
+- Code editor (CodeMirror, served by PuppyPad itself) with find-and-replace, tag autocomplete and a sandboxed live preview. New pages start from the
   member's starter layout. An image picker inserts `<img>` with the picture's width and height.
 - Style editor (`/dashboard/style`): colours, font, borders, page width and cursor, with presets and
   a live preview. It writes `puppypad.css` and leaves any CSS below its block alone.

@@ -467,6 +467,8 @@ const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404
 // ----- SEO: robots, sitemap, brand assets -----
 const ASSETS_DIR = path.join(__dirname, 'assets');
 const asset = (file, type) => (req, res) => res.set('Cache-Control', 'public, max-age=86400').type(type).sendFile(path.join(ASSETS_DIR, file), (e) => { if (e && !res.headersSent) res.sendStatus(404); });
+// the editor's CodeMirror, from node_modules; files never change under a versioned path
+main.use(V.CM, express.static(path.dirname(require.resolve('codemirror/package.json')), { immutable: true, maxAge: '365d', index: false }));
 main.get('/favicon.ico', asset('favicon.svg', 'image/svg+xml')); // shortcut: SVG at the .ico path; browsers and Google accept SVG favicons
 main.get('/favicon.svg', asset('favicon.svg', 'image/svg+xml'));
 main.get('/og.svg', asset('og.svg', 'image/svg+xml'));

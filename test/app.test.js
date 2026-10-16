@@ -1965,3 +1965,16 @@ test('two-factor login: turning it on, logging in with a code or a recovery code
   assert.equal((await post(me, '/account/logout-all', {})).status, 200);
   for (const c of [me.cookie, plain.headers['set-cookie'][0].split(';')[0]]) assert.equal((await req('get', '/dashboard').set('Cookie', c)).status, 302);
 });
+
+test('the editor loads CodeMirror and its addons from our own server, cached for good', async () => {
+  const m = await member('cmhost');
+  const page = (await req('get', '/dashboard/edit?path=index.html').set('Cookie', m.cookie)).text;
+  const files = [...page.matchAll(/(?:src|href)="(\/cm\/[^"]+)"/g)].map((x) => x[1]);
+  assert.ok(files.some((f) => f.endsWith('/addon/search/search.js')) && files.some((f) => f.endsWith('/addon/edit/closetag.js')));
+  assert.doesNotMatch(page, /cdnjs/);
+  for (const f of files) {
+    const res = await req('get', f);
+    assert.equal(res.status, 200, f);
+    assert.match(res.headers['cache-control'], /immutable/);
+  }
+});

@@ -483,36 +483,28 @@ const stats = (ctx, { days, pages, referrers }) => {
 <p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
 };
 
-const CM = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
-// sha384 of each pinned file CM points at; if the version in CM ever changes, recompute these or the editor will not load
-const CM_SRI = {
-  'codemirror.min.css': 'sha384-zaeBlB/vwYsDRSlFajnDd7OydJ0cWk+c2OWybl3eSUf6hW2EbhlCsQPqKr3gkznT',
-  'theme/material-darker.min.css': 'sha384-eZTPTN0EvJdn23s24UDYJmUM2T7C2ZFa3qFLypeBruJv8mZeTusKUAO/j5zPAQ6l',
-  'codemirror.min.js': 'sha384-ZYmwuq4n2gOcNxMSiJ6jyTj+BbIrilr7p6dlq6q5nmSWKmsH9UU4K1qqjycMkfmR',
-  'mode/xml/xml.min.js': 'sha384-xPpkMo5nDgD98fIcuRVYhxkZV6/9Y4L8s3p0J5c4MxgJkyKJ8BJr+xfRkq7kn6Tw',
-  'mode/javascript/javascript.min.js': 'sha384-g0o+WW9mdIxA7LaaCKTkRm0M5TVT+Bb4s9eocxPsI2G0Xm0POG9iD6G6qP1IIsfS',
-  'mode/css/css.min.js': 'sha384-fpeIC2FZuPmw7mIsTvgB5BNc8QVxQC/nWg2W+CgPYOAiBiYVuHe2E8HiTWHBMIJQ',
-  'mode/htmlmixed/htmlmixed.min.js': 'sha384-xYIbc5F55vPi7pb/lUnFj3wu24HlpAMZdtBHkNrb2YhPzJV3pX7+eqXT2PXSNMrw',
-  'mode/markdown/markdown.min.js': 'sha384-nPWqI+4+e+SwcpI6LVYBpaQd+zIZIQgC6lN7Gep8MJQr5DdmMGtWV8qJQgcyODcF',
-};
-const sri = (p) => ` integrity="${CM_SRI[p]}" crossorigin="anonymous"`;
+// CodeMirror comes from the codemirror npm package, served by us (see server.js); the version in the path lets browsers cache it for good
+const CM = `/cm/${require('codemirror/package.json').version}`;
+const CM_CSS = ['lib/codemirror.css', 'theme/material-darker.css', 'addon/dialog/dialog.css', 'addon/hint/show-hint.css'];
+const CM_JS = ['lib/codemirror.js', 'mode/xml/xml.js', 'mode/javascript/javascript.js', 'mode/css/css.js', 'mode/htmlmixed/htmlmixed.js', 'mode/markdown/markdown.js',
+  'addon/dialog/dialog.js', 'addon/search/searchcursor.js', 'addon/search/search.js', // find and replace
+  'addon/fold/xml-fold.js', 'addon/edit/closetag.js', 'addon/hint/show-hint.js', 'addon/hint/xml-hint.js', 'addon/hint/html-hint.js']; // tag autocomplete
 const CM_MODE = { html: 'htmlmixed', htm: 'htmlmixed', svg: 'xml', xml: 'xml', css: 'css', js: 'javascript', json: { name: 'javascript', json: true }, md: 'markdown' };
 const editor = (ctx, m, { rel, content, isNew, images = [], insert = null }) => {
   const ext = extOf(rel);
   const isHtml = ext === 'html' || ext === 'htm';
   const dir = rel.split('/').slice(0, -1).join('/');
   const siteBase = `${ctx.cfg.siteUrl(ctx.user.username)}/${dir ? dir + '/' : ''}`;
-  const head = `<link rel="stylesheet" href="${CM}/codemirror.min.css"${sri('codemirror.min.css')}><link rel="stylesheet" href="${CM}/theme/material-darker.min.css"${sri('theme/material-darker.min.css')}>`;
+  const head = CM_CSS.map((f) => `<link rel="stylesheet" href="${CM}/${f}">`).join('');
   return layout(ctx, `Edit ${rel}`, `
 <section class="box"><h2>${isNew ? 'New file' : 'Editing'}: ${esc(rel)}</h2>${msg(m)}
 <form id="edform" method="post" action="/dashboard/save" style="display:flex;flex-direction:column;gap:8px">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
-<div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
+<div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label> <span class="note" id="findbar" hidden><button type="button" class="link" id="find">find</button> <button type="button" class="link" id="replace">replace</button></span><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
 ${isHtml && insert ? `<div class="note"><button type="button" id="insert">Insert the ${esc(insert.name)} at the cursor</button> Click where it should go in the code first, then save.</div>` : ''}
 ${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images at the cursor</label> <select id="imgpick"><option value="">Pick an image...</option>${images.map((i) => `<option>${esc(i)}</option>`).join('')}</select></div>` : ''}
 <div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a></div></form></section>
-<script src="${CM}/codemirror.min.js"${sri('codemirror.min.js')}></script><script src="${CM}/mode/xml/xml.min.js"${sri('mode/xml/xml.min.js')}></script><script src="${CM}/mode/javascript/javascript.min.js"${sri('mode/javascript/javascript.min.js')}></script>
-<script src="${CM}/mode/css/css.min.js"${sri('mode/css/css.min.js')}></script><script src="${CM}/mode/htmlmixed/htmlmixed.min.js"${sri('mode/htmlmixed/htmlmixed.min.js')}></script><script src="${CM}/mode/markdown/markdown.min.js"${sri('mode/markdown/markdown.min.js')}></script>
+${CM_JS.map((f) => `<script src="${CM}/${f}"></script>`).join('')}
 <script>(function(){
 var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
 var base=${JSON.stringify(`<base href="${siteBase}">`).replace(/</g, '\\u003c')};
@@ -521,7 +513,11 @@ var get=function(){return ta.value},cm=null;
 function draw(){if(frame)frame.srcdoc=base+get()}
 if(window.CodeMirror){
   cm=CodeMirror.fromTextArea(ta,{mode:${JSON.stringify(CM_MODE[ext] || 'text/plain')},theme:'material-darker',lineNumbers:true,lineWrapping:true,tabSize:2,indentUnit:2,
-    extraKeys:{'Ctrl-S':function(){form.requestSubmit()},'Cmd-S':function(){form.requestSubmit()}}});
+    autoCloseTags:true,extraKeys:{'Ctrl-S':function(){form.requestSubmit()},'Cmd-S':function(){form.requestSubmit()},'Ctrl-Space':'autocomplete'}});
+  // typing < or </ offers tag names; the menu stays out of the way until one is picked
+  if(cm.getOption('mode')==='htmlmixed'||cm.getOption('mode')==='xml')cm.on('inputRead',function(c,e){if(e.text[0]==='<'||e.text[0]==='/')c.showHint({completeSingle:false})});
+  document.getElementById('findbar').hidden=false;
+  ['find','replace'].forEach(function(k){document.getElementById(k).addEventListener('click',function(){cm.focus();cm.execCommand(k)})});
   get=function(){return cm.getValue()};var t;cm.on('change',function(){clearTimeout(t);t=setTimeout(draw,400)});
 }else{var t2;ta.addEventListener('input',function(){clearTimeout(t2);t2=setTimeout(draw,400)})}
 draw();
@@ -837,4 +833,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };

@@ -191,7 +191,7 @@ points. The ones in **bold** are things the current text gets wrong or leaves ou
       Signup IPs stay until the account is deleted.
 - [ ] **Name the services that see data.** It mentions "our email provider" and Turnstile. Also
       true: Resend sends mail, Cloudflare runs DNS, forwards abuse mail and stores the backups
-      (R2), and the editor loads CodeMirror from cdnjs (Cloudflare), which sees the member's IP.
+      (R2). (The editor's CodeMirror is served by PuppyPad itself, so no third party sees editor visits.)
 - [ ] "Backups roll over within 14 days" holds with R2 as set up above (`rclone sync` deletes old
       archives, and R2 keeps no old versions). With B2, set the bucket lifecycle to *keep only the
       last version*, or it stays false.
