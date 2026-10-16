@@ -38,14 +38,15 @@ const ALLOWED_EXT = new Set([...TEXT_EXT, 'png', 'jpg', 'jpeg', 'gif', 'webp', '
 const extOf = (p) => (p.includes('.') ? p.split('.').pop().toLowerCase() : '');
 
 // Normalise a member-supplied relative path. Returns null if it is not safe.
-function safeRel(p, { file = true } = {}) {
+// anyType: any file type passes (supporters' uploads, and acting on a file that is already there)
+function safeRel(p, { file = true, anyType = false } = {}) {
   const parts = String(p ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
   if (parts.length > 6 || (file && !parts.length)) return null;
   for (const seg of parts) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(seg) || seg.includes('..')) return null;
   }
   if (parts[0] && parts[0].toLowerCase() === '_hw') return null; // reserved for widgets
-  if (file && !ALLOWED_EXT.has(extOf(parts[parts.length - 1]))) return null;
+  if (file && !anyType && !ALLOWED_EXT.has(extOf(parts[parts.length - 1]))) return null;
   return parts.join('/');
 }
 

@@ -88,8 +88,9 @@ function folder(arg) {
 async function push(api, dir, { delete: prune, 'dry-run': dry }) {
   const site = await api.call('GET', '/api/site');
   const remote = new Map((await api.call('GET', '/api/files')).files.map((f) => [f.path, f.sha256]));
-  const allowed = new Set(site.allowed_types);
+  const types = new Set(site.allowed_types);
   const ext = (p) => (p.includes('.') ? p.split('.').pop().toLowerCase() : '');
+  const allowed = (f) => !!site.any_type || types.has(ext(f)); // supporters may upload any type
   // the server stores "my page.html" as "my_page.html", so compare and delete by the stored name
   const local = new Map();
   for (const file of localFiles(dir)) {
@@ -97,9 +98,9 @@ async function push(api, dir, { delete: prune, 'dry-run': dry }) {
     if (local.has(name)) throw new Fail(`${local.get(name)} and ${file} would both be stored as ${name}. Rename one.`);
     local.set(name, file);
   }
-  const left = [...local.values()].filter((f) => !allowed.has(ext(f)));
-  const big = [...local.values()].filter((f) => allowed.has(ext(f)) && fs.statSync(path.join(dir, f)).size > site.max_file_bytes);
-  const send = [...local].filter(([name, f]) => allowed.has(ext(f)) && !big.includes(f) && remote.get(name) !== sha256(path.join(dir, f)));
+  const left = [...local.values()].filter((f) => !allowed(f));
+  const big = [...local.values()].filter((f) => allowed(f) && fs.statSync(path.join(dir, f)).size > site.max_file_bytes);
+  const send = [...local].filter(([name, f]) => allowed(f) && !big.includes(f) && remote.get(name) !== sha256(path.join(dir, f)));
   const gone = prune ? [...remote.keys()].filter((name) => !local.has(name)) : [];
 
   if (left.length) say(`Not uploading ${left.length} file${left.length === 1 ? '' : 's'} of a type PuppyPad does not host: ${left.slice(0, 10).join(', ')}${left.length > 10 ? ', ...' : ''}`);

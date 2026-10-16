@@ -209,7 +209,7 @@ signup. **Your step:** read both pages and make them match how you run things
 - Several sites under one login, switched between on the dashboard. Needs the schema to split
   accounts from sites (today one `users` row is both), so decide before the member count grows.
 - Further storage increases beyond 500 MB, once members and supporter income can pay for the hardware.
-- Optional supporter tier: see §3.2.
+- ✅ Optional supporter tier: see §3.2.
 - ✅ "Log out everywhere" button on the profile page (password change and reset already do this).
 - ✅ Optional two-factor login (TOTP), mainly for admins and supporters with custom domains. Set up from the
   profile page by scanning a QR code (or typing the key) in an app, with 10 one-time recovery codes;
@@ -266,14 +266,14 @@ with the snippet inserted at the cursor. No auto-editing of member HTML.
 **Code shape.** One `src/widgets.js` with the `/_hw/` handlers and the gallery lists, so
 `server.js` doesn't grow further. Each new `/_hw/` route gets a test alongside the counter's.
 
-### 3.2 Optional supporter tier (planned)
+### 3.2 Optional supporter tier ✅ (built; custom domains wait on Phase C)
 
 PuppyPad stays free. Supporters pay to cover the server and get extras that cost us something,
 never features taken away from free members.
 
 **Perks (draft)**
-- Bigger quota and file limit than free members (free is 500 MB once the Phase B raise lands; set the
-  supporter numbers when the tier launches).
+- Bigger quota and file limit than free members: `SUPPORTER_QUOTA_MB` (2000) and `SUPPORTER_MAX_FILE_MB` (25)
+  against the free 500 MB and 5 MB.
 - Any file type, past the free allowlist (still served with `nosniff` and checked by the phishing flags).
 - Custom domain (Phase C) is supporter-only, since each one is a certificate and support load.
 - Longer file version history (`SUPPORTER_HISTORY_DAYS`, 365 days by default against 30).
@@ -287,8 +287,9 @@ never features taken away from free members.
     the same.
   - Both stop showing as soon as `supporter_until` passes. Admins who grant supporter by hand
     get the same flair.
-- An optional "supported by" counter on the home page.
-- First look at new widgets and presets. Widgets themselves stay free once released.
+- A "supported by" counter on the home page while the tier is on.
+- First look at new widgets: a widget list entry marked `early: true` in `src/widgets.js` shows only to
+  supporters until the mark comes off. Widgets themselves stay free once released.
 
 **Stripe vs. Patreon**
 
