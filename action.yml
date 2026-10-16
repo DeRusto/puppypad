@@ -1,0 +1,29 @@
+name: Deploy to PuppyPad
+description: Upload a folder of your repository to your PuppyPad site
+branding:
+  icon: upload-cloud
+  color: purple
+inputs:
+  api_key:
+    description: Your site's API key, from /dashboard/api. Store it as a repository secret.
+    required: true
+  dir:
+    description: The folder to upload, relative to the repository root
+    default: .
+  delete:
+    description: Also delete files on the site that are not in the folder (true or false)
+    default: 'false'
+  url:
+    description: Your PuppyPad server
+    default: https://puppypad.org
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # inputs go through env, never into the command line, so a value can't run as shell
+      run: node "$GITHUB_ACTION_PATH/cli/puppypad.js" push "$DIR" $([ "$DELETE" = true ] && echo --delete)
+      env:
+        PUPPYPAD_API_KEY: ${{ inputs.api_key }}
+        PUPPYPAD_URL: ${{ inputs.url }}
+        DIR: ${{ inputs.dir }}
+        DELETE: ${{ inputs.delete }}

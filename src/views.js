@@ -626,7 +626,24 @@ curl -H "Authorization: Bearer $KEY" -F "files=@index.html" -F "files=@cat.png;f
 
 # delete one file
 curl -H "Authorization: Bearer $KEY" -d "path=pics/cat.png" ${esc(base)}/api/delete</pre>
-<p>Uploads follow the dashboard's rules: allowed file types only, ${ctx.cfg.MAX_FILE_MB} MB a file, your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>`);
+<p>Uploads follow the dashboard's rules: allowed file types only, ${ctx.cfg.MAX_FILE_MB} MB a file, your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
+<section class="box"><h2>Edit on your computer</h2><p>The <code>puppypad</code> command-line tool uploads a folder for you, sending only the files that changed. It needs <a href="https://nodejs.org/">Node.js</a>.</p>
+<pre>npx puppypad login --url ${esc(base)}   # paste your key
+npx puppypad push           # upload new and changed files from this folder
+npx puppypad push --delete  # also delete files your folder doesn't have
+npx puppypad pull           # download your whole site</pre>
+<p>To publish from a GitHub repository on every push, save the key as a secret called <code>PUPPYPAD_API_KEY</code> and add <code>.github/workflows/deploy.yml</code>:</p>
+<pre>on: { push: { branches: [main] } }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeRusto/puppypad@main
+        with:
+          api_key: \${{ secrets.PUPPYPAD_API_KEY }}
+          url: ${esc(base)}</pre>
+<p><a href="https://github.com/DeRusto/puppypad/tree/main/cli#readme">More about the tool and the Action</a></p></section>`);
 };
 
 const move = (ctx, m, { from, to, dir }) => {

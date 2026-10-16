@@ -1,6 +1,7 @@
 {
   "name": "puppypad",
   "version": "0.1.0",
+  "private": true,
   "description": "Old-web style free homepage host: every member gets name.yourdomain",
   "main": "src/server.js",
   "scripts": {
