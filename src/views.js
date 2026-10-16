@@ -1,6 +1,7 @@
 const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
+const W = require('./widgets');
 
 const CSS = `
 /* look: a puppy pad. blue plastic backing with paw prints, white quilted boxes, and one yellow accent for the accidents */
@@ -373,7 +374,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
   return layout(ctx, 'My pad', `
 <section class="box"><h2>My pad</h2>${msg(m)}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -410,18 +411,9 @@ ${d.hasIndex && !user.banned ? `<section class="box"><h2>Start over with a start
 ${starterForm(ctx, 'Use this starter')}</section>
 
 ` : ''}${user.banned ? '' : `<section class="box"><h2>Colours and fonts</h2>
-<p>Restyle your pages without writing CSS: the <a href="/dashboard/style">style editor</a> writes <code>puppypad.css</code> for you.</p></section>
+<p>Restyle your pages without writing CSS: the <a href="/dashboard/style">style editor</a> writes <code>puppypad.css</code> for you, background picture and all.</p></section>
 
-`}<section class="box"><h2>Widgets</h2><p>Paste these into your HTML.</p>
-<h3>Hit counter</h3><pre>&lt;img src="/_hw/counter.svg" alt="hit counter"&gt;</pre>
-<h3>Guestbook</h3><pre>&lt;iframe src="/_hw/guestbook" width="100%" height="420"&gt;&lt;/iframe&gt;</pre>
-<h3>Webring</h3>
-<form class="stack" method="post" action="/dashboard/webring">${csrfField(ctx)}<input type="hidden" name="webring" value="${user.webring ? '0' : '1'}">
-<p>${user.webring ? 'Your site is in the webring. Visitors clicking Prev, Next or Random on other sites can land on yours.' : 'Your site is not in the webring. Join it and visitors of other sites can land on yours; you can leave any time.'}</p>
-<button>${user.webring ? 'Leave the webring' : 'Join the webring'}</button></form>
-<pre>&lt;a href="${esc(cfg.BASE_URL)}/webring/prev?from=${esc(user.username)}"&gt;&amp;lt;&amp;lt; Prev&lt;/a&gt; |
-&lt;a href="${esc(cfg.BASE_URL)}/webring/random"&gt;Random&lt;/a&gt; |
-&lt;a href="${esc(cfg.BASE_URL)}/webring/next?from=${esc(user.username)}"&gt;Next &amp;gt;&amp;gt;&lt;/a&gt;</pre>
+`}<section class="box"><h2>Widgets</h2><p>Hit counter, guestbook, status line, webring bar, buttons and more: the <a href="/dashboard/widgets">widgets page</a> has a snippet for each, and adds one to a page for you.</p>
 <h3>Custom 404 page</h3><p>Upload a file named <code>not_found.html</code>.</p></section>
 
 ${user.banned ? '' : `<section class="box"><h2>Rename my site</h2>
@@ -471,7 +463,7 @@ const CM_SRI = {
 };
 const sri = (p) => ` integrity="${CM_SRI[p]}" crossorigin="anonymous"`;
 const CM_MODE = { html: 'htmlmixed', htm: 'htmlmixed', svg: 'xml', xml: 'xml', css: 'css', js: 'javascript', json: { name: 'javascript', json: true }, md: 'markdown' };
-const editor = (ctx, m, { rel, content, isNew, images = [] }) => {
+const editor = (ctx, m, { rel, content, isNew, images = [], insert = null }) => {
   const ext = extOf(rel);
   const isHtml = ext === 'html' || ext === 'htm';
   const dir = rel.split('/').slice(0, -1).join('/');
@@ -482,6 +474,7 @@ const editor = (ctx, m, { rel, content, isNew, images = [] }) => {
 <form id="edform" method="post" action="/dashboard/save" style="display:flex;flex-direction:column;gap:8px">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
 <div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
+${isHtml && insert ? `<div class="note"><button type="button" id="insert">Insert the ${esc(insert.name)} at the cursor</button> Click where it should go in the code first, then save.</div>` : ''}
 ${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images at the cursor</label> <select id="imgpick"><option value="">Pick an image...</option>${images.map((i) => `<option>${esc(i)}</option>`).join('')}</select></div>` : ''}
 <div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a></div></form></section>
 <script src="${CM}/codemirror.min.js"${sri('codemirror.min.js')}></script><script src="${CM}/mode/xml/xml.min.js"${sri('mode/xml/xml.min.js')}></script><script src="${CM}/mode/javascript/javascript.min.js"${sri('mode/javascript/javascript.min.js')}></script>
@@ -508,10 +501,15 @@ if(pick)pick.addEventListener('change',function(){
     if(cm){var pos=at.find()||cm.getCursor();at.clear();cm.replaceRange(tag,pos);cm.focus()}else{ta.setRangeText(tag,s0,s1,'end');ta.focus();draw()}}
   img.onload=function(){put(img.naturalWidth,img.naturalHeight)};img.onerror=function(){put()};img.src=root+src;
 });
+// a widget from the widgets page goes where the member puts the cursor, once they press the button
+var ins=document.getElementById('insert'),snip=${JSON.stringify(insert ? insert.snippet : '').replace(/</g, '\\u003c')};
+if(ins)ins.addEventListener('click',function(){
+  if(cm){cm.replaceRange(snip,cm.getCursor());cm.focus()}else{ta.setRangeText(snip,ta.selectionStart,ta.selectionEnd,'end');ta.focus()}draw();
+});
 })();</script>`, { wide: true, head });
 };
 
-const styleEditor = (ctx, m, { s, page, tail, offerLink }) => {
+const styleEditor = (ctx, m, { s, page, tail, offerLink, images }) => {
   const opts = (list, cur) => list.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
   const colour = (k, label) => `<label for="st-${k}">${label}</label><input type="color" id="st-${k}" name="${k}" value="${esc(s[k])}">`;
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
@@ -526,18 +524,77 @@ ${colour('page', 'Page colour')}${colour('text', 'Text colour')}${colour('link',
 <label for="st-border">Box border style</label><select id="st-border" name="border">${opts(style.BORDERS, s.border)}</select>
 <label for="st-width">Page width in pixels</label><input type="number" id="st-width" name="width" min="320" max="2000" step="10" value="${s.width}">
 <label for="st-cursor">Cursor</label><select id="st-cursor" name="cursor">${opts(style.CURSORS, s.cursor)}</select>
+<fieldset class="starters"><legend>Background picture</legend>
+<label><input type="radio" name="bg" value=""${s.bg ? '' : ' checked'}> None, just the page colour</label>
+${W.BACKGROUNDS.map((b) => `<label><input type="radio" name="bg" value="${b.id}"${s.bg === b.id ? ' checked' : ''}> <img src="/assets/bg/${b.id}.svg" width="40" height="40" alt="" style="vertical-align:middle;border:1px solid #888;background:${esc(s.page)}"> ${esc(b.name)}</label>`).join('\n')}
+${images.length ? `<label><input type="radio" name="bg" value="own"${s.bg && s.bg[0] === '/' ? ' checked' : ''}> One of my own pictures:</label>
+<select name="ownbg" aria-label="My pictures">${images.map((i) => `<option value="/${esc(i)}"${s.bg === `/${i}` ? ' selected' : ''}>${esc(i)}</option>`).join('')}</select>` : '<p class="note">Upload a picture to use one of your own.</p>'}</fieldset>
+<fieldset class="starters"><legend>How the picture fills the page</legend>
+${Object.entries(style.BG_MODES).map(([k, label]) => `<label><input type="radio" name="bgmode" value="${k}"${(s.bgmode || 'tile') === k ? ' checked' : ''}> ${label}</label>`).join('\n')}</fieldset>
 <button>Save puppypad.css</button></form><p><a href="/dashboard">Back to my pad</a></p></div>
 <div><label for="preview">Live preview of your front page (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div></div></section>
 <script>(function(){
 var form=document.getElementById('stform'),frame=document.getElementById('preview');
-var page=${json(`<base href="${ctx.cfg.siteUrl(ctx.user.username)}/">`)}+${json(page)},fonts=${json(style.FONTS)},tail=${json(tail)};
+var page=${json(`<base href="${ctx.cfg.siteUrl(ctx.user.username)}/">`)}+${json(page)},fonts=${json(style.FONTS)},tail=${json(tail)},bgs=${json(style.bgUrls(ctx.cfg.BASE_URL))};
 var block=${style.block.toString()};
 // the preview runs in a sandboxed frame with no access to your login; the new block and your own CSS below it go last, as on the saved page.
 // A CSS escape keeps a </style> in your CSS from closing the preview's <style> early; it still reads as </style>
-function draw(){var s={};for(var i=0;i<form.elements.length;i++){var e=form.elements[i];if(e.name)s[e.name]=e.value}
-  frame.srcdoc=page+'<style>'+(block(s,fonts)+tail).replace(/<\\/(style)/gi,'<\\\\/$1')+'</style>'}
+function draw(){var s={};for(var i=0;i<form.elements.length;i++){var e=form.elements[i];if(e.name&&(e.type!=='radio'||e.checked))s[e.name]=e.value}
+  if(s.bg==='own')s.bg=s.ownbg||'';
+  frame.srcdoc=page+'<style>'+(block(s,fonts,bgs)+tail).replace(/<\\/(style)/gi,'<\\\\/$1')+'</style>'}
 form.addEventListener('input',draw);draw();
 })();</script>`, { wide: true });
+};
+
+// every widget with its snippet; "Add to a page" opens the editor, where the member inserts it at the cursor
+const widgets = (ctx, m, { groups, pages }) => {
+  const { user } = ctx;
+  const add = (id) => (user.banned ? '' : `<form class="inline" method="get" action="/dashboard/edit"><input type="hidden" name="widget" value="${esc(id)}">
+<label>Page <input type="text" name="path" value="index.html" list="pages" size="14" required></label> <button>Add to a page</button></form>`);
+  const copy = (id) => (user.banned ? '' : `<form class="inline" method="post" action="/dashboard/widgets/copy">${csrfField(ctx)}<input type="hidden" name="fx" value="${esc(id)}"><button>Copy ${esc(id)}.js into my site</button></form> `);
+  const extra = {
+    status: user.banned ? '' : `<form class="stack" method="post" action="/dashboard/widgets/status">${csrfField(ctx)}<label for="status">My status (60 characters at most)</label>
+<input type="text" id="status" name="status" maxlength="60" value="${esc(user.status)}"><button>Save status</button></form>`,
+    webring: `<form class="stack" method="post" action="/dashboard/webring">${csrfField(ctx)}<input type="hidden" name="webring" value="${user.webring ? '0' : '1'}">
+<p>${user.webring ? 'Your site is in the webring. Visitors clicking Prev, Next or Random on other sites can land on yours.' : 'Your site is not in the webring. Join it and visitors of other sites can land on yours; you can leave any time.'}</p>
+<button>${user.webring ? 'Leave the webring' : 'Join the webring'}</button></form>`,
+  };
+  const item = (g, i) => `<div class="cmt"><b>${esc(i.name)}</b>
+${i.preview ? `<p><img src="${esc(i.preview)}" alt=""${i.w ? ` width="${i.w}" height="${i.h}"` : ''}></p>` : ''}${i.see ? `<p><a href="${esc(i.see)}" target="_blank">See it</a></p>` : ''}
+<pre>${esc(i.snippet)}</pre>${g.id === 'effects' ? copy(i.id) : ''}${add(i.id)}</div>`;
+  return layout(ctx, 'Widgets', `
+<section class="box"><h2>Widgets</h2>${msg(m)}<p>Each widget is a snippet of HTML. Copy it into a page yourself, or press "Add to a page": the editor opens and puts it where you click. Nothing changes on your pages until you save. <a href="/dashboard">Back to my pad</a></p>
+<datalist id="pages">${pages.map((p) => `<option value="${esc(p)}">`).join('')}</datalist></section>
+${groups.map((g) => `<section class="box"><h2>${esc(g.title)}</h2><p>${g.about}</p>${extra[g.id] || ''}${g.items.map((i) => item(g, i)).join('\n')}</section>`).join('\n')}
+<section class="box"><h2>Backgrounds</h2><p>Pick a tiling background in the <a href="/dashboard/style">style editor</a>.</p></section>`);
+};
+
+// the member's API key: made with their password, shown once, revoked any time
+const apiPage = (ctx, m, { hasKey, key }) => {
+  const base = ctx.cfg.BASE_URL;
+  return layout(ctx, 'API key', `
+<section class="box"><h2>API key</h2>${msg(m)}
+<p>An API key lets a program change your site for you: a deploy script, a command-line tool, a GitHub Action. It can upload, delete and list files, and read your site's details, through the same checks as this dashboard. Keep it secret, like a password. Changing or resetting your password switches the key off.</p>
+${key ? `<p class="ok" role="status">Your new key. Copy it now: we only keep a fingerprint of it, so it is never shown again.</p><pre>${esc(key)}</pre>` : ''}
+<p>${hasKey ? 'You have an API key.' : 'You have no API key.'}</p>
+${ctx.user.banned ? '' : `<form class="stack" method="post" action="/dashboard/api">${csrfField(ctx)}<input type="hidden" name="action" value="new">
+<label for="apipw">Confirm with your password</label><input type="password" id="apipw" name="password" required autocomplete="current-password">
+<button>${hasKey ? 'Make a new key (the old one stops working)' : 'Make an API key'}</button></form>`}
+${hasKey ? `<form class="stack" method="post" action="/dashboard/api">${csrfField(ctx)}<input type="hidden" name="action" value="revoke"><button class="danger">Switch off my key</button></form>` : ''}
+<p><a href="/dashboard">Back to my pad</a></p></section>
+<section class="box"><h2>How to use it</h2><p>Send the key in an <code>Authorization: Bearer</code> header. Every answer is JSON.</p>
+<pre># your site's details: address, space used and left, file count
+curl -H "Authorization: Bearer $KEY" ${esc(base)}/api/site
+
+# every file with its size and when it last changed
+curl -H "Authorization: Bearer $KEY" ${esc(base)}/api/files
+
+# upload up to 20 files at a time; the filename sets the path, folders are made for you
+curl -H "Authorization: Bearer $KEY" -F "files=@index.html" -F "files=@cat.png;filename=pics/cat.png" ${esc(base)}/api/upload
+
+# delete one file
+curl -H "Authorization: Bearer $KEY" -d "path=pics/cat.png" ${esc(base)}/api/delete</pre>
+<p>Uploads follow the dashboard's rules: allowed file types only, ${ctx.cfg.MAX_FILE_MB} MB a file, your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>`);
 };
 
 const move = (ctx, m, { from, to, dir }) => {
@@ -724,8 +781,9 @@ button{font:700 14px "Comic Sans MS",cursive;background:#ffe14d;color:#14264f;bo
 
 const sitePage = (cfg, title, html) => bare(title, `<h1>${esc(title)}</h1>${html}<p><a href="${esc(cfg.BASE_URL)}">${esc(cfg.SITE_NAME)}</a></p>`);
 
-const guestbook = (rows, err) => bare('Guestbook', `<h1>Sign the guestbook</h1>${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}
-<form method="post" action="/_hw/guestbook"><label for="n">Name</label><input id="n" name="name" maxlength="40" required>
+// theme is one of W.GB_THEMES; its CSS goes after the base look
+const guestbook = (rows, err, theme = 'classic') => bare('Guestbook', `${W.GB_THEMES[theme].css ? `<style>${W.GB_THEMES[theme].css}</style>` : ''}<h1>Sign the guestbook</h1>${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}
+<form method="post" action="/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}"><label for="n">Name</label><input id="n" name="name" maxlength="40" required>
 <label for="m">Message</label><textarea id="m" name="message" rows="3" maxlength="500" required></textarea>
 <div class="hp" aria-hidden="true"><input name="website" tabindex="-1" autocomplete="off"></div><button>Sign it!</button></form>
 ${rows.map((r) => `<div class="e"><small>${esc(r.name)} wrote ${ago(r.created_at)}:</small><div>${esc(r.message)}</div></div>`).join('') || '<p>No entries yet. Be the first!</p>'}`);
@@ -745,11 +803,4 @@ ${events.map((e) => {
 `;
 };
 
-const counterSvg = (n) => {
-  const d = String(n).padStart(6, '0');
-  const w = d.length * 18 + 6;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="30" viewBox="0 0 ${w} 30" role="img" aria-label="${n} hits"><rect width="${w}" height="30" fill="#14264f"/>` +
-    [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
-};
-
-module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
+module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };

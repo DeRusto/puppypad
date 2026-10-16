@@ -11,6 +11,7 @@ const { readZip, writeZip } = require('./zip');
 const starters = require('./starters');
 const style = require('./style');
 const upgrade = require('./upgrade');
+const W = require('./widgets');
 
 // ---------- config ----------
 const env = process.env;
@@ -260,8 +261,9 @@ site.get('/_hw/counter.svg', (req, res) => {
     db.prepare('UPDATE users SET hits = hits + 1 WHERE id = ?').run(req.owner.id);
     hits++;
   }
-  res.set('Cache-Control', 'no-store').type('image/svg+xml').send(V.counterSvg(hits));
+  res.set('Cache-Control', 'no-store').type('image/svg+xml').send(W.counterSvg(hits));
 });
+W.siteRoutes(site);
 
 const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 const GB_LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz|top|click|link)\b/i; // shortcut: a TLD list, not a URL parser
@@ -269,23 +271,26 @@ const gbEntryText = (e) => `${e.name} wrote:\n${e.message}${e.approved ? '' : '\
 const gbMailFooter = `Approve or delete entries, or change how often we email you about them: ${cfg.BASE_URL}/dashboard/guestbook`;
 const GB_NOTIFY = ['instant', 'daily', 'off'];
 const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND approved = 1 ORDER BY id DESC LIMIT 50').all(id);
-site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id))));
+site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id), '', W.gbTheme(req.query.theme))));
 site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 40);
   const message = String(req.body.message || '').trim().slice(0, 500);
-  if (req.body.website) return res.redirect('/_hw/guestbook'); // bot filled the hidden field
-  if (!name || !message) return res.status(400).send(V.guestbook(gbRows(req.owner.id), 'Name and message are both required.'));
-  if (!U.limit(`gb:${req.ip}`, 3, 600000)) return res.status(429).send(V.guestbook(gbRows(req.owner.id), 'Too many entries from you. Try again in ten minutes.'));
-  if (lines(req.owner.gb_ips).includes(req.ip)) return res.redirect('/_hw/guestbook'); // blocked: look like success
+  const theme = W.gbTheme(req.query.theme);
+  const back = `/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`;
+  const fail = (code, err) => res.status(code).send(V.guestbook(gbRows(req.owner.id), err, theme));
+  if (req.body.website) return res.redirect(back); // bot filled the hidden field
+  if (!name || !message) return fail(400, 'Name and message are both required.');
+  if (!U.limit(`gb:${req.ip}`, 3, 600000)) return fail(429, 'Too many entries from you. Try again in ten minutes.');
+  if (lines(req.owner.gb_ips).includes(req.ip)) return res.redirect(back); // blocked: look like success
   const text = `${name} ${message}`.toLowerCase();
-  if (lines(req.owner.gb_words).some((w) => text.includes(w.toLowerCase()))) return res.status(400).send(V.guestbook(gbRows(req.owner.id), 'Your entry contains a word the owner has blocked.'));
+  if (lines(req.owner.gb_words).some((w) => text.includes(w.toLowerCase()))) return fail(400, 'Your entry contains a word the owner has blocked.');
   const approved = GB_LINK.test(text) ? 0 : 1; // entries with links wait for the owner
   db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
   // capped so a spam wave from many addresses can't flood the owner's inbox
   if (req.owner.gb_notify === 'instant' && U.limit(`gbmail:${req.owner.id}`, 10, 3600000)) {
     sendMail(req.owner.email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
   }
-  res.redirect('/_hw/guestbook');
+  res.redirect(back);
 });
 
 site.use((req, res) => {
@@ -404,6 +409,11 @@ main.get('/healthz', (req, res) => {
   res.set('Cache-Control', 'no-store').status(dbOk && diskOk ? 200 : 503).json({ ok: dbOk && diskOk, db: dbOk, disk: diskOk });
 });
 
+// the HTTP API takes a member's API key in the Authorization header and never reads the session cookie,
+// so a page on another site can't use it with a visitor's login and it needs no CSRF token; its routes are under "HTTP API" below
+const api = express.Router();
+main.use('/api', api);
+
 // session
 main.use((req, res, next) => {
   const m = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === COOKIE);
@@ -449,6 +459,7 @@ main.get('/img/pup-hero.webp', asset('pup-hero.webp', 'image/webp'));
 main.get('/img/pup-coder.webp', asset('pup-coder.webp', 'image/webp'));
 main.get('/img/pup-accident.webp', asset('pup-accident.webp', 'image/webp'));
 main.get('/img/pup-guestbook.webp', asset('pup-guestbook.webp', 'image/webp'));
+W.assetRoutes(main); // backgrounds, buttons and effects member pages load from here
 main.get('/robots.txt', (req, res) => res.type('text/plain').send(
   // /login, /signup, /forgot, /reset and /feed stay crawlable on purpose: they carry noindex tags,
   // which a crawler can only read if robots.txt lets it in. Only the auth-gated areas are disallowed.
@@ -788,7 +799,7 @@ main.post('/reset', async (req, res) => {
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
   if (!user) return expired();
-  db.prepare('UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?').run(pwHash, user.id);
+  db.prepare("UPDATE users SET pw_hash = ?, verified = 1, api_key = '' WHERE id = ?").run(pwHash, user.id); // a reset may follow a break-in, so the API key goes too
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
   startSession(res, user.id);
   res.redirect('/dashboard');
@@ -938,7 +949,9 @@ main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   const exists = fs.existsSync(full) && fs.statSync(full).isFile();
   // a new page starts as a copy of the member's starter layout, already using their puppypad.css
   const blank = /\.html?$/i.test(rel) ? style.link(starters.render(req.ctx.user.starter, req.ctx.user.username, cfg)) : '';
-  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists, images: await siteImages(req.ctx.user, rel) }));
+  // "Add to a page" on the widgets page: the editor offers that widget's snippet to insert at the cursor
+  const insert = req.query.widget ? W.snippet(cfg, req.ctx.user, String(req.query.widget)) : null;
+  res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists, images: await siteImages(req.ctx.user, rel), insert }));
 });
 // write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
 function saveText(user, full, content) {
@@ -972,7 +985,7 @@ main.post('/dashboard/save', auth, canEdit, async (req, res) => {
 });
 // the style editor writes puppypad.css; it never touches a page without asking
 const readText = (full) => { try { return fs.readFileSync(full, 'utf8'); } catch { return null; } };
-main.get('/dashboard/style', auth, canEdit, (req, res) => {
+main.get('/dashboard/style', auth, canEdit, async (req, res) => {
   const user = req.ctx.user;
   const root = siteDir(user.username);
   const css = readText(path.join(root, 'puppypad.css'));
@@ -984,14 +997,16 @@ main.get('/dashboard/style', auth, canEdit, (req, res) => {
     page: index ?? starters.render(user.starter, user.username, cfg),
     tail: style.tail(css),
     offerLink: css !== null && index !== null && !style.hasLink(index),
+    images: (await U.listFiles(root)).filter((f) => style.IMAGE.test(f)).sort(), // for "use my own" background
   }));
 });
 main.post('/dashboard/style', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
-  const s = style.clean(req.body);
+  // "one of my own pictures" sends the picture in a separate field
+  const s = style.clean({ ...req.body, bg: req.body.bg === 'own' ? req.body.ownbg : req.body.bg });
   if (!s) return res.redirect(`/dashboard/style?err=${encodeURIComponent('Pick each setting from the form.')}`);
   const full = path.join(siteDir(user.username), 'puppypad.css');
-  const err = saveText(user, full, style.merge(readText(full), s));
+  const err = saveText(user, full, style.merge(readText(full), s, cfg.BASE_URL));
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
   markUpdated(user.id, ['puppypad.css']);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
@@ -1032,18 +1047,21 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
   res.redirect(`/dashboard?ok=${encodeURIComponent(`${exists ? 'Replaced' : 'Made'} your front page (index.html) from the ${name} starter.`)}`);
 });
+// delete one of a member's files, and the folders that leaves empty; false when there is no such file
+function deleteFile(user, rel) {
+  const full = rel && resolveIn(user, rel);
+  if (!full || !fs.existsSync(full) || !fs.statSync(full).isFile()) return false;
+  const { size } = fs.statSync(full);
+  const used = usage(user.username);
+  fs.unlinkSync(full);
+  usageCache.set(user.username, { total: used.total - size, count: used.count - 1 });
+  const root = siteDir(user.username);
+  for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
+  markUpdated(user.id);
+  return true;
+}
 main.post('/dashboard/delete', auth, canEdit, (req, res) => {
-  const rel = U.safeRel(req.body.path);
-  const full = rel && resolveIn(req.ctx.user, rel);
-  if (full && fs.existsSync(full) && fs.statSync(full).isFile()) {
-    const { size } = fs.statSync(full);
-    const used = usage(req.ctx.user.username);
-    fs.unlinkSync(full);
-    usageCache.set(req.ctx.user.username, { total: used.total - size, count: used.count - 1 });
-    const root = siteDir(req.ctx.user.username);
-    for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
-    markUpdated(req.ctx.user.id);
-  }
+  deleteFile(req.ctx.user, U.safeRel(req.body.path));
   res.redirect(`/dashboard?ok=${encodeURIComponent('File deleted.')}`);
 });
 // rename or move a file or folder; folders keep their contents, and nothing is ever overwritten
@@ -1114,7 +1132,7 @@ main.post('/dashboard/tags', auth, canEdit, (req, res) => {
 main.post('/dashboard/webring', auth, canEdit, (req, res) => {
   const join = req.body.webring === '1';
   db.prepare('UPDATE users SET webring = ? WHERE id = ?').run(join ? 1 : 0, req.ctx.user.id);
-  res.redirect(`/dashboard?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
+  res.redirect(`/dashboard/widgets?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
 });
 main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   const hide = req.body.hidden === '1';
@@ -1166,8 +1184,8 @@ main.post('/account/password', auth, async (req, res) => {
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   const pwHash = await U.hashPw(password);
   if (!stillCurrent(req, user)) return res.redirect('/login');
-  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
-  // log out everywhere else, in case the old password leaked
+  db.prepare("UPDATE users SET pw_hash = ?, api_key = '' WHERE id = ?").run(pwHash, user.id);
+  // log out everywhere else and switch off the API key, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
@@ -1240,6 +1258,113 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
+});
+
+// ----- widgets -----
+const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null);
+main.get('/dashboard/widgets', auth, async (req, res) => res.send(V.widgets(req.ctx, msgOf(req), {
+  groups: W.groups(cfg, req.ctx.user),
+  pages: (await U.listFiles(siteDir(req.ctx.user.username))).filter((f) => /\.html?$/i.test(f)).sort(),
+})));
+main.post('/dashboard/widgets/status', auth, canEdit, (req, res) => {
+  db.prepare('UPDATE users SET status = ? WHERE id = ?').run(W.cleanStatus(req.body.status), req.ctx.user.id);
+  res.redirect(`/dashboard/widgets?ok=${encodeURIComponent('Status saved.')}`);
+});
+// an effect script goes into the member's site as their own file, through the same checks as a save; nothing already there is replaced
+main.post('/dashboard/widgets/copy', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const back = (kind, text) => res.redirect(`/dashboard/widgets?${kind}=${encodeURIComponent(text)}`);
+  const src = W.effectSource(req.body.fx);
+  if (src === null) return back('err', 'Pick one of the effects.');
+  const rel = `${req.body.fx}.js`;
+  const full = resolveIn(user, rel);
+  if (fs.existsSync(full)) return back('err', `You already have ${rel}. Rename or delete it first to copy a fresh one.`);
+  const err = saveText(user, full, src);
+  if (err) return back('err', `Not copied: ${err}.`);
+  markUpdated(user.id, [rel]);
+  back('ok', `Copied ${rel} into your site. Now add it to a page.`);
+});
+
+// ----- API key and HTTP API -----
+main.get('/dashboard/api', auth, (req, res) => res.send(V.apiPage(req.ctx, null, { hasKey: !!req.ctx.user.api_key })));
+// only the key's sha256 is kept, so the key itself is shown once, here
+main.post('/dashboard/api', auth, async (req, res) => {
+  const user = req.ctx.user;
+  const show = (m, key = '', code = 200) => res.status(code).set('Cache-Control', 'no-store').send(V.apiPage(req.ctx, m, { hasKey: !!q.userById.get(user.id).api_key, key }));
+  if (req.body.action === 'revoke') {
+    db.prepare("UPDATE users SET api_key = '' WHERE id = ?").run(user.id);
+    return show({ ok: 'Your API key is switched off.' });
+  }
+  if (user.banned) return res.redirect('/dashboard');
+  if (!U.limit(`apikey:${user.id}`, 5, 900000)) return show({ err: 'Too many attempts. Wait 15 minutes and try again.' }, '', 429);
+  // a key outlives the session, so making one takes the password, as a rename does
+  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
+  if (!stillCurrent(req, user)) return res.redirect('/login');
+  const key = `pp_${U.newToken()}`;
+  db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(U.sha(key), user.id);
+  show(null, key);
+});
+api.use((req, res, next) => {
+  req.headers.accept = 'application/json'; // so shared steps like tempBudget answer in JSON
+  const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
+  const user = m && db.prepare("SELECT * FROM users WHERE api_key = ? AND api_key != ''").get(U.sha(m[1]));
+  if (!user || !user.verified) return res.status(401).json({ error: 'Missing or unknown API key. Make one at /dashboard/api.' });
+  if (user.banned) return res.status(403).json({ error: 'A moderator took this site down. Editing is disabled.' });
+  if (!U.limit(`api:${user.id}`, 120, 60000)) return res.status(429).set('Retry-After', '60').json({ error: 'Too many requests. Wait a minute.' });
+  req.ctx = { cfg, user, csrf: '', isAdmin: false, nonce: '' };
+  next();
+});
+// an upload can take a while to arrive; a new key, a ban or a rename meanwhile stops the write
+const apiCurrent = (user) => {
+  const cur = q.userById.get(user.id);
+  return !!cur && cur.api_key === user.api_key && !cur.banned && cur.renamed_at === user.renamed_at;
+};
+api.get('/site', (req, res) => {
+  const u = req.ctx.user;
+  const used = usage(u.username);
+  res.json({
+    name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: isListed(u), hidden: !!u.hidden,
+    used_bytes: used.total, quota_bytes: quotaMB(u) * 1048576, files: used.count, max_files: MAX_FILES, max_file_bytes: cfg.MAX_FILE_MB * 1048576,
+    bandwidth_today_bytes: bwToday(u), bandwidth_cap_bytes: cfg.BANDWIDTH_MB * 1048576, hits: u.hits, updated_at: new Date(u.updated_at).toISOString(),
+  });
+});
+api.get('/files', async (req, res) => {
+  const root = siteDir(req.ctx.user.username);
+  const files = [];
+  for (const f of (await U.listFiles(root)).sort()) {
+    try {
+      const st = await fs.promises.stat(path.join(root, f));
+      files.push({ path: f, size: st.size, modified: st.mtime.toISOString() });
+    } catch { /* deleted meanwhile */ }
+  }
+  res.json({ files });
+});
+// preservePath keeps the folders in a filename like pics/cat.png, so one request can upload a whole tree
+const apiUpload = multer({ storage: tmpStorage, preservePath: true, limits: { fileSize: cfg.MAX_FILE_MB * 1048576, files: 20 } }).array('files', 20);
+api.post('/upload', tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next) => apiUpload(req, res, (err) => {
+  try {
+    if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${cfg.MAX_FILE_MB} MB each.` : 'Upload failed. Send at most 20 files at a time, in a field called "files".' });
+    if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the upload.' });
+    if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files. Send them in a field called "files".' });
+    const dir = U.safeRel(req.body?.dir || '', { file: false });
+    if (dir === null) return res.status(400).json({ error: 'That folder name is not allowed.' });
+    const skipped = [];
+    const saved = saveFiles(req.ctx.user, dir, req.files.map((f) => ({ name: f.originalname, path: f.path, size: f.size })), skipped);
+    res.json({ saved, skipped });
+  } catch (e) { next(e); } finally { dropTemp(req.files || []); }
+}));
+api.post('/delete', express.urlencoded({ extended: false }), express.json(), (req, res) => {
+  if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
+  const rel = U.safeRel(req.body?.path);
+  if (!rel) return res.status(400).json({ error: 'Send the path of one file, like pics/cat.png.' });
+  if (!deleteFile(req.ctx.user, rel)) return res.status(404).json({ error: `There is no file called ${rel}.` });
+  res.json({ deleted: rel });
+});
+api.use((req, res) => res.status(404).json({ error: 'No such API endpoint. There are GET /api/site, GET /api/files, POST /api/upload and POST /api/delete.' }));
+// a bad body (malformed JSON, too big) answers in JSON with its own status, like every other API error
+api.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  if (!err.status || err.status >= 500) console.error(err);
+  res.status(err.status && err.status < 500 ? err.status : 500).json({ error: err.status && err.status < 500 ? 'That request body could not be read.' : 'Something broke on our side. Try again.' });
 });
 
 // ----- reports + admin -----
