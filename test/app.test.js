@@ -2063,4 +2063,22 @@ test('extra sites follow their login for admin rights, bans, API keys and deleti
   assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 302);
   await post(boss, '/admin/ban', { site: 'multi', action: 'unban' });
   assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username LIKE 'multi%' AND banned = 1").get().n, 0);
+  // an extra site taken down on its own stays down through a ban and restore of its login
+  await post(boss, '/admin/ban', { site: 'multi-two', action: 'ban', reason: 'phishing' });
+  await post(boss, '/admin/ban', { site: 'multi', action: 'ban', reason: 'spam' });
+  await post(boss, '/admin/ban', { site: 'multi', action: 'unban' });
+  assert.equal((await req('get', '/', 'multi.pad.test')).status, 200);
+  assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
+  assert.equal(db.prepare('SELECT ban_reason FROM users WHERE username = ?').get('multi-two').ban_reason, 'phishing');
+});
+
+test('only the editor takes big forms; a huge one anywhere else is refused, not held in memory', async () => {
+  const big = 'a'.repeat(200 * 1024);
+  const login = await req('post', '/login').type('form').send({ username: big, password: 'x' });
+  assert.equal(login.status, 413);
+  assert.equal((await req('post', '/signup').type('form').send({ username: 'x', email: big })).status, 413);
+  const m = await member('bigform');
+  const save = await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'big.html', content: 'b'.repeat(500 * 1024) });
+  assert.equal(save.status, 200);
+  assert.equal(fs.statSync(path.join(process.env.DATA_DIR, 'sites', 'bigform', 'big.html')).size, 500 * 1024);
 });

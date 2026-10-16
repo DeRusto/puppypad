@@ -456,7 +456,10 @@ main.use((req, res, next) => {
   }
   next();
 });
-main.use(express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 })); // the editor posts whole files, and percent-escaping can triple a byte, so the cap tracks MAX_FILE_MB with room for that
+// the editor posts whole files, and percent-escaping can triple a byte, so its cap tracks MAX_FILE_MB with room for that;
+// every other form, signed in or not, keeps the parser's 100 KB default so nobody can make the app hold megabytes per request
+main.use(['/dashboard/save', '/dashboard/style'], express.urlencoded({ extended: false, limit: (cfg.MAX_FILE_MB * 3 + 1) * 1048576 }));
+main.use(express.urlencoded({ extended: false })); // skips a body already parsed above
 main.use(bodyDefault);
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
@@ -793,7 +796,8 @@ main.get('/verify', (req, res) => {
 });
 main.get('/login', (req, res) => res.send(V.login(req.ctx)));
 main.post('/login', async (req, res) => {
-  const username = String(req.body.username || '').trim().toLowerCase();
+  // capped: the name keys an in-memory rate limit for a day, so a huge one would sit in memory that long
+  const username = String(req.body.username || '').trim().toLowerCase().slice(0, 200);
   // site names can't contain @, so anything with one is an email
   const user = username.includes('@') ? q.userByEmail.get(username) : q.userByName.get(username);
   // count attempts per account, not per spelling, so switching between name and email doesn't double the guesses
@@ -1548,7 +1552,7 @@ const showAdmin = (req, res, m) => {
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
-      banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned = 1').get().n,
+      banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned > 0').get().n,
       open: db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n,
     },
     upgrade: upgrade.readState(DATA_DIR),
@@ -1629,11 +1633,13 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   }
   const ban = action === 'ban' ? 1 : 0;
   // the state change and its log entry commit together, so no take-down or restore goes unrecorded
-  // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login
-  const sites = target.owner_id ? [target] : sitesOf(target);
+  // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login.
+  // banned = 2 marks an extra site taken down only along with its login, so restoring the login brings back those
+  // and never one a moderator took down on its own (banned = 1)
+  const sites = target.owner_id ? [target] : sitesOf(target).filter((s) => s.id === target.id || s.banned === (ban ? 0 : 2));
   db.transaction(() => {
     for (const s of sites) {
-      db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, s.id);
+      db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban && s.id !== target.id ? 2 : ban, ban ? reason : null, s.id);
       if (ban) db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
       else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(s.id);
     }
@@ -1646,6 +1652,8 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
 
 main.use((req, res) => res.status(404).send(V.notice(req.ctx, 'Not found', '<p>No such page. <a href="/">Go home.</a></p>')));
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  // a body the parser refused (too big, malformed) is the sender's mistake, so it keeps its own 4xx status
+  if (err.status >= 400 && err.status < 500) return res.status(err.status).type('text').send(err.status === 413 ? 'That form is too big to send.' : 'That request could not be read.');
   console.error(err);
   res.status(500).type('text').send('Something broke on our side. Try again.');
 });
