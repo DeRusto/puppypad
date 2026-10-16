@@ -1581,7 +1581,8 @@ main.post('/dashboard/support', auth, async (req, res) => {
       mode: 'subscription',
       line_items: [{ price: env.STRIPE_PRICE_ID, quantity: 1 }],
       client_reference_id: String(login.id),
-      subscription_data: { metadata: { user_id: String(login.id) } },
+      // flexible billing mode: Stripe's recommended default for predictable proration and invoices
+      subscription_data: { metadata: { user_id: String(login.id) }, billing_mode: { type: 'flexible' } },
       customer: login.stripe_customer_id,
       success_url: `${cfg.BASE_URL}/dashboard/support?ok=${encodeURIComponent('Thank you! Your supporter perks switch on as soon as Stripe confirms the payment.')}`,
       cancel_url: `${cfg.BASE_URL}/dashboard/support`,

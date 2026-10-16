@@ -2359,6 +2359,7 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.equal(call.client_reference_id, String(row().id));
   assert.equal(call.customer, cus);
   assert.deepEqual(call.line_items, [{ price: 'price_test', quantity: 1 }]);
+  assert.deepEqual(call.subscription_data.billing_mode, { type: 'flexible' });
   // a second try before paying reopens the same checkout instead of starting a second subscription
   fake.open.push({ customer: cus, url: 'https://checkout.stripe.com/c/pay/open' });
   const again = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
