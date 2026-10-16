@@ -1316,6 +1316,11 @@ test('a member keeps a larger quota after QUOTA_MB is lowered', async () => {
   assert.doesNotMatch((await upload(m, 'b.txt', 'x'.repeat(600 * 1024))).text, /over your/);
   assert.match((await upload(m, 'c.txt', 'x'.repeat(900 * 1024))).text, /over your 2 MB limit/);
   assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /of 2 MB/);
+  // a zip import unpacks up to the member's own quota, not the lower default
+  db.prepare("UPDATE users SET quota_mb = 3 WHERE username = 'roomy'").run();
+  const res = await importZip(m, await makeZip([['d.txt', 'x'.repeat(600 * 1024)], ['e.txt', 'x'.repeat(600 * 1024)]]));
+  assert.doesNotMatch(res.text, /over your/);
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'roomy', 'e.txt')));
 });
 
 test('restarting with a higher QUOTA_MB raises existing members; a lower one leaves them', () => {
@@ -2063,4 +2068,53 @@ test('extra sites follow their login for admin rights, bans, API keys and deleti
   assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 302);
   await post(boss, '/admin/ban', { site: 'multi', action: 'unban' });
   assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username LIKE 'multi%' AND banned = 1").get().n, 0);
+  // an extra site taken down on its own stays down through a ban and restore of its login
+  await post(boss, '/admin/ban', { site: 'multi-two', action: 'ban', reason: 'phishing' });
+  await post(boss, '/admin/ban', { site: 'multi', action: 'ban', reason: 'spam' });
+  await post(boss, '/admin/ban', { site: 'multi', action: 'unban' });
+  assert.equal((await req('get', '/', 'multi.pad.test')).status, 200);
+  assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
+  assert.equal(db.prepare('SELECT ban_reason FROM users WHERE username = ?').get('multi-two').ban_reason, 'phishing');
+});
+
+test('only the editor takes big forms; a huge one anywhere else is refused, not held in memory', async () => {
+  const big = 'a'.repeat(200 * 1024);
+  const login = await req('post', '/login').type('form').send({ username: big, password: 'x' });
+  assert.equal(login.status, 413);
+  assert.equal((await req('post', '/signup').type('form').send({ username: 'x', email: big })).status, 413);
+  const m = await member('bigform');
+  const save = await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'big.html', content: 'b'.repeat(500 * 1024) });
+  assert.equal(save.status, 200);
+  assert.equal(fs.statSync(path.join(process.env.DATA_DIR, 'sites', 'bigform', 'big.html')).size, 500 * 1024);
+});
+
+test('guestbooks and the report queue page through every entry, so none is out of reach', async () => {
+  const m = await member('busybook');
+  const id = db.prepare('SELECT id FROM users WHERE username = ?').get('busybook').id;
+  const add = db.prepare('INSERT INTO guestbook (user_id, name, message, approved, created_at) VALUES (?,?,?,?,?)');
+  const held = add.run(id, 'oldest', 'see www.example.com', 0, 1).lastInsertRowid;
+  for (let i = 0; i < 520; i++) add.run(id, `n${i}`, `entry ${i}`, 1, 2 + i);
+  // visitors: 50 a page, newest first, older pages keep the theme
+  const first = await req('get', '/_hw/guestbook?theme=night', 'busybook.pad.test');
+  assert.match(first.text, /entry 519/);
+  assert.doesNotMatch(first.text, /entry 469\b/);
+  assert.match(first.text, /href="\/_hw\/guestbook\?theme=night&amp;page=2"/);
+  const last = await req('get', '/_hw/guestbook?page=11', 'busybook.pad.test');
+  assert.match(last.text, /entry 0\b/);
+  assert.doesNotMatch(last.text, /oldest/); // held entries never show to visitors
+  // the owner reaches a held entry older than the newest 500, approves it and lands back on its page
+  const page11 = await req('get', '/dashboard/guestbook?page=11').set('Cookie', m.cookie);
+  assert.match(page11.text, /approve \(held/);
+  const back = await post(m, '/dashboard/guestbook/approve', { id: held, page: 11 });
+  assert.equal(back.headers.location, '/dashboard/guestbook?page=11');
+  assert.equal(db.prepare('SELECT approved FROM guestbook WHERE id = ?').get(held).approved, 1);
+  // the admin queue pages too
+  const boss = { cookie: (await req('post', '/login').type('form').send({ username: 'boss', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0] };
+  boss.csrf = (await req('get', '/dashboard').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  db.prepare("UPDATE reports SET status = 'closed'").run();
+  const rep = db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES ('busybook', 'Spam', ?, ?)");
+  for (let i = 0; i < 60; i++) rep.run(`report ${i}`, i);
+  const queue = await req('get', '/admin?rpage=2').set('Cookie', boss.cookie);
+  assert.match(queue.text, /report 0\b/);
+  assert.doesNotMatch(queue.text, /report 59\b/);
 });

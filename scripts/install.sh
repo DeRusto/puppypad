@@ -116,6 +116,10 @@ if [ -z "$target" ]; then
   target=$(fetch "$api/repos/$repo/releases/latest" | jq -r .tag_name)
 fi
 is_tag "$target" || { echo "not a release tag: $target"; exit 1; }
+# a first install writes README.md, LICENSE, docker-compose.yml and scripts/ here, so only into a folder holding nothing else
+if [ "$mode" = fresh ] && ls -A | grep -vqxE '\.env|\.env\.caddy|\.upgrade'; then
+  echo "$root has other files in it; run this in an empty folder (README.md, \"Deploy on a VPS\")"; exit 1
+fi
 # VERSION is written last, but an install wedged by an older installer can have the new VERSION with
 # the old images, so .env has to agree too
 if [ "$old" = "$target" ] && [ "$(env_val PUPPYPAD_VERSION)" = "$target" ]; then ensure_cron; echo "already on $target"; exit 0; fi
