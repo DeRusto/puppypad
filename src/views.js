@@ -159,6 +159,9 @@ const eventText = (e, link) => {
   return `updated ${files.slice(0, 5).map(link).join(', ')}${files.length > 5 ? ` and ${files.length - 5} more` : ''}`;
 };
 const fileLinks = (e, url) => eventText(e, (f) => `<a href="${esc(url)}/${esc(f)}">${esc(f)}</a>`);
+// newer/older links for a paged list; href(n) is page n's address
+const pager = (href, page, pages) => (pages > 1 ? `<p>${page > 1 ? `<a href="${esc(href(page - 1))}">&lt;&lt; Newer</a> ` : ''}page ${page} of ${pages}${page < pages ? ` <a href="${esc(href(page + 1))}">Older &gt;&gt;</a>` : ''}</p>` : '');
+const updateUrl = (owner, e) => `/site/${owner}/update/${e.id}`;
 // comments: the member whose profile or update it is (canDelete) may delete them; back says where the form returns to
 const commentHtml = (ctx, c, canDelete, back) => `<div class="cmt"><a href="/site/${esc(c.username)}">${esc(c.username)}</a> <small>${ago(c.created_at)}</small>${canDelete
   ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${c.id}"><input type="hidden" name="back" value="${back}"><button class="link">delete</button></form>` : ''}<div>${esc(c.body)}</div></div>`;
@@ -169,6 +172,7 @@ const commentForm = (ctx, target, back) => `<form class="stack" method="post" ac
 const social = (ctx, e, owner, back) => {
   const like = ctx.user ? ` <form class="inline" method="post" action="/like">${csrfField(ctx)}<input type="hidden" name="event" value="${e.id}"><input type="hidden" name="back" value="${back}"><button class="link" name="action" value="${e.liked ? 'unlike' : 'like'}">${e.liked ? 'unlike' : 'like'}</button></form>` : '';
   return `<div class="social">${e.likes} like${e.likes === 1 ? '' : 's'}${like}
+${e.commentCount > e.comments.length ? `<p class="note"><a href="${esc(updateUrl(owner, e))}">See all ${e.commentCount} comments</a></p>` : ''}
 ${e.comments.map((c) => commentHtml(ctx, c, !!ctx.user && ctx.user.username === owner, back)).join('')}
 ${ctx.user ? `<details><summary>Comment</summary>${commentForm(ctx, `<input type="hidden" name="event" value="${e.id}">`, back)}</details>` : ''}</div>`;
 };
@@ -187,10 +191,11 @@ ${mine ? '<p><a href="/dashboard">Edit my site</a></p>' : `<form class="inline" 
 ${ctx.user ? `<form class="inline" method="post" action="/block">${csrfField(ctx)}<input type="hidden" name="site" value="${esc(p.username)}"><button class="link" name="action" value="${blocking ? 'unblock' : 'block'}">${blocking ? 'Unblock' : 'Block'}</button></form>` : ''}
 ${blocking ? `<p class="note">You blocked ${esc(p.username)}. Their comments and likes are hidden from you, and they can't comment on, like or follow your site.</p>` : ''}
 <p style="margin-top:10px"><a href="/report?site=${esc(p.username)}">Report this site</a></p>`}</div></div></section>
-<section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${fileLinks(e, url)} ${ago(e.created_at)}${social(ctx, e, p.username, 'profile')}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}
+<section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${fileLinks(e, url)} <a href="${esc(updateUrl(p.username, e))}" class="note">${ago(e.created_at)}</a>${social(ctx, e, p.username, `/site/${p.username}`)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}
 <p class="note"><a href="/site/${esc(p.username)}/feed.xml">Follow ${esc(p.username)} in a feed reader</a> (Atom).</p></section>
-<section class="box"><h2>Comments</h2>${comments.map((c) => commentHtml(ctx, c, mine, 'profile')).join('') || '<p class="note">No comments yet.</p>'}
-${ctx.user ? commentForm(ctx, `<input type="hidden" name="site" value="${esc(p.username)}">`, 'profile') : '<p><a href="/login">Log in</a> to leave a comment.</p>'}</section>
+<section class="box" id="comments"><h2>Comments</h2>${comments.rows.map((c) => commentHtml(ctx, c, mine, `/site/${p.username}`)).join('') || '<p class="note">No comments yet.</p>'}
+${pager((n) => `/site/${p.username}?cpage=${n}#comments`, comments.page, comments.pages)}
+${ctx.user ? commentForm(ctx, `<input type="hidden" name="site" value="${esc(p.username)}">`, `/site/${p.username}`) : '<p><a href="/login">Log in</a> to leave a comment.</p>'}</section>
 <section class="box"><h2>Followers</h2>${nameLinks(followers)}<h3>Following</h3>${nameLinks(follows)}</section>
 ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/password">${csrfField(ctx)}<label for="curpw">Current password</label>
@@ -213,18 +218,31 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 
 const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
 <section class="box"><h2>Your feed</h2>
-${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} ${ago(e.created_at)}${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, 'feed')}</div></li>`).join('')}</ul>`
+${events.length ? `<ul class="feed">${events.map((e) => `<li>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${esc(e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} <a href="${esc(updateUrl(e.username, e))}" class="note">${ago(e.created_at)}</a>${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, '/feed')}</div></li>`).join('')}</ul>`
     : count ? '<p>The sites you follow have been quiet. Updates show up here.</p>'
       : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`);
 
 const NOTE_LINE = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
-const notifications = (ctx, rows, seenAt) => {
+// one update with its likes and every comment, newest first, a page at a time
+const update = (ctx, { p, e, comments }) => {
+  const url = ctx.cfg.siteUrl(p.username);
+  const here = updateUrl(p.username, e);
+  const mine = !!ctx.user && ctx.user.id === p.id;
+  return layout(ctx, `${p.username}'s update`, `
+<section class="box"><h2><a href="/site/${esc(p.username)}">${esc(p.username)}</a> ${fileLinks(e, url)}</h2><p class="note">${ago(e.created_at)}</p>
+${social(ctx, { ...e, comments: [], commentCount: 0 }, p.username, here)}
+<h3>Comments</h3>${comments.rows.map((c) => commentHtml(ctx, c, mine, here)).join('') || '<p class="note">No comments yet.</p>'}
+${pager((n) => `${here}?page=${n}`, comments.page, comments.pages)}</section>`, { noindex: true });
+};
+
+const notifications = (ctx, { rows, page, pages, seenAt }) => {
   const u = ctx.user;
   const box = (k, label) => `<label><input type="checkbox" name="${k}" value="1"${u.note_mail.split(' ').includes(k) ? ' checked' : ''}> ${label}</label>`;
   return layout(ctx, 'Notifications', `
 <section class="box"><h2>Notifications</h2>
-${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${esc(n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="/site/${esc(u.username)}">see it</a>`}</small>${n.comment_id ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${n.comment_id}"><input type="hidden" name="back" value="notifications"><button class="link">delete</button></form>` : ''}</li>`).join('')}</ul>`
-    : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}</section>
+${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${esc(n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="${esc(n.event_id ? updateUrl(u.username, { id: n.event_id }) : `/site/${u.username}#comments`)}">see it</a>`}</small>${n.comment_id ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${n.comment_id}"><input type="hidden" name="back" value="/notifications"><button class="link">delete</button></form>` : ''}</li>`).join('')}</ul>`
+    : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}
+${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</section>
 <section class="box"><h2>Email me</h2>
 <form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(u.email)}.</p>
 ${box('follow', 'when someone follows my site')}${box('comment', 'when someone comments on my site or my updates')}${box('like', 'when someone likes one of my updates')}
@@ -734,4 +752,4 @@ const counterSvg = (n) => {
     [...d].map((c, i) => `<rect x="${4 + i * 18}" y="3" width="16" height="24" fill="#0b2a66" stroke="#2f8fd0"/><text x="${12 + i * 18}" y="22" text-anchor="middle" font-family="Courier New,monospace" font-size="20" font-weight="700" fill="#ffe14d">${c}</text>`).join('') + '</svg>';
 };
 
-module.exports = { layout, home, browse, profile, feed, notifications, eventText, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };
+module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, counterSvg, atom };

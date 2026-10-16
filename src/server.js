@@ -497,8 +497,7 @@ function showProfile(req, res, name, m, status = 200) {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
     blocking: !!me && blocked(me.id, p.id),
-    comments: db.prepare(`SELECT c.*, u.username FROM comments c JOIN users u ON u.id = c.author_id
-      WHERE c.user_id = @owner AND c.event_id IS NULL AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')} ORDER BY c.id DESC LIMIT 50`).all({ owner: p.id, viewer }),
+    comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
     events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
     followers: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followed_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
     follows: db.prepare(`SELECT u.username FROM follows f JOIN users u ON u.id = f.followed_id WHERE f.follower_id = ? AND ${LIVE} ORDER BY f.created_at DESC LIMIT 60`).all(p.id),
@@ -523,16 +522,31 @@ main.post('/follow', (req, res) => {
 const blocked = (blocker, who) => !!db.prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?').get(blocker, who);
 // a comment or like is hidden when the member whose space it is, or the one looking (@viewer), blocked its author
 const unblocked = (col, owner) => `${col} NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ${owner} OR blocker_id = @viewer)`;
-// feed events with their comments, like count, and whether the viewer liked them
+const PER_PAGE = 50;
+// the page asked for in ?<key>=, kept within the pages there are
+const pageOf = (req, total, key = 'page') => {
+  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
+  return { page: Math.min(pages, Math.max(1, parseInt(req.query[key], 10) || 1)), pages };
+};
+const COMMENTS = 'FROM comments c JOIN users u ON u.id = c.author_id WHERE';
+// one page of the comments matching `where`, newest first, without those from banned or blocked members
+function commentPage(req, where, at, key) {
+  const filter = `${where} AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}`;
+  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${COMMENTS} ${filter}`).get(at).n, key);
+  return { rows: db.prepare(`SELECT c.*, u.username ${COMMENTS} ${filter} ORDER BY c.id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(at), page, pages };
+}
+const PREVIEW = 5; // comments shown under each update on the feed and profile; the update's own page has them all
+// feed events with their newest comments and comment count, like count, and whether the viewer liked them
 function withSocial(events, viewer) {
   const at = { ids: JSON.stringify(events.map((e) => e.id)), viewer };
-  const comments = db.prepare(`SELECT c.*, u.username FROM comments c JOIN users u ON u.id = c.author_id
-    WHERE c.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')} ORDER BY c.id`).all(at);
+  const comments = db.prepare(`SELECT * FROM (SELECT c.*, u.username, ROW_NUMBER() OVER (PARTITION BY c.event_id ORDER BY c.id DESC) rn, COUNT(*) OVER (PARTITION BY c.event_id) total
+    ${COMMENTS} c.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}) WHERE rn <= ${PREVIEW} ORDER BY id`).all(at);
   const likes = db.prepare(`SELECT l.event_id, COUNT(*) n, MAX(l.user_id = @viewer) mine FROM likes l JOIN events e ON e.id = l.event_id JOIN users u ON u.id = l.user_id
     WHERE l.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('l.user_id', 'e.user_id')} GROUP BY l.event_id`).all(at);
   return events.map((e) => {
     const l = likes.find((x) => x.event_id === e.id);
-    return { ...e, comments: comments.filter((c) => c.event_id === e.id), likes: l ? l.n : 0, liked: !!(l && l.mine) };
+    const mine = comments.filter((c) => c.event_id === e.id);
+    return { ...e, comments: mine, commentCount: mine.length ? mine[0].total : 0, likes: l ? l.n : 0, liked: !!(l && l.mine) };
   });
 }
 // a member's notifications, worked out from the follows, comments and likes themselves, so deletes and blocks apply at once
@@ -550,8 +564,9 @@ function notify(owner, actor, kind, extra = '') {
   sendMail(owner.email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
     `${actor.username} ${NOTE_TEXT[kind]}.${extra ? `\n\n${extra}` : ''}\n\nSee your notifications, or change which ones we email you about: ${cfg.BASE_URL}/notifications`);
 }
-// a comment or like lands back where it was made: the feed, the notifications (where owners can delete comments on updates too old for their profile), or the profile
-const backTo = (req, owner) => ({ feed: '/feed', notifications: '/notifications' }[req.body.back] || `/site/${owner.username}`);
+// a comment or like lands back on the page of ours it was made from, never on another site
+const BACK = /^\/(feed|notifications|site\/[a-z0-9-]+(\/update\/\d+)?)$/;
+const backTo = (req, owner) => (BACK.test(String(req.body.back || '')) ? req.body.back : `/site/${owner.username}`);
 // the event a comment or like is about, with its site's owner; null unless both are live
 const eventOwner = (id) => {
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(Number(id) || 0);
@@ -603,11 +618,23 @@ main.post('/block', auth, (req, res) => {
   }
   res.redirect(`/site/${target.username}`);
 });
+// one update with every comment on it, a page at a time
+main.get('/site/:name/update/:id', (req, res) => {
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  const ev = p && db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(Number(req.params.id) || 0, p.id);
+  if (!ev) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>That update is gone. <a href="/browse">Browse sites.</a></p>'));
+  const viewer = req.ctx.user ? req.ctx.user.id : 0;
+  if (p.hidden) res.set('X-Robots-Tag', 'noindex');
+  res.send(V.update(req.ctx, { p, e: withSocial([ev], viewer)[0], comments: commentPage(req, 'c.event_id = @ev', { ev: ev.id, viewer }) }));
+});
+// the newest page marks everything read; older pages carry ?since= so they still show what was new on arrival
 main.get('/notifications', auth, (req, res) => {
   const user = req.ctx.user;
-  const rows = notes(user, 'n.*, u.username', 0, 'ORDER BY n.created_at DESC LIMIT 100').all();
-  db.prepare('UPDATE users SET notes_seen_at = ? WHERE id = ?').run(now(), user.id);
-  res.send(V.notifications({ ...req.ctx, unread: 0 }, rows, user.notes_seen_at));
+  const { page, pages } = pageOf(req, notes(user, 'COUNT(*) n').get().n);
+  const rows = notes(user, 'n.*, u.username', 0, `ORDER BY n.created_at DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all();
+  const seenAt = req.query.since !== undefined ? Number(req.query.since) || 0 : user.notes_seen_at;
+  if (page === 1) db.prepare('UPDATE users SET notes_seen_at = ? WHERE id = ?').run(now(), user.id);
+  res.send(V.notifications(page === 1 ? { ...req.ctx, unread: 0 } : req.ctx, { rows, page, pages, seenAt }));
 });
 main.post('/notifications/settings', auth, (req, res) => {
   const digest = req.body.digest ? 1 : 0;

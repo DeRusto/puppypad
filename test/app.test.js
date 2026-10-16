@@ -1579,8 +1579,8 @@ test('profile comments: members comment, bots and floods are stopped, and only t
   const owner = await member('commented');
   const fan = await member('chatty');
   assert.match((await req('get', '/site/commented')).text, /Log in<\/a> to leave a comment/);
-  await post(fan, '/comment', { site: 'commented', body: 'nice <b>pad</b>', back: 'profile' });
-  await post(fan, '/comment', { site: 'commented', body: 'buy pills', website: 'http://spam', back: 'profile' }); // honeypot
+  await post(fan, '/comment', { site: 'commented', body: 'nice <b>pad</b>', back: '/site/commented' });
+  await post(fan, '/comment', { site: 'commented', body: 'buy pills', website: 'http://spam', back: '/site/commented' }); // honeypot
   let page = (await req('get', '/site/commented')).text;
   assert.match(page, /nice &lt;b&gt;pad&lt;\/b&gt;/);
   assert.doesNotMatch(page, /buy pills/);
@@ -1601,16 +1601,16 @@ test('feed updates take likes and comments', async () => {
   const fan = await member('liker');
   await post(fan, '/follow', { site: 'liked' });
   const ev = eventOf('liked');
-  await post(fan, '/like', { event: ev, back: 'feed' });
-  await post(fan, '/like', { event: ev, back: 'feed' }); // twice is still one
-  await post(fan, '/comment', { event: ev, body: 'love the update', back: 'feed' });
+  await post(fan, '/like', { event: ev, back: '/feed' });
+  await post(fan, '/like', { event: ev, back: '/feed' }); // twice is still one
+  await post(fan, '/comment', { event: ev, body: 'love the update', back: '/feed' });
   const feed = (await req('get', '/feed').set('Cookie', fan.cookie)).text;
   assert.match(feed, /1 like <form[^]*?value="unlike"/);
   assert.match(feed, /love the update/);
   // the owner sees both under the update on their profile, and can delete the comment
   const prof = (await req('get', '/site/liked').set('Cookie', site.cookie)).text;
   assert.match(prof, /Recent activity[^]*1 like[^]*action="\/comment\/delete"[^]*love the update/);
-  assert.equal((await post(fan, '/like', { event: ev, action: 'unlike', back: 'feed' })).headers.location, '/feed');
+  assert.equal((await post(fan, '/like', { event: ev, action: 'unlike', back: '/feed' })).headers.location, '/feed');
   assert.match((await req('get', '/feed').set('Cookie', fan.cookie)).text, /0 likes/);
 });
 
@@ -1660,10 +1660,10 @@ test('notifications list new followers, comments and likes, email the kinds aske
   assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', me.cookie)).text, /Notifications \(/);
   // the owner can delete a comment from here, even on an update too old to show on the profile
   const cid = db.prepare("SELECT id FROM comments WHERE body = 'hello there'").get().id;
-  assert.match(list, new RegExp(`name="id" value="${cid}"><input type="hidden" name="back" value="notifications">`));
+  assert.match(list, new RegExp(`name="id" value="${cid}"><input type="hidden" name="back" value="\/notifications">`));
   await post(me, '/block', { site: 'fan-b' });
   assert.doesNotMatch((await req('get', '/notifications').set('Cookie', me.cookie)).text, /fan-b/);
-  assert.equal((await post(me, '/comment/delete', { id: cid, back: 'notifications' })).headers.location, '/notifications');
+  assert.equal((await post(me, '/comment/delete', { id: cid, back: '/notifications' })).headers.location, '/notifications');
   assert.equal(db.prepare('SELECT 1 FROM comments WHERE id = ?').get(cid), undefined);
 });
 
@@ -1686,4 +1686,45 @@ test('the weekly digest emails updates from followed sites to members who opted 
   db.prepare("UPDATE users SET digest_at = digest_at - ? WHERE username = 'reader'").run(60000);
   app.housekeeping();
   assert.equal(mail.slice(again).some((m) => m.includes('to=reader@')), false);
+});
+
+test('long lists page: notifications, profile comments, and every comment on an update', async () => {
+  const me = await member('popular');
+  await upload(me, 'index.html', '<h1>hi</h1>');
+  const fan = await member('talker');
+  const ev = eventOf('popular');
+  const ids = db.prepare("SELECT id FROM users WHERE username IN ('popular', 'talker') ORDER BY username").all().map((r) => r.id); // [popular, talker]
+  const add = db.prepare('INSERT INTO comments (user_id, author_id, event_id, body, created_at) VALUES (?,?,?,?,?)');
+  const t = Date.now() - 60000;
+  for (let i = 1; i <= 60; i++) add.run(ids[0], ids[1], null, `profile note ${i}`, t + i);
+  for (let i = 1; i <= 55; i++) add.run(ids[0], ids[1], ev, `update note ${i}`, t + 100 + i);
+  // profile: newest 50, then the rest on page 2
+  let prof = (await req('get', '/site/popular')).text;
+  assert.match(prof, /profile note 60</);
+  assert.doesNotMatch(prof, /profile note 10</);
+  assert.match(prof, /page 1 of 2 <a href="\/site\/popular\?cpage=2#comments">Older/);
+  prof = (await req('get', '/site/popular?cpage=2')).text;
+  assert.match(prof, /profile note 10</);
+  assert.doesNotMatch(prof, /profile note 60</);
+  // feed and profile preview the newest five under the update, with a link to the rest
+  await post(fan, '/follow', { site: 'popular' });
+  const feed = (await req('get', '/feed').set('Cookie', fan.cookie)).text;
+  assert.match(feed, new RegExp(`<a href="/site/popular/update/${ev}">See all 55 comments</a>`));
+  assert.match(feed, /update note 55</);
+  assert.doesNotMatch(feed, /update note 50</);
+  let page = (await req('get', `/site/popular/update/${ev}`)).text;
+  assert.match(page, /update note 55</);
+  assert.doesNotMatch(page, /update note 5</);
+  page = (await req('get', `/site/popular/update/${ev}?page=2`)).text;
+  assert.match(page, /update note 5</);
+  assert.equal((await req('get', `/site/talker/update/${ev}`)).status, 404); // not talker's update
+  // notifications: 50 a page, and page 2 still marks what was new on arrival
+  const first = (await req('get', '/notifications').set('Cookie', me.cookie)).text;
+  assert.equal((first.match(/<li class="new">/g) || []).length, 50);
+  const since = first.match(/\/notifications\?page=2&amp;since=(\d+)/)[1];
+  const second = (await req('get', `/notifications?page=2&since=${since}`).set('Cookie', me.cookie)).text;
+  assert.match(second, /<li class="new">/);
+  assert.doesNotMatch((await req('get', '/notifications').set('Cookie', me.cookie)).text, /<li class="new">/);
+  // a form's way back never leads off the site
+  assert.equal((await post(fan, '/comment', { site: 'popular', body: 'x', back: '//evil.example' })).headers.location, '/site/popular');
 });
