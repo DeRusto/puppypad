@@ -197,7 +197,10 @@ ${blocking ? `<p class="note">You blocked ${esc(p.username)}. Their comments and
 <section class="box" id="comments"><h2>Comments</h2>${comments.rows.map((c) => commentHtml(ctx, c, mine, `/site/${p.username}`)).join('') || '<p class="note">No comments yet.</p>'}
 ${pager((n) => `/site/${p.username}?cpage=${n}#comments`, comments.page, comments.pages)}
 ${ctx.user ? commentForm(ctx, `<input type="hidden" name="site" value="${esc(p.username)}">`, `/site/${p.username}`) : '<p><a href="/login">Log in</a> to leave a comment.</p>'}</section>
-<section class="box"><h2>Followers</h2>${nameLinks(followers)}<h3>Following</h3>${nameLinks(follows)}</section>
+<section class="box" id="followers"><h2>Followers</h2>${nameLinks(followers.rows)}
+${pager((n) => `/site/${p.username}?fpage=${n}#followers`, followers.page, followers.pages)}
+<h3 id="following">Following</h3>${nameLinks(follows.rows)}
+${pager((n) => `/site/${p.username}?gpage=${n}#following`, follows.page, follows.pages)}</section>
 ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/password">${csrfField(ctx)}<label for="curpw">Current password</label>
 <input type="password" id="curpw" name="password" required autocomplete="current-password">
@@ -209,7 +212,14 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 <form class="stack" method="post" action="/account/email">${csrfField(ctx)}<label for="newemail">New email (we send a link there to confirm it)</label>
 <input type="email" id="newemail" name="email" maxlength="200" required autocomplete="email">
 <label for="emailpw">Your password</label>
-<input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>` : ''}`, {
+<input type="password" id="emailpw" name="password" required autocomplete="current-password"><button>Change email</button></form></section>
+<section class="box" id="security"><h2>Logging in</h2>
+<form method="post" action="/account/logout-all">${csrfField(ctx)}<button>Log out everywhere</button> <span class="note">Every browser and device logged in to your site, this one too.</span></form>
+<h3>Two-factor login</h3>${ctx.user.totp_secret ? `<p>On. Logging in takes your password and a code from your authenticator app. Recovery codes left: ${ctx.user.totp_codes.split('\n').filter(Boolean).length}.</p>
+<form class="stack" method="post" action="/account/2fa/off">${csrfField(ctx)}<label for="offcode">A code from your app, or a recovery code</label>
+<input type="text" id="offcode" name="code" required inputmode="numeric" autocomplete="one-time-code">
+<label for="offpw">Your password</label><input type="password" id="offpw" name="password" required autocomplete="current-password"><button>Turn off two-factor login</button></form>`
+    : '<p>Off. With it on, logging in also takes a code from an authenticator app on your phone, so a leaked password alone can\'t get anyone in. <a href="/account/2fa">Turn on two-factor login</a></p>'}</section>` : ''}`, {
     description: p.tagline ? `${p.tagline} \u2014 ${p.username}'s homepage on ${ctx.cfg.SITE_NAME}` : `${p.username}'s homepage on ${ctx.cfg.SITE_NAME}, a free old-web homepage host.`,
     path: `/site/${p.username}`,
     ogImage: p.shot ? `${ctx.cfg.BASE_URL}/shots/${p.username}.jpg` : undefined,
@@ -274,6 +284,29 @@ const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `
 <label for="username">Site name or email</label><input type="text" id="username" name="username" value="${esc(v.username)}" required autocapitalize="none" autocomplete="username">
 <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
 <button>Log in</button></form><p style="margin-top:10px"><a href="/forgot">Forgot your password?</a></p></section>`);
+
+const login2fa = (ctx, m, token) => layout(ctx, 'Log in', `
+<section class="box"><h2>Two-factor login</h2>${msg(m)}
+<form class="stack" method="post" action="/login/2fa"><input type="hidden" name="token" value="${esc(token)}">
+<label for="code">The 6-digit code from your authenticator app</label><input type="text" id="code" name="code" required autofocus inputmode="numeric" autocomplete="one-time-code">
+<button>Log in</button></form><p class="note">Lost your phone? Enter one of your recovery codes instead.</p></section>`, { noindex: true });
+
+// shortcut: the key is typed or tapped into the app, no QR code; add one if members ask (it needs a QR encoder)
+const twoFactor = (ctx, m, secret, uri) => layout(ctx, 'Two-factor login', `
+<section class="box"><h2>Turn on two-factor login</h2>${msg(m)}
+<ol><li>Open an authenticator app on your phone (Google Authenticator, Authy, 1Password, Bitwarden and others all work).</li>
+<li>Add an account by typing this key: <code>${secret.match(/.{4}/g).join(' ')}</code><br><span class="note">On your phone you can <a href="${esc(uri)}">tap here to add it</a> instead.</span></li>
+<li>Enter the 6-digit code the app shows.</li></ol>
+<form class="stack" method="post" action="/account/2fa/on">${csrfField(ctx)}<input type="hidden" name="secret" value="${esc(secret)}">
+<label for="code">Code from the app</label><input type="text" id="code" name="code" required inputmode="numeric" autocomplete="one-time-code">
+<label for="pw">Your password</label><input type="password" id="pw" name="password" required autocomplete="current-password">
+<button>Turn on</button></form><p><a href="/site/${esc(ctx.user.username)}#security">Cancel</a></p></section>`, { noindex: true });
+
+const recoveryCodes = (ctx, codes) => layout(ctx, 'Recovery codes', `
+<section class="box"><h2>Two-factor login is on</h2>
+<p>Save these recovery codes somewhere safe, like a password manager or on paper. If you lose your phone, each one logs you in once in place of a code from the app. This is the only time we show them.</p>
+<pre>${codes.join('\n')}</pre>
+<p><a href="/site/${esc(ctx.user.username)}#security">I saved them</a></p></section>`, { noindex: true });
 
 const forgot = (ctx, m) => layout(ctx, 'Reset password', `
 <section class="box"><h2>Reset your password</h2>${msg(m)}
@@ -803,4 +836,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };
+module.exports = { layout, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };
