@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
+const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -1280,16 +1281,21 @@ function useCode(user, raw) {
     db.prepare('UPDATE users SET totp_codes = ? WHERE id = ? AND totp_codes = ?').run(left.join('\n'), user.id, user.totp_codes).changes === 1;
 }
 const otpauth = (user, secret) => `otpauth://totp/${encodeURIComponent(`${cfg.SITE_NAME}:${user.username}`)}?secret=${secret}&issuer=${encodeURIComponent(cfg.SITE_NAME)}`;
-main.get('/account/2fa', auth, (req, res) => {
+// the setup page: the key as text, a link and a QR code, all for the same otpauth address
+const twoFactorPage = async (req, m, secret) => {
+  const uri = otpauth(req.ctx.user, secret);
+  return V.twoFactor(req.ctx, m, secret, uri, await QRCode.toString(uri, { type: 'svg', margin: 2 }));
+};
+main.get('/account/2fa', auth, async (req, res) => {
   if (req.ctx.user.totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
   const secret = U.newTotpSecret();
-  res.set('Cache-Control', 'no-store').send(V.twoFactor(req.ctx, null, secret, otpauth(req.ctx.user, secret)));
+  res.set('Cache-Control', 'no-store').send(await twoFactorPage(req, null, secret));
 });
 main.post('/account/2fa/on', auth, async (req, res) => {
   const user = req.ctx.user;
   const secret = String(req.body.secret || '');
   if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
-  const fail = (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(V.twoFactor(req.ctx, { err }, secret, otpauth(user, secret)));
+  const fail = async (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(await twoFactorPage(req, { err }, secret));
   if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
   if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still off.');
   const step = U.totpStep(secret, String(req.body.code || '').replace(/\D/g, ''));

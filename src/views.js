@@ -291,11 +291,12 @@ const login2fa = (ctx, m, token) => layout(ctx, 'Log in', `
 <label for="code">The 6-digit code from your authenticator app</label><input type="text" id="code" name="code" required autofocus inputmode="numeric" autocomplete="one-time-code">
 <button>Log in</button></form><p class="note">Lost your phone? Enter one of your recovery codes instead.</p></section>`, { noindex: true });
 
-// shortcut: the key is typed or tapped into the app, no QR code; add one if members ask (it needs a QR encoder)
-const twoFactor = (ctx, m, secret, uri) => layout(ctx, 'Two-factor login', `
+// qr is the SVG the qrcode package drew for uri: paths only, nothing a member typed
+const twoFactor = (ctx, m, secret, uri, qr) => layout(ctx, 'Two-factor login', `
 <section class="box"><h2>Turn on two-factor login</h2>${msg(m)}
 <ol><li>Open an authenticator app on your phone (Google Authenticator, Authy, 1Password, Bitwarden and others all work).</li>
-<li>Add an account by typing this key: <code>${secret.match(/.{4}/g).join(' ')}</code><br><span class="note">On your phone you can <a href="${esc(uri)}">tap here to add it</a> instead.</span></li>
+<li>Add an account by scanning this QR code with the app:<div role="img" aria-label="QR code for your two-factor key" style="width:200px;max-width:100%;margin:8px 0">${qr}</div>
+<span class="note">Can't scan it? Type this key instead: <code>${secret.match(/.{4}/g).join(' ')}</code>, or on your phone <a href="${esc(uri)}">tap here to add it</a>.</span></li>
 <li>Enter the 6-digit code the app shows.</li></ol>
 <form class="stack" method="post" action="/account/2fa/on">${csrfField(ctx)}<input type="hidden" name="secret" value="${esc(secret)}">
 <label for="code">Code from the app</label><input type="text" id="code" name="code" required inputmode="numeric" autocomplete="one-time-code">

@@ -1914,6 +1914,7 @@ test('two-factor login: turning it on, logging in with a code or a recovery code
   const step = () => Math.floor(Date.now() / 30000);
   const setup = await req('get', '/account/2fa').set('Cookie', m.cookie);
   assert.equal(setup.headers['cache-control'], 'no-store');
+  assert.match(setup.text, /aria-label="QR code for your two-factor key"[^>]*><svg [^]*<\/svg>/);
   const secret = setup.text.match(/name="secret" value="([A-Z2-7]{32})"/)[1];
   const on = (code, password = 'longpassword1') => post(m, '/account/2fa/on', { secret, code, password });
   assert.equal((await on(U.totp(secret, step() + 5))).status, 400);
