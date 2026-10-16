@@ -92,9 +92,9 @@ the checkout with the app running. It treats this as an upgrade (below) and leav
 ## Backups
 
 `scripts/backup.sh` takes a consistent copy of the database while the app runs, archives it with
-every member's files into `./backups`, and keeps the last 14. Set `BACKUP_REMOTE` to an
-[rclone](https://rclone.org) remote to copy the archives off the server too; the remote then keeps
-14 days and `./backups` only the last 3. Each archive is about the size of `data/sites`, and pictures
+every member's files into `./backups`, and keeps the last 3. Set `BACKUP_REMOTE` to an
+[rclone](https://rclone.org) remote to copy the archives off the server too; the remote keeps
+14 days. Each archive is about the size of `data/sites`, and pictures
 don't compress, so leave room for that many copies on the server's disk: once less than 5% is free,
 `/healthz` fails and uploads are turned away. The installer schedules it every night at 03:15,
 logging to `backups/backup.log`.

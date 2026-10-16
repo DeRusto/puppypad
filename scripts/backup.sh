@@ -2,8 +2,8 @@
 # Nightly backup of ./data: a consistent copy of the SQLite database plus every member's files.
 # Run from the host, next to docker-compose.yml. scripts/install.sh adds this crontab line (03:15 every night):
 #   15 3 * * * /srv/puppypad/scripts/backup.sh >> /srv/puppypad/backups/backup.log 2>&1
-# Keeps the last 14 archives in ./backups, or 3 when BACKUP_REMOTE is set (the remote keeps 14 days), since each
-# one is a full copy of every member's files on the same disk. To copy them off this server, install rclone,
+# Keeps the last 3 archives in ./backups, since each one is a full copy of every member's files on the same disk.
+# To copy them off this server (the remote keeps 14 days), install rclone,
 # configure a remote (Backblaze B2, Cloudflare R2, S3, ...) and set BACKUP_REMOTE (in .env or the environment),
 # e.g. "b2:my-bucket/puppypad".
 set -eu
@@ -26,12 +26,10 @@ tar -czf "backups/puppypad-$stamp.tar.gz" -C data backup.db sites shots || [ $? 
 docker compose run --rm -T --no-deps app rm -f /data/backup.db
 echo "wrote backups/puppypad-$stamp.tar.gz"
 
-prune() { ls -1t backups/puppypad-*.tar.gz | tail -n +$(($1 + 1)) | xargs -r rm --; }
-prune 14
+ls -1t backups/puppypad-*.tar.gz | tail -n +4 | xargs -r rm --
 
 if [ -n "${BACKUP_REMOTE:-}" ]; then
   rclone copy backups "$BACKUP_REMOTE" # copy, not sync: a wiped local folder must not delete the remote copies
   rclone delete "$BACKUP_REMOTE" --include 'puppypad-*.tar.gz' --min-age 14d # copy never prunes, so roll the remote over by hand
   echo "copied to $BACKUP_REMOTE"
-  prune 3 # only now that they are safely off the server; a failed copy stops above and keeps 14
 fi

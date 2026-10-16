@@ -114,7 +114,7 @@ test('installer: an upgrade that does not come up puts every file and .env value
   assert.match(fs.readFileSync(s.log, 'utf8'), /compose run --rm -T --no-deps app node/);
   assert.doesNotMatch(fs.readFileSync(s.log, 'utf8'), /compose exec -T app (node -e "require\('better|rm)/);
 
-  // with a remote, only the newest 3 archives stay on the server
+  // only the newest 3 archives stay on the server, and they are copied to the remote
   for (let i = 1; i <= 5; i++) {
     const f = path.join(s.root, `backups/puppypad-2000010${i}-0315.tar.gz`);
     fs.writeFileSync(f, '');

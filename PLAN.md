@@ -104,7 +104,7 @@ walking away.
 
 ### 2.6 ✅ Backups
 **Done:** `scripts/backup.sh` uses SQLite's online backup (safe while the app writes), archives it
-with `data/sites`, keeps 14 nightly archives, and syncs them off the server with rclone when
+with `data/sites`, keeps the last 3 nightly archives, and syncs them off the server with rclone when
 `BACKUP_REMOTE` is set. **Your step:** add the cron line, set up a remote, and test a restore once
 (steps in `docs/launch-checklist.md` §2).
 
