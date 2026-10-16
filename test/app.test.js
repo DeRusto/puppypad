@@ -1853,6 +1853,9 @@ test('the HTTP API: a per-member key uploads, lists, deletes and reads site info
   assert.ok(!fs.existsSync(path.join(process.env.DATA_DIR, 'sites', 'apidog', 'pics', 'old'))); // the empty folder goes too
   assert.equal((await call('post', '/api/delete', key).type('form').send({ path: 'nope.html' })).status, 404);
   assert.equal((await call('get', '/api/nothing', key)).status, 404);
+  const junk = await call('post', '/api/delete', key).set('Content-Type', 'application/json').send('{oops');
+  assert.equal(junk.status, 400);
+  assert.match(junk.body.error, /could not be read/);
 
   // a moderator take-down stops it; a restore brings it back
   db.prepare('UPDATE users SET banned = 1 WHERE username = ?').run('apidog');

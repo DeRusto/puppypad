@@ -1354,12 +1354,18 @@ api.post('/upload', tempBudget(20 * cfg.MAX_FILE_MB * 1048576), (req, res, next)
   } catch (e) { next(e); } finally { dropTemp(req.files || []); }
 }));
 api.post('/delete', express.urlencoded({ extended: false }), express.json(), (req, res) => {
+  if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
   const rel = U.safeRel(req.body?.path);
   if (!rel) return res.status(400).json({ error: 'Send the path of one file, like pics/cat.png.' });
   if (!deleteFile(req.ctx.user, rel)) return res.status(404).json({ error: `There is no file called ${rel}.` });
   res.json({ deleted: rel });
 });
 api.use((req, res) => res.status(404).json({ error: 'No such API endpoint. There are GET /api/site, GET /api/files, POST /api/upload and POST /api/delete.' }));
+// a bad body (malformed JSON, too big) answers in JSON with its own status, like every other API error
+api.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  if (!err.status || err.status >= 500) console.error(err);
+  res.status(err.status && err.status < 500 ? err.status : 500).json({ error: err.status && err.status < 500 ? 'That request body could not be read.' : 'Something broke on our side. Try again.' });
+});
 
 // ----- reports + admin -----
 main.get('/report', (req, res) => res.send(V.report(req.ctx, null, { site: String(req.query.site || '') })));
