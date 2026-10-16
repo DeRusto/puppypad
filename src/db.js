@@ -134,6 +134,8 @@ for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dir
 // owner_id: a supporter's extra site is its own row (files, stats and guestbook stay keyed by site) pointing at the login row that owns it; it has no password of its own
 // the API key's sha256; '' when the member has none
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key) WHERE api_key != ''");
+// sitesOf() and the cascade on deleting a login both look extra sites up by owner
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_owner ON users(owner_id)');
 // existing guestbooks start their first digest from now, not from every entry ever signed
 if (!cols.has('gb_digest_at')) db.prepare('UPDATE users SET gb_digest_at = ?').run(Date.now());
 // existing members' old followers are not news
