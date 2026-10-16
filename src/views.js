@@ -223,7 +223,7 @@ const notifications = (ctx, rows, seenAt) => {
   const box = (k, label) => `<label><input type="checkbox" name="${k}" value="1"${u.note_mail.split(' ').includes(k) ? ' checked' : ''}> ${label}</label>`;
   return layout(ctx, 'Notifications', `
 <section class="box"><h2>Notifications</h2>
-${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${esc(n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="/site/${esc(u.username)}">see it</a>`}</small></li>`).join('')}</ul>`
+${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt ? ' class="new"' : ''}><a href="/site/${esc(n.username)}">${esc(n.username)}</a> ${NOTE_LINE[n.kind]}${n.body ? `: "${esc(n.body)}"` : ''} <small>${ago(n.created_at)}${n.kind === 'follow' ? '' : ` | <a href="/site/${esc(u.username)}">see it</a>`}</small>${n.comment_id ? ` <form class="inline" method="post" action="/comment/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${n.comment_id}"><input type="hidden" name="back" value="notifications"><button class="link">delete</button></form>` : ''}</li>`).join('')}</ul>`
     : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}</section>
 <section class="box"><h2>Email me</h2>
 <form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(u.email)}.</p>

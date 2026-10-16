@@ -1561,8 +1561,13 @@ test('staff picks and the site of the week are set from /admin and shown on the 
   db.prepare("UPDATE users SET hidden = 1 WHERE username = 'picked'").run();
   assert.doesNotMatch((await req('get', '/')).text, /Site of the week|Staff picks/);
   db.prepare("UPDATE users SET hidden = 0 WHERE username = 'picked'").run();
+  // a taken-down site can still lose its pick
+  db.prepare("UPDATE users SET banned = 1 WHERE username = 'picked'").run();
   await post(boss, '/admin/feature', { site: 'picked', action: 'unpick' });
+  db.prepare("UPDATE users SET banned = 0 WHERE username = 'picked'").run();
+  assert.equal(db.prepare("SELECT staff_pick FROM users WHERE username = 'picked'").get().staff_pick, 0);
   await post(boss, '/admin/feature', { action: 'unsotw' });
+  assert.ok(db.prepare("SELECT 1 FROM admin_log WHERE action = 'clear site of the week' AND site = 'picked'").get());
   home = (await req('get', '/')).text;
   assert.doesNotMatch(home, /Site of the week|Staff picks/);
   assert.deepEqual(db.prepare("SELECT action FROM admin_log WHERE action IN ('staff pick', 'site of the week', 'remove staff pick') AND site = 'picked' ORDER BY id").all().map((r) => r.action), ['staff pick', 'site of the week', 'remove staff pick']);
@@ -1653,8 +1658,13 @@ test('notifications list new followers, comments and likes, email the kinds aske
   assert.match(list, /fan-b<\/a> commented on your site: "hello there"[^]*fan-a<\/a> liked your update[^]*fan-a<\/a> started following you/);
   assert.equal((list.match(/class="new"/g) || []).length, 3);
   assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', me.cookie)).text, /Notifications \(/);
+  // the owner can delete a comment from here, even on an update too old to show on the profile
+  const cid = db.prepare("SELECT id FROM comments WHERE body = 'hello there'").get().id;
+  assert.match(list, new RegExp(`name="id" value="${cid}"><input type="hidden" name="back" value="notifications">`));
   await post(me, '/block', { site: 'fan-b' });
   assert.doesNotMatch((await req('get', '/notifications').set('Cookie', me.cookie)).text, /fan-b/);
+  assert.equal((await post(me, '/comment/delete', { id: cid, back: 'notifications' })).headers.location, '/notifications');
+  assert.equal(db.prepare('SELECT 1 FROM comments WHERE id = ?').get(cid), undefined);
 });
 
 test('the weekly digest emails updates from followed sites to members who opted in, once a week', async () => {

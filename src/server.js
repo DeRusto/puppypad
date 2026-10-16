@@ -537,9 +537,9 @@ function withSocial(events, viewer) {
 }
 // a member's notifications, worked out from the follows, comments and likes themselves, so deletes and blocks apply at once
 const notes = (user, cols, since = 0, tail = '') => db.prepare(`SELECT ${cols} FROM (
-    SELECT 'follow' kind, follower_id actor, NULL event_id, '' body, created_at FROM follows WHERE followed_id = @me
-    UNION ALL SELECT 'comment', author_id, event_id, body, created_at FROM comments WHERE user_id = @me
-    UNION ALL SELECT 'like', l.user_id, l.event_id, '', l.created_at FROM likes l JOIN events e ON e.id = l.event_id WHERE e.user_id = @me
+    SELECT 'follow' kind, follower_id actor, NULL event_id, NULL comment_id, '' body, created_at FROM follows WHERE followed_id = @me
+    UNION ALL SELECT 'comment', author_id, event_id, id, body, created_at FROM comments WHERE user_id = @me
+    UNION ALL SELECT 'like', l.user_id, l.event_id, NULL, '', l.created_at FROM likes l JOIN events e ON e.id = l.event_id WHERE e.user_id = @me
   ) n JOIN users u ON u.id = n.actor
   WHERE ${LIVE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me) AND n.created_at > @since ${tail}`).bind({ me: user.id, since });
 const NOTE_KINDS = ['follow', 'comment', 'like'];
@@ -550,8 +550,8 @@ function notify(owner, actor, kind, extra = '') {
   sendMail(owner.email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
     `${actor.username} ${NOTE_TEXT[kind]}.${extra ? `\n\n${extra}` : ''}\n\nSee your notifications, or change which ones we email you about: ${cfg.BASE_URL}/notifications`);
 }
-// a comment or like lands back where it was made: the feed, or the profile
-const backTo = (req, owner) => (req.body.back === 'feed' ? '/feed' : `/site/${owner.username}`);
+// a comment or like lands back where it was made: the feed, the notifications (where owners can delete comments on updates too old for their profile), or the profile
+const backTo = (req, owner) => ({ feed: '/feed', notifications: '/notifications' }[req.body.back] || `/site/${owner.username}`);
 // the event a comment or like is about, with its site's owner; null unless both are live
 const eventOwner = (id) => {
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(Number(id) || 0);
@@ -1282,10 +1282,12 @@ main.post('/admin/feature', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   const action = req.body.action;
   if (action === 'unsotw') {
-    db.prepare('UPDATE users SET sotw_at = 0').run();
+    const was = db.prepare('SELECT username FROM users WHERE sotw_at > 0').get();
+    if (was) db.transaction(() => { db.prepare('UPDATE users SET sotw_at = 0').run(); adminLog(req, 'clear site of the week', was.username); })();
     return showAdmin(req, res, { ok: 'No site of the week now.' });
   }
-  if (!target || !target.verified || target.banned) return showAdmin(req, res, { err: 'No live site with that name.' });
+  // a pick can be removed from a site that was taken down since, so it doesn't come back with a restore
+  if (!target || (action !== 'unpick' && (!target.verified || target.banned))) return showAdmin(req, res, { err: 'No live site with that name.' });
   const set = {
     pick: ['staff pick', 'UPDATE users SET staff_pick = @t WHERE id = @id', `${target.username} is a staff pick.`],
     unpick: ['remove staff pick', 'UPDATE users SET staff_pick = 0 WHERE id = @id', `${target.username} is no longer a staff pick.`],
