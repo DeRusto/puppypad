@@ -291,14 +291,19 @@ const GB_LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz
 const gbEntryText = (e) => `${e.name} wrote:\n${e.message}${e.approved ? '' : '\n(This entry has a link, so it waits for your approval.)'}`;
 const gbMailFooter = `Approve or delete entries, or change how often we email you about them: ${cfg.BASE_URL}/dashboard/guestbook`;
 const GB_NOTIFY = ['instant', 'daily', 'off'];
-const gbRows = (id) => db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND approved = 1 ORDER BY id DESC LIMIT 50').all(id);
-site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbRows(req.owner.id), '', W.gbTheme(req.query.theme))));
+// one page of a guestbook, newest first: the approved entries visitors see, or all of them for the owner
+function gbPage(req, id, all = false) {
+  const from = `FROM guestbook WHERE user_id = ?${all ? '' : ' AND approved = 1'}`;
+  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${from}`).get(id).n);
+  return { rows: db.prepare(`SELECT * ${from} ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(id), page, pages };
+}
+site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbPage(req, req.owner.id), '', W.gbTheme(req.query.theme))));
 site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 40);
   const message = String(req.body.message || '').trim().slice(0, 500);
   const theme = W.gbTheme(req.query.theme);
   const back = `/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`;
-  const fail = (code, err) => res.status(code).send(V.guestbook(gbRows(req.owner.id), err, theme));
+  const fail = (code, err) => res.status(code).send(V.guestbook(gbPage(req, req.owner.id), err, theme));
   if (req.body.website) return res.redirect(back); // bot filled the hidden field
   if (!name || !message) return fail(400, 'Name and message are both required.');
   if (!U.limit(`gb:${req.ip}`, 3, 600000)) return fail(429, 'Too many entries from you. Try again in ten minutes.');
@@ -878,7 +883,8 @@ function showDashboard(req, res, m, status = 200) {
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
-main.get('/dashboard', auth, (req, res) => showDashboard(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
+const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null);
+main.get('/dashboard', auth, (req, res) => showDashboard(req, res, msgOf(req)));
 
 // The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
 const uploadRel = (dir, name) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'));
@@ -975,7 +981,7 @@ async function importZip(req, res, err) {
   if (!U.limit(`import:${req.ctx.user.id}`, 10, 3600000)) return showDashboard(req, res, { err: 'That is a lot of imports. Try again in an hour.' }, 429);
   let zip;
   try {
-    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: cfg.QUOTA_MB * 1048576, allowed: (name) => !!uploadRel(dir, name) });
+    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: cfg.MAX_FILE_MB * 1048576, maxTotalBytes: quotaMB(req.ctx.user) * 1048576, allowed: (name) => !!uploadRel(dir, name) });
   } catch (e) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }
@@ -1051,8 +1057,7 @@ main.get('/dashboard/style', auth, canEdit, async (req, res) => {
   const css = readText(path.join(root, 'puppypad.css'));
   const index = readText(path.join(root, 'index.html'));
   const preset = Object.hasOwn(style.PRESETS, req.query.preset) ? style.PRESETS[req.query.preset] : null;
-  const m = req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null;
-  res.send(V.styleEditor(req.ctx, m, {
+  res.send(V.styleEditor(req.ctx, msgOf(req), {
     s: style.clean(preset) || style.parse(css) || style.clean(style.PRESETS.sky),
     page: index ?? starters.render(user.starter, user.username, cfg),
     tail: style.tail(css),
@@ -1091,17 +1096,8 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   const exists = hasIndex(user);
   if (exists && req.body.confirm !== '1') return res.send(V.starterConfirm(req.ctx, req.body.starter));
   if (!U.limit(`starter:${user.id}`, 20, 3600000)) return showDashboard(req, res, { err: 'That is a lot of fresh starts. Try again in an hour.' }, 429);
-  const content = starters.render(req.body.starter, user.username, cfg);
-  const dirSize = usage(user.username);
-  const old = exists ? fs.statSync(full).size : 0;
-  if (!exists && dirSize.count >= MAX_FILES) return showDashboard(req, res, { err: `Your site already has ${MAX_FILES} files, the most we keep. Delete one first.` }, 400);
-  if (dirSize.total - old + Buffer.byteLength(content) > quotaMB(user) * 1048576) return showDashboard(req, res, { err: `That would go over your ${quotaMB(user)} MB limit. Free up some space first.` }, 400);
-  try {
-    writeAtomic(full, content);
-  } catch {
-    return showDashboard(req, res, { err: 'Could not write index.html: a folder with that name is in the way.' }, 400);
-  }
-  usageCache.set(user.username, { total: dirSize.total - old + Buffer.byteLength(content), count: dirSize.count + (exists ? 0 : 1) });
+  const err = saveText(user, full, starters.render(req.body.starter, user.username, cfg));
+  if (err) return showDashboard(req, res, { err: `Not made: ${err}.` }, 400);
   // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
   db.prepare('UPDATE users SET shot_dirty = 1, starter = ? WHERE id = ?').run(req.body.starter, user.id);
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
@@ -1228,11 +1224,12 @@ main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET hidden = ? WHERE id = ?').run(hide ? 1 : 0, req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent(hide ? 'Your site is hidden from browsing.' : 'Your site is back in the listings.')}`);
 });
-main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null,
-  db.prepare('SELECT * FROM guestbook WHERE user_id = ? ORDER BY id DESC LIMIT 500').all(req.ctx.user.id), lines(req.ctx.user.gb_ips))));
+main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null, gbPage(req, req.ctx.user.id, true), lines(req.ctx.user.gb_ips))));
+// an entry's buttons send the page they were on, so the owner lands back there
+const gbBack = (req) => `/dashboard/guestbook${Number(req.body.page) > 1 ? `?page=${Number(req.body.page)}` : ''}`;
 main.post('/dashboard/guestbook/approve', auth, (req, res) => {
   db.prepare('UPDATE guestbook SET approved = 1 WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
-  res.redirect('/dashboard/guestbook');
+  res.redirect(gbBack(req));
 });
 main.post('/dashboard/guestbook/notify', auth, (req, res) => {
   // the digest restarts from now, so switching from instant never repeats entries already mailed
@@ -1252,7 +1249,7 @@ main.post('/dashboard/guestbook/block-ip', auth, (req, res) => {
   const e = db.prepare('SELECT ip FROM guestbook WHERE id = ? AND user_id = ?').get(Number(req.body.id) || 0, req.ctx.user.id);
   const ips = lines(req.ctx.user.gb_ips);
   if (e && e.ip && !ips.includes(e.ip)) setIps(req.ctx.user.id, [...ips, e.ip]);
-  res.redirect('/dashboard/guestbook');
+  res.redirect(gbBack(req));
 });
 main.post('/dashboard/guestbook/unblock-ip', auth, (req, res) => {
   setIps(req.ctx.user.id, lines(req.ctx.user.gb_ips).filter((ip) => ip !== req.body.ip));
@@ -1260,7 +1257,7 @@ main.post('/dashboard/guestbook/unblock-ip', auth, (req, res) => {
 });
 main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
-  res.redirect('/dashboard/guestbook');
+  res.redirect(gbBack(req));
 });
 main.post('/account/password', auth, async (req, res) => {
   const user = ownerRow(req.ctx.user); // an extra site has no password, email or 2FA of its own
@@ -1414,7 +1411,6 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
 });
 
 // ----- widgets -----
-const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null);
 main.get('/dashboard/widgets', auth, async (req, res) => res.send(V.widgets(req.ctx, msgOf(req), {
   groups: W.groups(cfg, req.ctx.user),
   pages: (await U.listFiles(siteDir(req.ctx.user.username))).filter((f) => /\.html?$/i.test(f)).sort(),
@@ -1544,16 +1540,18 @@ const showAdmin = (req, res, m) => {
   const users = q
     ? db.prepare('SELECT * FROM users WHERE instr(lower(username), lower(@q)) OR instr(lower(email), lower(@q)) OR signup_ip = @q ORDER BY id DESC LIMIT 50').all({ q })
     : db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all();
+  const open = db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n;
+  const { page, pages } = pageOf(req, open, 'rpage');
   res.send(V.admin(req.ctx, m, {
     q,
-    reports: db.prepare("SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all(),
+    reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
     users: users.map((u) => ({ ...u, disk: usage(u.username).total, bandwidth: bwToday(u) })),
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
       banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned > 0').get().n,
-      open: db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n,
+      open,
     },
     upgrade: upgrade.readState(DATA_DIR),
     sotw: db.prepare('SELECT username FROM users WHERE sotw_at > 0').get(),
@@ -1561,7 +1559,7 @@ const showAdmin = (req, res, m) => {
   }));
 };
 // ?ok= and ?err= carry the result of an upgrade request, redirected so a reload never re-sends the form
-main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res, req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null));
+main.get('/admin', auth, adminOnly, (req, res) => showAdmin(req, res, msgOf(req)));
 // asks scripts/upgrade-watch.sh on the host to look for a new version or install one (see src/upgrade.js)
 main.post('/admin/upgrade', auth, adminOnly, (req, res) => {
   const back = (kind, text) => res.redirect(`/admin?${kind}=${encodeURIComponent(text)}`);

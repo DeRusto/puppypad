@@ -640,11 +640,11 @@ const move = (ctx, m, { from, to, dir }) => {
 <p><a href="/dashboard?dir=${encodeURIComponent(back)}">Back to files</a></p></section>`);
 };
 
-const guestbookAdmin = (ctx, m, rows, blocked = []) => layout(ctx, 'Guestbook entries', `
+const guestbookAdmin = (ctx, m, { rows, page, pages }, blocked = []) => layout(ctx, 'Guestbook entries', `
 <section class="box"><h2>Guestbook entries</h2>${msg(m)}<p><a href="/dashboard">Back to my site</a></p>
 <div class="scroll"><table><tr><th>When</th><th>Name</th><th>Message</th><th></th></tr>
-${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
-</table></div>
+${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="page" value="${page}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="page" value="${page}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="page" value="${page}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
+</table></div>${pager((n) => `/dashboard/guestbook?page=${n}`, page, pages)}
 <h3>Email me about new entries</h3>
 <form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.login.email)}. Entries waiting for your approval are marked.</label>
 <select id="gn" name="notify">${[['instant', 'Right away, one email per entry'], ['daily', 'Once a day, a digest'], ['off', 'Never']].map(([v, l]) => `<option value="${v}"${ctx.user.gb_notify === v ? ' selected' : ''}>${l}</option>`).join('')}</select><button>Save</button></form>
@@ -783,8 +783,8 @@ ${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll"
 const admin = (ctx, m, { q, reports, users, signups, stats, log, upgrade, sotw, picks }) => layout(ctx, 'Admin', `
 <section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.open} open reports.</p>
 <h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
-${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
-<td><form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">close</button></form></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>
+${reports.rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
+<td><form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">close</button></form></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>${pager((n) => `/admin?${q ? `q=${encodeURIComponent(q)}&` : ''}rpage=${n}`, reports.page, reports.pages)}
 <h3>Take a site down or restore it</h3>
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}<label for="bsite">Site name</label><input type="text" id="bsite" name="site" required>
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
@@ -817,11 +817,12 @@ button{font:700 14px "Comic Sans MS",cursive;background:#ffe14d;color:#14264f;bo
 const sitePage = (cfg, title, html) => bare(title, `<h1>${esc(title)}</h1>${html}<p><a href="${esc(cfg.BASE_URL)}">${esc(cfg.SITE_NAME)}</a></p>`);
 
 // theme is one of W.GB_THEMES; its CSS goes after the base look
-const guestbook = (rows, err, theme = 'classic') => bare('Guestbook', `${W.GB_THEMES[theme].css ? `<style>${W.GB_THEMES[theme].css}</style>` : ''}<h1>Sign the guestbook</h1>${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}
+const guestbook = ({ rows, page, pages }, err, theme = 'classic') => bare('Guestbook', `${W.GB_THEMES[theme].css ? `<style>${W.GB_THEMES[theme].css}</style>` : ''}<h1>Sign the guestbook</h1>${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}
 <form method="post" action="/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}"><label for="n">Name</label><input id="n" name="name" maxlength="40" required>
 <label for="m">Message</label><textarea id="m" name="message" rows="3" maxlength="500" required></textarea>
 <div class="hp" aria-hidden="true"><input name="website" tabindex="-1" autocomplete="off"></div><button>Sign it!</button></form>
-${rows.map((r) => `<div class="e"><small>${esc(r.name)} wrote ${ago(r.created_at)}:</small><div>${esc(r.message)}</div></div>`).join('') || '<p>No entries yet. Be the first!</p>'}`);
+${rows.map((r) => `<div class="e"><small>${esc(r.name)} wrote ${ago(r.created_at)}:</small><div>${esc(r.message)}</div></div>`).join('') || '<p>No entries yet. Be the first!</p>'}
+${pager((n) => `/_hw/guestbook?${theme === 'classic' ? '' : `theme=${theme}&`}page=${n}`, page, pages)}`);
 
 // one entry per feed event; the five characters esc() replaces are the ones XML needs escaped too
 const atom = (cfg, { title, path, link, events }) => {
