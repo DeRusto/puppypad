@@ -28,7 +28,10 @@ deleted site's name is held for 90 days.
 **Serving.** Each site is served on its own subdomain, with clean URLs (`/about` serves `about.html`)
 and an optional custom `not_found.html`. Members see views per page per day and the sites visitors
 came from for the last 30 days, counted without cookies or IP addresses. A member can rename their
-site once every `RENAME_DAYS` (30 by default); the old address redirects for the 90 days it is held. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
+site once every `RENAME_DAYS` (30 by default); the old address redirects for the 90 days it is held.
+Every save of a page or other text file is kept in a git repository per site under `data/history` for
+`HISTORY_DAYS` (30; `SUPPORTER_HISTORY_DAYS`, 365, for supporters), so a member can look at an old version,
+put it back, or bring back a deleted file from the dashboard. Pictures are not kept. Built-in widgets: `/_hw/counter.svg`, `/_hw/guestbook`
 (the owner can delete entries, and is emailed about new ones right away, in a daily digest or not at
 all, and themed with `?theme=`), `/_hw/updated.svg`, `/_hw/status.svg`, webring prev/next/random links,
 88×31 buttons, stamps and two effect scripts, all handed out as snippets on `/dashboard/widgets`. The
@@ -103,6 +106,9 @@ To restore: `docker compose stop app`, delete `data/puppypad.db-wal` and `data/p
 (left over, they would be replayed onto the restored database and corrupt it), unpack an archive
 into `./data`, rename `backup.db` to `puppypad.db`, and `docker compose start app`.
 `docs/launch-checklist.md` has a restore test that doesn't touch the live data.
+
+The archives leave out `data/history`: members' file history covers their own mistakes between backups,
+and the app starts a fresh history for any site restored without one.
 
 ## Releases and upgrades
 

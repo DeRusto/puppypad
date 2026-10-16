@@ -401,7 +401,7 @@ function dashboard(ctx, m, d) {
       const mv = user.banned ? '' : `<a href="/dashboard/move?path=${encodeURIComponent(rel)}">rename/move</a>`;
       if (e.dir) return `<tr><td><a href="/dashboard?dir=${encodeURIComponent(rel)}">[${esc(e.name)}]</a></td><td class="num">folder</td><td>${mv}</td></tr>`;
       return `<tr><td><a href="${esc(url)}/${esc(rel)}" target="_blank">${esc(e.name)}</a></td><td class="num">${fmtBytes(e.size)}</td><td>
-${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURIComponent(rel)}">edit</a> | ` : ''}${mv ? `${mv} | ` : ''}
+${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURIComponent(rel)}">edit</a> | <a href="/dashboard/history/file?path=${encodeURIComponent(rel)}">history</a> | ` : ''}${mv ? `${mv} | ` : ''}
 <form class="inline" method="post" action="/dashboard/delete">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}"><button class="link">delete</button></form></td></tr>`;
     }),
   ].join('');
@@ -410,7 +410,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
 ${d.canAdd ? `<form class="stack" method="post" action="/dashboard/sites/new">${csrfField(ctx)}<label for="newsite">Add another site to this login (supporters, up to 5)</label><input type="text" id="newsite" name="username" required maxlength="30"><button>Add site</button></form>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
+<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/history">bring back deleted files</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a></p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
@@ -505,7 +505,7 @@ const editor = (ctx, m, { rel, content, isNew, images = [], insert = null }) => 
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
 ${isHtml && insert ? `<div class="note"><button type="button" id="insert">Insert the ${esc(insert.name)} at the cursor</button> Click where it should go in the code first, then save.</div>` : ''}
 ${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images at the cursor</label> <select id="imgpick"><option value="">Pick an image...</option>${images.map((i) => `<option>${esc(i)}</option>`).join('')}</select></div>` : ''}
-<div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a></div></form></section>
+<div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a>${isNew ? '' : ` | <a href="/dashboard/history/file?path=${encodeURIComponent(rel)}">Older versions</a>`}</div></form></section>
 ${CM_JS.map((f) => `<script src="${CM}/${f}"></script>`).join('')}
 <script>(function(){
 var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
@@ -639,6 +639,27 @@ const move = (ctx, m, { from, to, dir }) => {
 <p class="note">Links to the old address stop working, so update any pages that point here.</p>
 <p><a href="/dashboard?dir=${encodeURIComponent(back)}">Back to files</a></p></section>`);
 };
+
+// file history: what is kept, every version of one file, and deleted files to bring back
+const keptNote = (days) => `<p class="note">Every save of a page or other text file is kept for ${days} days, so you can look back and put an old version back. Pictures and other files are not kept.</p>`;
+const date = (t) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+const restoreForm = (ctx, rel, sha, label) => `<form class="inline" method="post" action="/dashboard/history/restore">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}"><input type="hidden" name="v" value="${esc(sha)}"><button class="link">${label}</button></form>`;
+const viewLink = (rel, sha) => `<a href="/dashboard/history/view?path=${encodeURIComponent(rel)}&amp;v=${esc(sha)}" target="_blank">view</a>`;
+const history = (ctx, m, { rel, rows, page, pages, exists, days }) => {
+  const dir = rel.split('/').slice(0, -1).join('/');
+  return layout(ctx, `History of ${rel}`, `
+<section class="box"><h2>History: ${esc(rel)}</h2>${msg(m)}${keptNote(days)}
+<div class="scroll"><table><tr><th>Saved</th><th></th></tr>
+${rows.map((r, i) => `<tr><td>${date(r.t)} <small>(${ago(r.t)})</small></td><td>${viewLink(rel, r.sha)}${exists && page === 1 && i === 0 ? ' | current version' : ctx.user.banned ? '' : ` | ${restoreForm(ctx, rel, r.sha, 'put this version back')}`}</td></tr>`).join('') || '<tr><td colspan="2">No versions kept yet.</td></tr>'}
+</table></div>${pager((n) => `/dashboard/history/file?path=${encodeURIComponent(rel)}&page=${n}`, page, pages)}
+<p>${exists ? `<a href="/dashboard/edit?path=${encodeURIComponent(rel)}">Edit ${esc(rel)}</a> | ` : ''}<a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="/dashboard/history">Deleted files</a></p></section>`);
+};
+const historyDeleted = (ctx, m, { rows, page, pages, days }) => layout(ctx, 'Deleted files', `
+<section class="box"><h2>Deleted files</h2>${msg(m)}${keptNote(days)}
+<div class="scroll"><table><tr><th>File</th><th>Deleted</th><th></th></tr>
+${rows.map((r) => `<tr><td>${esc(r.rel)}</td><td>${date(r.t)} <small>(${ago(r.t)})</small></td><td>${viewLink(r.rel, r.sha)} | <a href="/dashboard/history/file?path=${encodeURIComponent(r.rel)}">history</a>${ctx.user.banned ? '' : ` | ${restoreForm(ctx, r.rel, r.sha, 'bring back')}`}</td></tr>`).join('') || '<tr><td colspan="3">Nothing deleted lately.</td></tr>'}
+</table></div>${pager((n) => `/dashboard/history?page=${n}`, page, pages)}
+<p><a href="/dashboard">Back to my site</a></p></section>`);
 
 const guestbookAdmin = (ctx, m, { rows, page, pages }, blocked = []) => layout(ctx, 'Guestbook entries', `
 <section class="box"><h2>Guestbook entries</h2>${msg(m)}<p><a href="/dashboard">Back to my site</a></p>
@@ -839,4 +860,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { CM, layout, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };

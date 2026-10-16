@@ -2118,3 +2118,54 @@ test('guestbooks and the report queue page through every entry, so none is out o
   assert.match(queue.text, /report 0\b/);
   assert.doesNotMatch(queue.text, /report 59\b/);
 });
+
+test('file history keeps each save of a text file, puts old versions back and brings deleted files back', async () => {
+  const m = await member('historian');
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get('historian');
+  const tree = path.join(process.env.DATA_DIR, 'sites', 'historian');
+  const H = require('../src/history');
+  // commits run in the background after each save; wait until the page shows what is expected
+  const until = async (url, re) => {
+    for (let i = 0; i < 100; i++) {
+      const res = await req('get', url).set('Cookie', m.cookie);
+      if (re.test(res.text)) return res;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.fail(`${url} never matched ${re}`);
+  };
+  const save = (content) => post(m, '/dashboard/save', { path: 'a.html', content });
+  await save('<p>first</p>');
+  await until('/dashboard/history/file?path=a.html', /current version/);
+  await save('<p>second</p>');
+  const page = await until('/dashboard/history/file?path=a.html', /put this version back/);
+  const old = page.text.match(/name="v" value="([0-9a-f]{40})"/)[1];
+  const view = await req('get', `/dashboard/history/view?path=a.html&v=${old}`).set('Cookie', m.cookie);
+  assert.equal(view.text, '<p>first</p>');
+  assert.match(view.headers['content-type'], /text\/plain/);
+  const back = await post(m, '/dashboard/history/restore', { path: 'a.html', v: old });
+  assert.match(back.headers.location, /ok=Restored/);
+  assert.equal(fs.readFileSync(path.join(tree, 'a.html'), 'utf8'), '<p>first</p>');
+  // the signup's starter page was kept before any edit
+  assert.ok((await H.versions(user.id, tree, 'index.html', 0, 10)).total >= 1);
+  // deleted files are listed and come back
+  await until('/dashboard/history/file?path=a.html', /current version/);
+  await post(m, '/dashboard/delete', { path: 'a.html' });
+  const gone = await until('/dashboard/history', /<td>a\.html<\/td>/);
+  const before = gone.text.match(/name="v" value="([0-9a-f]{40})"/)[1];
+  await post(m, '/dashboard/history/restore', { path: 'a.html', v: before });
+  assert.equal(fs.readFileSync(path.join(tree, 'a.html'), 'utf8'), '<p>first</p>');
+  // pictures are not kept, and nobody reads another site's versions or a made-up one
+  await upload(m, 'cat.png', 'png');
+  assert.equal((await req('get', '/dashboard/history/file?path=cat.png').set('Cookie', m.cookie)).status, 400);
+  assert.equal((await req('get', '/dashboard/history/view?path=a.html&v=HEAD').set('Cookie', m.cookie)).status, 404);
+  // trimming forgets versions older than the cutoff but always keeps the newest, and keeps the repository small
+  await until('/dashboard/history/file?path=a.html', /current version/);
+  await H.trim(user.id, tree, { since: Date.now() + 1000, maxBytes: 1 << 20 });
+  const left = await H.versions(user.id, tree, 'a.html', 0, 10);
+  assert.equal(left.total, 1);
+  assert.equal((await H.show(user.id, tree, left.rows[0].sha, 'a.html')).toString(), '<p>first</p>');
+  assert.equal((await H.versions(user.id, tree, 'cat.png', 0, 10)).total, 0);
+  // deleting the account deletes its history
+  await post(m, '/dashboard/delete-account', { password: 'longpassword1' });
+  assert.ok(!H.exists(user.id));
+});

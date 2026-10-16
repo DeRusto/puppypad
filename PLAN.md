@@ -199,7 +199,8 @@ signup. **Your step:** read both pages and make them match how you run things
   Action in Phase C are thin clients over it.
 
 **Phase C — growth (later)**
-- File version history (keep the last N versions per file under `data/history`).
+- ✅ File version history: a git repository per site under `data/history` keeps every save of a text file for
+  `HISTORY_DAYS` (`SUPPORTER_HISTORY_DAYS` for supporters); the dashboard views, restores and brings back deleted files.
 - Custom domains: the member adds a CNAME, the app verifies a TXT record, and the existing
   `/internal/tls-check` + on-demand TLS path issues the certificate.
 - CLI/WebDAV or Git push for members who prefer local editors. The CLI and a GitHub deploy Action
@@ -274,7 +275,7 @@ never features taken away from free members.
   supporter numbers when the tier launches).
 - Any file type, past the free allowlist (still served with `nosniff` and checked by the phishing flags).
 - Custom domain (Phase C) is supporter-only, since each one is a certificate and support load.
-- Longer file version history once that exists (Phase C).
+- Longer file version history (`SUPPORTER_HISTORY_DAYS`, 365 days by default against 30).
 - Cosmetic flair wherever their site is listed:
   - A special border around their screenshot on the dog park (`/browse`), the home page's
     "Fresh accidents" list and the follow feed: a `supporter` class on the card in `cards()` in

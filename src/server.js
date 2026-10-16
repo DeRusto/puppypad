@@ -13,6 +13,7 @@ const starters = require('./starters');
 const style = require('./style');
 const upgrade = require('./upgrade');
 const W = require('./widgets');
+const H = require('./history');
 
 // ---------- config ----------
 const env = process.env;
@@ -32,6 +33,8 @@ const cfg = {
   ZIP_MAX_MB: Number(env.ZIP_MAX_MB || 20),
   BANDWIDTH_MB: Number(env.BANDWIDTH_MB || 1024), // per site per UTC day
   RENAME_DAYS: Number(env.RENAME_DAYS || 30), // a member renames their site at most once this often
+  HISTORY_DAYS: Number(env.HISTORY_DAYS || 30), // how long old versions of text files are kept
+  SUPPORTER_HISTORY_DAYS: Number(env.SUPPORTER_HISTORY_DAYS || 365),
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
@@ -93,6 +96,8 @@ const q = {
 const eventFiles = (old, rels) => [...new Set([...rels, ...lines(old)])].slice(0, 50).join('\n');
 function markUpdated(userId, rels = []) {
   const t = now();
+  const u = q.userById.get(userId);
+  if (u) recordHistory(u, rels.join(' ') || 'change');
   db.prepare('UPDATE users SET updated_at = ?, shot_dirty = 1 WHERE id = ?').run(t, userId);
   const last = db.prepare("SELECT id, created_at, files FROM events WHERE user_id = ? AND kind = 'update' ORDER BY id DESC LIMIT 1").get(userId);
   if (last && t - last.created_at < 3600000) {
@@ -195,10 +200,11 @@ function deleteAccountRows(user) {
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
 }
 function deleteAccount(user, rows = deleteAccountRows) {
-  const extra = db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id);
+  const extra = db.prepare('SELECT id, username FROM users WHERE owner_id = ?').all(user.id);
   rows(user);
-  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); }
+  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); H.remove(s.id); }
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
+  H.remove(user.id);
   fs.rmSync(shotPath(user.username), { force: true });
   usageCache.delete(user.username);
 }
@@ -217,6 +223,18 @@ async function refreshUsage() {
       // a write during the walk already stored newer totals, which the walk may have missed
       if (usageCache.get(username) === before) usageCache.set(username, fresh);
     } catch { usageCache.delete(username); } // changed while walked: the next look rewalks
+  }
+}
+// file history (src/history.js): old versions stay for HISTORY_DAYS, longer for supporters, and take at most the site's quota again
+const historyDays = (user) => (isSupporter(ownerRow(user)) ? cfg.SUPPORTER_HISTORY_DAYS : cfg.HISTORY_DAYS);
+const historyKeep = (user) => ({ since: now() - historyDays(user) * DAY, maxBytes: quotaMB(user) * 1048576 });
+// history is a convenience: a failure is logged, never shown to the member or allowed to fail their save
+const recordHistory = (user, message) => H.record(user.id, siteDir(user.username), message, historyKeep(user)).catch((e) => console.error(`file history for ${user.username} failed:`, e.message));
+// a starting point for sites that have none yet (new, or here before history was), and the daily trim for the rest
+async function historySweep() {
+  for (const u of db.prepare('SELECT * FROM users').all()) {
+    if (!H.exists(u.id)) await recordHistory(u, 'history begins');
+    else await H.trim(u.id, siteDir(u.username), historyKeep(u)).catch((e) => console.error(`file history trim for ${u.username} failed:`, e.message));
   }
 }
 // resolve a member path inside their folder, or null
@@ -784,6 +802,8 @@ main.post('/signup', async (req, res) => {
   try {
     fs.mkdirSync(siteDir(username), { recursive: true });
     fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
+    H.remove(id); // ids are reused after the newest account goes; never hand over someone else's versions
+    recordHistory(q.userById.get(id), 'history begins');
   } catch {
     try { deleteAccount(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
     return fail('Something went wrong making your site. Try again.', 500);
@@ -1102,6 +1122,7 @@ main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   if (err) return showDashboard(req, res, { err: `Not made: ${err}.` }, 400);
   // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
   db.prepare('UPDATE users SET shot_dirty = 1, starter = ? WHERE id = ?').run(req.body.starter, user.id);
+  recordHistory(user, 'starter');
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
   res.redirect(`/dashboard?ok=${encodeURIComponent(`${exists ? 'Replaced' : 'Made'} your front page (index.html) from the ${name} starter.`)}`);
 });
@@ -1164,6 +1185,42 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   const parent = to.split('/').slice(0, -1).join('/');
   res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
 });
+// file history: deleted files to bring back, every kept version of one file, and putting an old version back
+main.get('/dashboard/history', auth, async (req, res) => {
+  const user = req.ctx.user;
+  const all = await H.deleted(user.id, siteDir(user.username));
+  const { page, pages } = pageOf(req, all.length);
+  res.send(V.historyDeleted(req.ctx, msgOf(req), { rows: all.slice((page - 1) * PER_PAGE, page * PER_PAGE), page, pages, days: historyDays(user) }));
+});
+main.get('/dashboard/history/file', auth, async (req, res) => {
+  const user = req.ctx.user;
+  const rel = U.safeRel(req.query.path);
+  if (!rel || !U.TEXT_EXT.has(U.extOf(rel))) return showDashboard(req, res, { err: 'Only pages and other text files have a history.' }, 400);
+  const tree = siteDir(user.username);
+  const { page, pages } = pageOf(req, (await H.versions(user.id, tree, rel, 0, 0)).total);
+  const { rows } = await H.versions(user.id, tree, rel, (page - 1) * PER_PAGE, PER_PAGE);
+  res.send(V.history(req.ctx, msgOf(req), { rel, rows, page, pages, exists: fs.existsSync(path.join(tree, rel)), days: historyDays(user) }));
+});
+main.get('/dashboard/history/view', auth, async (req, res) => {
+  const rel = U.safeRel(req.query.path);
+  const old = rel && await H.show(req.ctx.user.id, siteDir(req.ctx.user.username), req.query.v, rel);
+  if (!old) return res.status(404).type('text').send('That version is not kept any more.');
+  // as plain text, so an old page shows its code and runs nothing on the main domain
+  res.type('text/plain; charset=utf-8').set('Cache-Control', 'no-store').send(old);
+});
+main.post('/dashboard/history/restore', auth, canEdit, async (req, res) => {
+  const user = req.ctx.user;
+  const rel = U.safeRel(req.body.path);
+  const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(user, rel);
+  const back = (kind, text) => res.redirect(`/dashboard/history/file?path=${encodeURIComponent(rel || '')}&${kind}=${encodeURIComponent(text)}`);
+  const old = full && await H.show(user.id, siteDir(user.username), req.body.v, rel);
+  if (!old) return back('err', 'That version is not kept any more.');
+  const err = saveText(user, full, old);
+  if (err) return back('err', `Not restored: ${err}.`);
+  autoFlag(user, rel, old.toString('utf8'));
+  markUpdated(user.id, [rel]);
+  back('ok', `Restored ${rel}. The version it replaced is kept in this list too.`);
+});
 main.get('/dashboard/links', auth, async (req, res) => {
   if (!U.limit(`links:${req.ctx.user.id}`, 30, 3600000)) return showDashboard(req, res, { err: 'That is a lot of link checks. Try again in an hour.' }, 429);
   res.send(V.links(req.ctx, await U.brokenLinks(siteDir(req.ctx.user.username))));
@@ -1209,6 +1266,9 @@ main.post('/dashboard/sites/new', auth, canEdit, (req, res) => {
   try {
     fs.mkdirSync(siteDir(username), { recursive: true });
     fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starters.DEFAULT, username, cfg));
+    const site = q.userByName.get(username);
+    H.remove(site.id); // as at signup: a reused id must start clean
+    recordHistory(site, 'history begins');
   } catch {
     db.prepare('DELETE FROM users WHERE username = ?').run(username);
     fs.rmSync(siteDir(username), { recursive: true, force: true });
@@ -1706,14 +1766,18 @@ const housekeeping = () => {
 setInterval(housekeeping, 3600000).unref();
 const refreshAll = () => refreshUsage().catch((e) => console.error('disk totals refresh failed:', e.message));
 setInterval(refreshAll, 3600000).unref();
+const sweepHistory = () => historySweep().catch((e) => console.error('file history sweep failed:', e.message));
+setInterval(sweepHistory, DAY).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
 app.forgetUsage = (name) => usageCache.delete(name); // for tests that put files on disk behind the app's back
 app.refreshUsage = refreshUsage;
+app.historySweep = historySweep;
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);
   app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
   refreshAll(); // so the first /admin view after a restart reads stored totals
+  sweepHistory();
 }
