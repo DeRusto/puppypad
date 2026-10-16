@@ -172,6 +172,8 @@ const stillCurrent = (req, user) => {
 };
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
+// logins waiting on their second step, which a password change or "log out everywhere" also ends
+const dropLogins = (userId) => db.prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'login2fa'").run(userId);
 function startSession(res, userId) {
   const t = U.newToken();
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
@@ -245,7 +247,7 @@ app.use((req, res, next) => {
 function withOgImage(buf, name) {
   const html = buf.toString('latin1');
   const head = /<head(\s[^>]*)?>/i.exec(html);
-  if (!head || /og:image/i.test(html)) return buf;
+  if (!head || /<meta[^>]+og:image/i.test(html.replace(/<!--[^]*?-->/g, ''))) return buf;
   const at = head.index + head[0].length;
   return Buffer.concat([buf.subarray(0, at), Buffer.from(`<meta property="og:image" content="${cfg.BASE_URL}/shots/${name}.jpg">`), buf.subarray(at)]);
 }
@@ -771,6 +773,7 @@ main.get('/verify', (req, res) => {
   if (!user) return res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That confirmation link is no longer valid. <a href="/login">Log in</a> to get a new one.</p>'));
   db.prepare('UPDATE users SET verified = 1, updated_at = ?, shot_dirty = 1 WHERE id = ?').run(now(), user.id);
   if (!user.verified) db.prepare("INSERT INTO events (user_id, kind, created_at) VALUES (?, 'join', ?)").run(user.id, now());
+  if (user.totp_secret) return res.redirect('/login'); // an old signup link must not skip the second factor
   startSession(res, user.id);
   res.redirect('/dashboard');
 });
@@ -783,7 +786,9 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  if (!user || !(await U.checkPw(String(req.body.password || ''), user.pw_hash)) || q.userById.get(user.id)?.pw_hash !== user.pw_hash) {
+  const ok = !!user && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
+  const cur = ok && q.userById.get(user.id); // re-read: two-factor may have been turned on while the hash ran
+  if (!cur || cur.pw_hash !== user.pw_hash) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
   }
   if (!user.verified) {
@@ -792,7 +797,7 @@ main.post('/login', async (req, res) => {
     }
     return res.send(V.notice(req.ctx, 'Confirm your email first', '<p>We sent you a fresh confirmation link. Click it to finish setting up.</p>'));
   }
-  if (user.totp_secret) return res.send(V.login2fa(req.ctx, null, makeToken(user.id, 'login2fa', 600000)));
+  if (cur.totp_secret) return res.send(V.login2fa(req.ctx, null, makeToken(user.id, 'login2fa', 600000)));
   startSession(res, user.id);
   res.redirect('/dashboard');
 });
@@ -834,6 +839,7 @@ main.post('/reset', async (req, res) => {
   if (!user) return expired();
   db.prepare("UPDATE users SET pw_hash = ?, verified = 1, api_key = '' WHERE id = ?").run(pwHash, user.id); // a reset may follow a break-in, so the API key goes too
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+  dropLogins(user.id);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
   if (user.totp_secret) return res.send(V.notice(req.ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'));
   startSession(res, user.id);
@@ -1222,6 +1228,7 @@ main.post('/account/password', auth, async (req, res) => {
   db.prepare("UPDATE users SET pw_hash = ?, api_key = '' WHERE id = ?").run(pwHash, user.id);
   // log out everywhere else and switch off the API key, in case the old password leaked
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, req.sessionHash);
+  dropLogins(user.id);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
@@ -1255,6 +1262,7 @@ main.get('/account/email/confirm', (req, res) => {
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.ctx.user.id);
+  dropLogins(req.ctx.user.id);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice(req.ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'));
 });
@@ -1275,13 +1283,13 @@ const otpauth = (user, secret) => `otpauth://totp/${encodeURIComponent(`${cfg.SI
 main.get('/account/2fa', auth, (req, res) => {
   if (req.ctx.user.totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
   const secret = U.newTotpSecret();
-  res.send(V.twoFactor(req.ctx, null, secret, otpauth(req.ctx.user, secret)));
+  res.set('Cache-Control', 'no-store').send(V.twoFactor(req.ctx, null, secret, otpauth(req.ctx.user, secret)));
 });
 main.post('/account/2fa/on', auth, async (req, res) => {
   const user = req.ctx.user;
   const secret = String(req.body.secret || '');
   if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
-  const fail = (err, code = 400) => res.status(code).send(V.twoFactor(req.ctx, { err }, secret, otpauth(user, secret)));
+  const fail = (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(V.twoFactor(req.ctx, { err }, secret, otpauth(user, secret)));
   if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
   if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still off.');
   const step = U.totpStep(secret, String(req.body.code || '').replace(/\D/g, ''));
@@ -1291,7 +1299,7 @@ main.post('/account/2fa/on', auth, async (req, res) => {
   if (!db.prepare("UPDATE users SET totp_secret = ?, totp_step = ?, totp_codes = ? WHERE id = ? AND totp_secret = ''").run(secret, step, codes.map(U.sha).join('\n'), user.id).changes) {
     return res.redirect(`/site/${user.username}#security`); // already on, from another tab
   }
-  res.send(V.recoveryCodes(req.ctx, codes.map((c) => `${c.slice(0, 5)}-${c.slice(5)}`)));
+  res.set('Cache-Control', 'no-store').send(V.recoveryCodes(req.ctx, codes.map((c) => `${c.slice(0, 5)}-${c.slice(5)}`)));
 });
 main.post('/account/2fa/off', auth, async (req, res) => {
   const user = req.ctx.user;

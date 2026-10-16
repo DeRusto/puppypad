@@ -684,6 +684,8 @@ test('screenshot worker API needs its token, stores only JPEGs, and clears the d
   assert.deepEqual(home.body, Buffer.from('<html><head lang="x"><meta property="og:image" content="http://pad.test/shots/shotdog.jpg"><title>caf\xe9</title></head></html>'));
   assert.equal((await req('get', '/', 'shotdog.pad.test').set('If-None-Match', home.headers.etag)).status, 304);
   assert.doesNotMatch((await req('get', '/own', 'shotdog.pad.test')).text, /shots/);
+  await upload(dog, 'old.html', '<head><!-- <meta property="og:image" content="x.png"> --></head>');
+  assert.match((await req('get', '/old', 'shotdog.pad.test')).text, /shots\/shotdog\.jpg/);
   // and sites without a favicon get ours
   const icon = await req('get', '/favicon.ico', 'shotdog.pad.test');
   assert.equal(icon.status, 200);
@@ -1910,7 +1912,9 @@ test('TOTP codes match RFC 6238', () => {
 test('two-factor login: turning it on, logging in with a code or a recovery code, resets, turning it off, and logging out everywhere', async () => {
   const m = await member('twofa');
   const step = () => Math.floor(Date.now() / 30000);
-  const secret = (await req('get', '/account/2fa').set('Cookie', m.cookie)).text.match(/name="secret" value="([A-Z2-7]{32})"/)[1];
+  const setup = await req('get', '/account/2fa').set('Cookie', m.cookie);
+  assert.equal(setup.headers['cache-control'], 'no-store');
+  const secret = setup.text.match(/name="secret" value="([A-Z2-7]{32})"/)[1];
   const on = (code, password = 'longpassword1') => post(m, '/account/2fa/on', { secret, code, password });
   assert.equal((await on(U.totp(secret, step() + 5))).status, 400);
   assert.equal((await on(U.totp(secret, step()), 'wrongpassword')).status, 400);
@@ -1933,12 +1937,20 @@ test('two-factor login: turning it on, logging in with a code or a recovery code
   token = await login();
   assert.equal((await second(token, codes[0])).status, 401); // each works once
 
-  // a reset link proves the email, not the phone
+  // an old signup link doesn't skip the code either
+  db.prepare("INSERT INTO tokens (token_hash, user_id, kind, expires) VALUES (?, (SELECT id FROM users WHERE username = 'twofa'), 'verify', ?)").run(U.sha('oldlink'), Date.now() + 60000);
+  const verify = await req('get', '/verify?token=oldlink');
+  assert.equal(verify.headers.location, '/login');
+  assert.equal(verify.headers['set-cookie'], undefined);
+
+  // a reset link proves the email, not the phone, and ends logins waiting on their code
+  const pending = await login();
   await req('post', '/forgot').type('form').send({ email: 'twofa@example.com' });
   const reset = await req('post', '/reset').type('form').send({ token: lastLink('reset'), password: 'longpassword1' });
   assert.equal(reset.status, 200);
   assert.equal(reset.headers['set-cookie'], undefined);
   assert.equal((await req('get', '/dashboard').set('Cookie', other.cookie)).status, 302);
+  assert.equal((await second(pending, codes[3])).status, 400);
 
   // log back in, turn it off with a recovery code, then log out everywhere
   token = await login();
