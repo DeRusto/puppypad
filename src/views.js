@@ -208,7 +208,7 @@ ${mine ? `<section class="box"><h2>Change password</h2>
 <input type="password" id="newpw" name="new_password" minlength="10" maxlength="200" required autocomplete="new-password">
 <label for="newpw2">New password again</label>
 <input type="password" id="newpw2" name="confirm_password" minlength="10" maxlength="200" required autocomplete="new-password"><button>Change password</button></form></section>
-<section class="box"><h2>Change email</h2><p>Your email is <b>${esc(ctx.user.email)}</b>.${ctx.user.new_email ? ` Waiting for <b>${esc(ctx.user.new_email)}</b> to confirm.` : ''}</p>
+<section class="box"><h2>Change email</h2><p>Your email is <b>${esc(ctx.login.email)}</b>.${ctx.login.new_email ? ` Waiting for <b>${esc(ctx.login.new_email)}</b> to confirm.` : ''}</p>
 <form class="stack" method="post" action="/account/email">${csrfField(ctx)}<label for="newemail">New email (we send a link there to confirm it)</label>
 <input type="email" id="newemail" name="email" maxlength="200" required autocomplete="email">
 <label for="emailpw">Your password</label>
@@ -255,7 +255,7 @@ ${rows.length ? `<ul class="sites">${rows.map((n) => `<li${n.created_at > seenAt
     : '<p class="note">Nothing yet. New followers, comments and likes show up here.</p>'}
 ${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</section>
 <section class="box"><h2>Email me</h2>
-<form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(u.email)}.</p>
+<form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(ctx.login.email)}.</p>
 ${box('follow', 'when someone follows my site')}${box('comment', 'when someone comments on my site or my updates')}${box('like', 'when someone likes one of my updates')}
 <label><input type="checkbox" name="digest" value="1"${u.digest ? ' checked' : ''}> a weekly digest of updates from the sites I follow</label>
 <button>Save</button></form></section>`);
@@ -460,7 +460,7 @@ ${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
 <input type="text" id="newname" name="username" required maxlength="30">
 <label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</section>
 
-`}<section class="box"><h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>
+`}<section class="box">${user.owner_id ? '<h2>Delete this site</h2><p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>'}
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
 }
@@ -646,7 +646,7 @@ const guestbookAdmin = (ctx, m, rows, blocked = []) => layout(ctx, 'Guestbook en
 ${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
 </table></div>
 <h3>Email me about new entries</h3>
-<form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.user.email)}. Entries waiting for your approval are marked.</label>
+<form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.login.email)}. Entries waiting for your approval are marked.</label>
 <select id="gn" name="notify">${[['instant', 'Right away, one email per entry'], ['daily', 'Once a day, a digest'], ['off', 'Never']].map(([v, l]) => `<option value="${v}"${ctx.user.gb_notify === v ? ' selected' : ''}>${l}</option>`).join('')}</select><button>Save</button></form>
 <h3>Moderation</h3><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused (one per line). Posts from a blocked IP are silently dropped; visitor IPs are only kept for 90 days.</p>
 <p>Blocked IPs: ${blocked.map((ip) => `${esc(ip)} <form class="inline" method="post" action="/dashboard/guestbook/unblock-ip">${csrfField(ctx)}<input type="hidden" name="ip" value="${esc(ip)}"><button class="link">unblock</button></form>`).join(', ') || 'none'}</p>
@@ -791,7 +791,7 @@ ${reports.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cf
 <div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
 <h3>Supporters</h3>
 <form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}<label for="ssite">Site name of the login</label><input type="text" id="ssite" name="site" required>
-<label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365"><button>Set supporter</button></form>
+<label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365" required><button>Set supporter</button></form>
 <h3>Staff picks and site of the week</h3>
 <p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
 The home page shows them while they are listed (not hidden, and past the new-site wait).</p>

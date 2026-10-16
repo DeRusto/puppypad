@@ -183,8 +183,8 @@ function startSession(res, userId) {
 const MAX_SITES = 5;
 const isSupporter = (user) => user.supporter_until > now() || isAdmin(user);
 const ownerRow = (user) => (user.owner_id ? q.userById.get(user.owner_id) : user);
-// every session of a login, including those switched to one of its extra sites
-const sessionIds = '(SELECT id FROM users WHERE id = ? OR owner_id = ?)';
+// a login row and its extra sites: for its sessions, API keys and bans
+const loginIds = '(SELECT id FROM users WHERE id = ? OR owner_id = ?)';
 const sitesOf = (user) => { const id = user.owner_id || user.id; return db.prepare('SELECT * FROM users WHERE id = ? OR owner_id = ? ORDER BY id').all(id, id); };
 function deleteAccountRows(user) {
   for (const s of db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id)) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(s.username, now());
@@ -448,7 +448,8 @@ main.use((req, res, next) => {
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
       if (user) {
-        req.ctx = { cfg, user, csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n };
+        const login = ownerRow(user); // an extra site's admin rights and email are its login's
+        req.ctx = { cfg, user, login, csrf: s.csrf, isAdmin: isAdmin(login), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n };
         req.sessionHash = s.token_hash;
       }
     }
@@ -850,8 +851,9 @@ main.post('/reset', async (req, res) => {
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
   if (!user) return expired();
-  db.prepare("UPDATE users SET pw_hash = ?, verified = 1, api_key = '' WHERE id = ?").run(pwHash, user.id); // a reset may follow a break-in, so the API key goes too
-  db.prepare(`DELETE FROM sessions WHERE user_id IN ${sessionIds}`).run(user.id, user.id);
+  db.prepare("UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?").run(pwHash, user.id);
+  db.prepare(`UPDATE users SET api_key = '' WHERE id IN ${loginIds}`).run(user.id, user.id); // a reset may follow a break-in, so the API keys of all its sites go too
+  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(user.id, user.id);
   dropLogins(user.id);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
   if (user.totp_secret) return res.send(V.notice(req.ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'));
@@ -1267,9 +1269,10 @@ main.post('/account/password', auth, async (req, res) => {
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   const pwHash = await U.hashPw(password);
   if (!stillCurrent(req, user)) return res.redirect('/login');
-  db.prepare("UPDATE users SET pw_hash = ?, api_key = '' WHERE id = ?").run(pwHash, user.id);
+  db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
+  db.prepare(`UPDATE users SET api_key = '' WHERE id IN ${loginIds}`).run(user.id, user.id);
   // log out everywhere else and switch off the API key, in case the old password leaked
-  db.prepare(`DELETE FROM sessions WHERE user_id IN ${sessionIds} AND token_hash != ?`).run(user.id, user.id, req.sessionHash);
+  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds} AND token_hash != ?`).run(user.id, user.id, req.sessionHash);
   dropLogins(user.id);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
@@ -1303,7 +1306,7 @@ main.get('/account/email/confirm', (req, res) => {
 });
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
-  db.prepare(`DELETE FROM sessions WHERE user_id IN ${sessionIds}`).run(ownerRow(req.ctx.user).id, ownerRow(req.ctx.user).id);
+  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(ownerRow(req.ctx.user).id, ownerRow(req.ctx.user).id);
   dropLogins(ownerRow(req.ctx.user).id);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice(req.ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'));
@@ -1396,6 +1399,11 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
   if (!(await U.checkPw(String(req.body.password || ''), ownerRow(req.ctx.user).pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
   if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
+  if (req.ctx.user.owner_id) { // an extra site goes alone, and the session moves back to the login
+    db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(req.ctx.user.owner_id, req.sessionHash);
+    deleteAccount(req.ctx.user);
+    return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
+  }
   deleteAccount(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
@@ -1610,7 +1618,8 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
 main.post('/admin/ban', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
-  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
+  const login = ownerRow(target);
+  if (isAdmin(login)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
@@ -1620,13 +1629,18 @@ main.post('/admin/ban', auth, adminOnly, (req, res) => {
   }
   const ban = action === 'ban' ? 1 : 0;
   // the state change and its log entry commit together, so no take-down or restore goes unrecorded
+  // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login
+  const sites = target.owner_id ? [target] : sitesOf(target);
   db.transaction(() => {
-    db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, target.id);
+    for (const s of sites) {
+      db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban, ban ? reason : null, s.id);
+      if (ban) db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
+      else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(s.id);
+    }
     adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
-    if (ban) { db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(target.username); db.prepare(`DELETE FROM sessions WHERE user_id IN ${sessionIds}`).run(target.id, target.id); }
-    else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(target.id);
+    if (ban) db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(login.id, login.id);
   })();
-  if (ban) fs.rmSync(shotPath(target.username), { force: true });
+  if (ban) for (const s of sites) fs.rmSync(shotPath(s.username), { force: true });
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
 });
 

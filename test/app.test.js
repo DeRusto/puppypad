@@ -2033,3 +2033,34 @@ test('two-factor login shows its real state on an extra site', async () => {
   assert.equal(enabled.status, 302);
   assert.equal(enabled.headers.location, '/site/twofaextra-two#security');
 });
+
+test('extra sites follow their login for admin rights, bans, API keys and deletion', async () => {
+  const boss = { cookie: (await req('post', '/login').type('form').send({ username: 'boss', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0] };
+  boss.csrf = (await req('get', '/dashboard').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  // an admin switched to an extra site is still an admin
+  assert.match((await post(boss, '/dashboard/sites/new', { username: 'boss-two' })).headers.location, /ok=/);
+  await post(boss, '/dashboard/sites/switch', { id: db.prepare('SELECT id FROM users WHERE username = ?').get('boss-two').id });
+  assert.equal((await req('get', '/admin').set('Cookie', boss.cookie)).status, 200);
+
+  const m = await member('multi');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'multi');
+  for (const username of ['multi-two', 'multi-three']) assert.match((await post(m, '/dashboard/sites/new', { username })).headers.location, /ok=/);
+  const id = (name) => db.prepare('SELECT id FROM users WHERE username = ?').get(name).id;
+  // a password change switches off the API keys of every site
+  db.prepare("UPDATE users SET api_key = 'k' || id WHERE username LIKE 'multi%'").run();
+  await post(m, '/account/password', { password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username LIKE 'multi%' AND api_key != ''").get().n, 0);
+  // deleting while on an extra site removes only that site and keeps the login signed in
+  await post(m, '/dashboard/sites/switch', { id: id('multi-three') });
+  assert.match((await post(m, '/dashboard/delete-account', { password: 'longpassword2' })).headers.location, /ok=/);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('multi-three'), undefined);
+  assert.ok(id('multi'));
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 200);
+  // taking down the login takes down its extra sites and ends its sessions; restore brings them back
+  await post(m, '/dashboard/sites/switch', { id: id('multi-two') });
+  await post(boss, '/admin/ban', { site: 'multi', action: 'ban', reason: 'test' });
+  assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
+  assert.equal((await req('get', '/dashboard').set('Cookie', m.cookie)).status, 302);
+  await post(boss, '/admin/ban', { site: 'multi', action: 'unban' });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE username LIKE 'multi%' AND banned = 1").get().n, 0);
+});
