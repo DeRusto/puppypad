@@ -5,10 +5,12 @@ const path = require('path');
 const { esc } = require('./util');
 
 const ASSETS = path.join(__dirname, 'assets');
-// tiling backgrounds for the style editor; each is ours to give away (see assets/bg/CREDITS.md)
+// tiling backgrounds for the style editor; each is ours to give away (see assets/bg/CREDITS.md).
+// The see-through ones are the patterns PuppyPad and the starters already use, so they take on the member's page colour
 const BACKGROUNDS = [
-  { id: 'stars', name: 'Stars' }, { id: 'clouds', name: 'Clouds' }, { id: 'paws', name: 'Paw prints' },
-  { id: 'checkers', name: 'Checkerboard' }, { id: 'notebook', name: 'Notebook lines' },
+  { id: 'paws', name: 'Paw prints (the PuppyPad look)' }, { id: 'dots', name: 'Polka dots (from Shrine)' }, { id: 'grid', name: 'Grid lines (from Arcade)' },
+  { id: 'notebook', name: 'Ruled lines (from Notebook)' }, { id: 'stripes', name: 'Diagonal stripes (from Sky Blue)' },
+  { id: 'stars', name: 'Stars' }, { id: 'clouds', name: 'Clouds' }, { id: 'checkers', name: 'Checkerboard' },
 ];
 const BUTTONS = [
   { id: 'made-with', name: 'Made with PuppyPad' }, { id: 'best-viewed', name: 'Best viewed with eyes' },

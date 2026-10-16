@@ -526,7 +526,7 @@ ${colour('page', 'Page colour')}${colour('text', 'Text colour')}${colour('link',
 <label for="st-cursor">Cursor</label><select id="st-cursor" name="cursor">${opts(style.CURSORS, s.cursor)}</select>
 <fieldset class="starters"><legend>Background picture</legend>
 <label><input type="radio" name="bg" value=""${s.bg ? '' : ' checked'}> None, just the page colour</label>
-${W.BACKGROUNDS.map((b) => `<label><input type="radio" name="bg" value="${b.id}"${s.bg === b.id ? ' checked' : ''}> <img src="/assets/bg/${b.id}.svg" width="40" height="40" alt="" style="vertical-align:middle;border:1px solid #888"> ${esc(b.name)}</label>`).join('\n')}
+${W.BACKGROUNDS.map((b) => `<label><input type="radio" name="bg" value="${b.id}"${s.bg === b.id ? ' checked' : ''}> <img src="/assets/bg/${b.id}.svg" width="40" height="40" alt="" style="vertical-align:middle;border:1px solid #888;background:${esc(s.page)}"> ${esc(b.name)}</label>`).join('\n')}
 ${images.length ? `<label><input type="radio" name="bg" value="own"${s.bg && s.bg[0] === '/' ? ' checked' : ''}> One of my own pictures:</label>
 <select name="ownbg" aria-label="My pictures">${images.map((i) => `<option value="/${esc(i)}"${s.bg === `/${i}` ? ' selected' : ''}>${esc(i)}</option>`).join('')}</select>` : '<p class="note">Upload a picture to use one of your own.</p>'}</fieldset>
 <fieldset class="starters"><legend>How the picture fills the page</legend>
