@@ -9,5 +9,5 @@ A member's homepage: one folder of files served at its own subdomain. A login ha
 _Avoid_: account (that is the login), page
 
 **Site files**:
-The module that owns a site's folder and every change to it: writes, deletes, moves, renames and removal, with the limits, phishing check, file history and feed event each change brings.
+The module that owns a site's folder: every change to its files passes the site's limits and the phishing check and is kept in file history, usually with a feed event. It also creates, renames and removes whole sites.
 _Avoid_: storage, uploads
