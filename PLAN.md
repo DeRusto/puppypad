@@ -318,7 +318,8 @@ not Patreon.
   (raw body, signature checked with `STRIPE_WEBHOOK_SECRET`, exempt from the CSRF/Origin check)
   sets or clears `supporter_until`; `/dashboard/support` links to the Stripe Customer Portal for
   cancelling and card changes.
-- `.env`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`. With none set, the
+- `.env`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, and optionally
+  `STRIPE_PRICE_ID_ANNUAL` for a yearly price offered next to the monthly one. With none set, the
   support page is hidden and everyone gets free limits, so self-hosters are unaffected.
 - When a subscription lapses: nothing is deleted. Files over the free quota stay online, new
   uploads are refused until the site is back under it, and a custom domain keeps working for a

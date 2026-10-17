@@ -17,6 +17,7 @@ process.env.SUPPORTER_MAX_FILE_MB = '2';
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
 process.env.STRIPE_PRICE_ID = 'price_test';
+process.env.STRIPE_PRICE_ID_ANNUAL = 'price_test_year';
 delete process.env.SMTP_HOST;
 delete process.env.TURNSTILE_SECRET_KEY;
 
@@ -2430,4 +2431,33 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   // the terms and the privacy page say what supporting means and who takes the money
   assert.match((await req('get', '/rules')).text, /id="supporter-terms"/);
   assert.match((await req('get', '/privacy')).text, /processed by Stripe/);
+});
+
+test('supporter checkout offers the monthly and the yearly price', async () => {
+  const m = await member('choosey');
+  const page = await req('get', '/dashboard/support').set('Cookie', m.cookie);
+  assert.match(page.text, /Become a supporter — monthly/);
+  assert.match(page.text, /Become a supporter — yearly/);
+  // the yearly button checks out at the yearly price
+  const yr = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'annual' });
+  assert.equal(yr.status, 303);
+  assert.equal(yr.headers.location, 'https://checkout.stripe.com/c/pay/test');
+  assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test_year', quantity: 1 }]);
+  // no plan in the post (the old single-button form) still checks out at the monthly price
+  const mo = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(mo.status, 303);
+  assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test', quantity: 1 }]);
+  // the webhook still just follows the subscription: a yearly one sets supporter_until a year out
+  const end = Math.floor(Date.now() / 1000) + 365 * 86400;
+  const cus = db.prepare('SELECT stripe_customer_id FROM users WHERE username = ?').get('choosey').stripe_customer_id;
+  const signer = new Stripe('sk_test_fake').webhooks;
+  const hook = (type, object, secret = 'whsec_test') => {
+    const payload = JSON.stringify({ id: `evt_${type}`, object: 'event', type, data: { object } });
+    return req('post', '/stripe/webhook').set('Content-Type', 'application/json')
+      .set('Stripe-Signature', signer.generateTestHeaderString({ payload, secret })).send(payload);
+  };
+  const sub = { id: 'sub_year', customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } };
+  fake.subs = fake.subs.filter((o) => o.id !== sub.id).concat(sub);
+  assert.equal((await hook('customer.subscription.created', sub)).status, 200);
+  assert.ok(db.prepare('SELECT supporter_until FROM users WHERE username = ?').get('choosey').supporter_until > end * 1000);
 });

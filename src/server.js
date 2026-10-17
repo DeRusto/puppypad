@@ -38,8 +38,10 @@ const cfg = {
   SUPPORTER_HISTORY_DAYS: Number(env.SUPPORTER_HISTORY_DAYS || 365),
   SUPPORTER_QUOTA_MB: Number(env.SUPPORTER_QUOTA_MB || 2000),
   SUPPORTER_MAX_FILE_MB: Number(env.SUPPORTER_MAX_FILE_MB || 25),
-  // the supporter tier is on only with all three Stripe settings; otherwise its pages are hidden and nobody can pay
-  SUPPORT_ON: !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET && env.STRIPE_PRICE_ID),
+  // the supporter tier is on only with the Stripe keys and at least one price; otherwise its pages are hidden and nobody can pay
+  SUPPORT_ON: !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET && (env.STRIPE_PRICE_ID || env.STRIPE_PRICE_ID_ANNUAL)),
+  PRICE_ID: env.STRIPE_PRICE_ID || '', // the monthly supporter price
+  PRICE_ID_ANNUAL: env.STRIPE_PRICE_ID_ANNUAL || '', // an optional yearly price, offered next to monthly while set
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
@@ -1581,9 +1583,11 @@ main.post('/dashboard/support', auth, async (req, res) => {
     if (subs.data.some((x) => ['active', 'trialing', 'past_due', 'incomplete'].includes(x.status))) return already();
     const open = (await stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 1 })).data[0];
     if (open) return res.redirect(303, open.url);
+    // the support page offers monthly, plus yearly while a yearly price is set; a choice that is not on offer takes the default price
+    const price = req.body.plan === 'annual' ? (cfg.PRICE_ID_ANNUAL || cfg.PRICE_ID) : (cfg.PRICE_ID || cfg.PRICE_ID_ANNUAL);
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      line_items: [{ price: env.STRIPE_PRICE_ID, quantity: 1 }],
+      line_items: [{ price, quantity: 1 }],
       client_reference_id: String(login.id),
       // flexible billing mode: Stripe's recommended default for predictable proration and invoices
       subscription_data: { metadata: { user_id: String(login.id) }, billing_mode: { type: 'flexible' } },

@@ -25,7 +25,8 @@ deleted site's name is held for 90 days.
   (`src/util.js`). Raising
   `QUOTA_MB` grows every site; lowering it only applies to new signups.
 - Optional supporter tier through Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`;
-  hidden while any is empty). Supporters get `SUPPORTER_QUOTA_MB` (2000) and `SUPPORTER_MAX_FILE_MB` (25), any
+  hidden while the keys or both prices are empty). An optional `STRIPE_PRICE_ID_ANNUAL` adds a yearly price
+  offered next to the monthly one. Supporters get `SUPPORTER_QUOTA_MB` (2000) and `SUPPORTER_MAX_FILE_MB` (25), any
   file type, longer history, up to 5 sites per login, a rainbow frame and star by their name, and a first look at
   widgets marked `early`. `/dashboard/support` opens Stripe Checkout and the Customer Portal; `POST /stripe/webhook`
   sets `users.supporter_until`. When it lapses nothing is deleted: uploads wait until the site is under the free limits.
