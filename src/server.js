@@ -1583,10 +1583,12 @@ main.post('/dashboard/support', auth, async (req, res) => {
     }
     const subs = await stripe.subscriptions.list({ customer: login.stripe_customer_id, status: 'all', limit: 10 });
     if (subs.data.some((x) => ['active', 'trialing', 'past_due', 'incomplete'].includes(x.status))) return already();
-    const open = (await stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 1 })).data[0];
-    if (open) return res.redirect(303, open.url);
     // the support page offers monthly, plus yearly while a yearly price is set; a choice that is not on offer takes the default price
     const price = req.body.plan === 'annual' ? (cfg.PRICE_ID_ANNUAL || cfg.PRICE_ID) : (cfg.PRICE_ID || cfg.PRICE_ID_ANNUAL);
+    const open = (await stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 1, expand: ['data.line_items'] })).data[0];
+    if (open?.line_items?.data[0]?.price?.id === price) return res.redirect(303, open.url);
+    // an open checkout for the other plan is dropped so the member can switch
+    if (open) await stripe.checkout.sessions.expire(open.id);
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price, quantity: 1 }],

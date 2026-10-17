@@ -34,6 +34,7 @@ require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
   s.checkout = { sessions: {
     create: stripeCall(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
     list: stripeCall(({ customer }) => listed(fake.open.filter((o) => o.customer === customer))),
+    expire: stripeCall(async (id) => { fake.open = fake.open.filter((o) => o.id !== id); return { id }; }),
   } };
   s.subscriptions = {
     list: stripeCall(({ customer }) => listed(fake.subs.filter((o) => o.customer === customer))),
@@ -2375,7 +2376,7 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.deepEqual(call.line_items, [{ price: 'price_test', quantity: 1 }]);
   assert.deepEqual(call.subscription_data.billing_mode, { type: 'flexible' });
   // a second try before paying reopens the same checkout instead of starting a second subscription
-  fake.open.push({ customer: cus, url: 'https://checkout.stripe.com/c/pay/open' });
+  fake.open.push({ id: 'cs_open', customer: cus, url: 'https://checkout.stripe.com/c/pay/open', line_items: { data: [{ price: { id: 'price_test' } }] } });
   const again = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
   assert.equal(again.headers.location, 'https://checkout.stripe.com/c/pay/open');
   fake.open = [];
@@ -2457,9 +2458,17 @@ test('supporter checkout offers the monthly and the yearly price', async () => {
   const mo = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
   assert.equal(mo.status, 303);
   assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test', quantity: 1 }]);
-  // the webhook still just follows the subscription: a yearly one sets supporter_until a year out
   const end = Math.floor(Date.now() / 1000) + 365 * 86400;
   const cus = db.prepare('SELECT stripe_customer_id FROM users WHERE username = ?').get('choosey').stripe_customer_id;
+  // an open monthly checkout is reused for monthly, but replaced when the member picks yearly
+  fake.open.push({ id: 'cs_mo', customer: cus, url: 'https://checkout.stripe.com/c/pay/mo', line_items: { data: [{ price: { id: 'price_test' } }] } });
+  const same = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'monthly' });
+  assert.equal(same.headers.location, 'https://checkout.stripe.com/c/pay/mo');
+  const sw = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'annual' });
+  assert.equal(sw.headers.location, 'https://checkout.stripe.com/c/pay/test');
+  assert.deepEqual(fake.open, []);
+  assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test_year', quantity: 1 }]);
+  // the webhook still just follows the subscription: a yearly one sets supporter_until a year out
   const signer = new Stripe('sk_test_fake').webhooks;
   const hook = (type, object, secret = 'whsec_test') => {
     const payload = JSON.stringify({ id: `evt_${type}`, object: 'event', type, data: { object } });
