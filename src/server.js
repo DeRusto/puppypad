@@ -1073,8 +1073,9 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   const to = String(req.body.to || '').trim().replace(/^\/+|\/+$/g, '');
   const err = files.move(user, from, to);
   if (err) return res.status(400).send(V.move(req.ctx, { err }, { from, to, dir: isDirAt(src) }));
-  const parent = to.split('/').filter(Boolean).slice(0, -1).join('/');
-  res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
+  const moved = U.safeRel(to, { file: false }); // the path as stored: backslashes become folders
+  const parent = moved.split('/').slice(0, -1).join('/');
+  res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${moved}.`)}`);
 });
 // file history: deleted files to bring back, every kept version of one file, and putting an old version back
 main.get('/dashboard/history', auth, async (req, res) => {

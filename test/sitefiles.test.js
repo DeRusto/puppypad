@@ -177,6 +177,6 @@ test('rename carries the folder, screenshot and totals; removeSite leaves nothin
   files.removeSite(moved);
   assert.equal(fs.existsSync(siteDir('renamed')), false);
   assert.equal(fs.existsSync(shotPath('renamed')), false);
-  await new Promise((r) => setTimeout(r, 200)); // history goes after any commit still running
+  await H.remove(site.id); // waits in the site's queue behind the removal removeSite started
   assert.equal(H.exists(site.id), false);
 });
