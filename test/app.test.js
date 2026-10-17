@@ -26,14 +26,14 @@ const Stripe = require('stripe');
 const stripeCalls = [];
 // what the fake Stripe holds: open checkouts and subscriptions per customer; fail makes every call throw
 const fake = { customers: 0, open: [], subs: [], cancelled: [], fail: false };
-const listed = (data) => Object.assign(Promise.resolve({ data }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
+const listed = (data, limit = data.length) => Object.assign(Promise.resolve({ data: data.slice(0, limit), has_more: data.length > limit }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
 const stripeCall = (fn) => (...a) => { if (fake.fail) throw new Error('Stripe is down'); stripeCalls.push(a[0]); return fn(...a); };
 require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
   const s = new Stripe(key);
   s.customers = { create: stripeCall(async () => ({ id: `cus_test${++fake.customers}` })) };
   s.checkout = { sessions: {
     create: stripeCall(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
-    list: stripeCall(({ customer }) => listed(fake.open.filter((o) => o.customer === customer))),
+    list: stripeCall(({ customer, limit }) => listed(fake.open.filter((o) => o.customer === customer), limit)),
     expire: stripeCall(async (id) => { fake.open = fake.open.filter((o) => o.id !== id); return { id }; }),
   } };
   s.subscriptions = {
@@ -2442,6 +2442,37 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   // the terms and the privacy page say what supporting means and who takes the money
   assert.match((await req('get', '/rules')).text, /id="supporter-terms"/);
   assert.match((await req('get', '/privacy')).text, /processed by Stripe/);
+});
+
+test('supporter checkout searches all pages before reusing or expiring open sessions', async () => {
+  const m = await member('paged-checkout');
+  const cus = 'cus_paged';
+  db.prepare('UPDATE users SET stripe_customer_id = ? WHERE username = ?').run(cus, 'paged-checkout');
+  const open = (id, price, customer = cus) => ({ id, customer, url: `https://checkout.stripe.com/c/pay/${id}`, line_items: { data: [{ price: { id: price } }] } });
+  const others = Array.from({ length: 101 }, (_, i) => open(`cs_other_${i}`, 'price_test_year'));
+  const matching = open('cs_matching', 'price_test');
+  const unrelated = open('cs_unrelated', 'price_test_year', 'cus_unrelated');
+  const checkout = () => req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'monthly' });
+  fake.open = [unrelated, ...others, matching];
+  try {
+    const before = stripeCalls.length;
+    const reused = await checkout();
+    assert.equal(reused.status, 303);
+    assert.equal(reused.headers.location, matching.url);
+    assert.deepEqual(fake.open, [unrelated, ...others, matching]);
+    assert.equal(stripeCalls.length - before, 2); // only subscriptions and sessions listed; no expiry or creation
+
+    fake.open = [unrelated, ...others];
+    const start = stripeCalls.length;
+    const created = await checkout();
+    assert.equal(created.status, 303);
+    assert.equal(created.headers.location, 'https://checkout.stripe.com/c/pay/test');
+    assert.deepEqual(fake.open, [unrelated]);
+    assert.deepEqual(stripeCalls.slice(start + 2, -1), others.map((o) => o.id));
+    assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test', quantity: 1 }]);
+  } finally {
+    fake.open = [];
+  }
 });
 
 test('supporter checkout offers the monthly and the yearly price', async () => {

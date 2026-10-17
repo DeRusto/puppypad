@@ -1585,10 +1585,13 @@ main.post('/dashboard/support', auth, async (req, res) => {
     if (subs.data.some((x) => ['active', 'trialing', 'past_due', 'incomplete'].includes(x.status))) return already();
     // the support page offers monthly, plus yearly while a yearly price is set; a choice that is not on offer takes the default price
     const price = req.body.plan === 'annual' ? (cfg.PRICE_ID_ANNUAL || cfg.PRICE_ID) : (cfg.PRICE_ID || cfg.PRICE_ID_ANNUAL);
-    const open = (await stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 1, expand: ['data.line_items'] })).data[0];
-    if (open?.line_items?.data[0]?.price?.id === price) return res.redirect(303, open.url);
-    // an open checkout for the other plan is dropped so the member can switch
-    if (open) await stripe.checkout.sessions.expire(open.id);
+    const openIds = [];
+    for await (const open of stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 100, expand: ['data.line_items'] })) {
+      if (open.line_items?.data[0]?.price?.id === price) return res.redirect(303, open.url);
+      openIds.push(open.id);
+    }
+    // only after every page has no matching checkout, drop the other plans so the member can switch
+    for (const id of openIds) await stripe.checkout.sessions.expire(id);
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price, quantity: 1 }],
