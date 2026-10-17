@@ -53,6 +53,7 @@ function sandbox() {
   sh(path.join(bin, 'docker'), `echo "$* [$(sed -n 's/^PUPPYPAD_VERSION=//p' .env 2>/dev/null)]" >> ${log}
 case "$*" in
   *"compose up"*) ! grep -q '^PUPPYPAD_VERSION=v0.0.2$' .env ;;
+  *"user_version"*) cat data/user_version 2>/dev/null || echo 0 ;;
   *"backup('/data/backup.db')"*) touch data/backup.db ;;
   *"rm -f /data/backup.db"*) rm -f data/backup.db ;;
   *) exit 0 ;;
@@ -200,4 +201,25 @@ test('installer: an upgrade still hands over to the new release installer', () =
   const up = s.run('scripts/install.sh', ['v0.0.3']);
   assert.equal(up.status, 0, up.stdout + up.stderr);
   assert.match(up.stdout, /handed over to the v0\.0\.3 installer: v0\.0\.3/);
+});
+
+test('installer: after an upgrade that died before writing SCHEMA, going back still reads the schema from the database', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.3', { schema: 1 });
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.release('v0.0.1', { installer: 'echo "handed over to the v0.0.1 installer"; exit 7' }); // republished: a handover would show
+  s.data();
+  // what an upgrade to v0.0.3 killed after `compose up` leaves: its files and images in place, the database
+  // moved on by its app, but no SCHEMA file and the old VERSION
+  fs.writeFileSync(path.join(s.root, 'data/user_version'), '1\n');
+  fs.writeFileSync(path.join(s.root, '.env'), s.read('.env').replace(/^PUPPYPAD_VERSION=.*$/m, 'PUPPYPAD_VERSION=v0.0.3'));
+  assert.ok(!fs.existsSync(path.join(s.root, 'SCHEMA')));
+  const back = s.run('scripts/install.sh', ['v0.0.1']);
+  assert.equal(back.status, 0, back.stdout + back.stderr);
+  assert.doesNotMatch(back.stdout, /handed over/);
+  const d = s.docker();
+  const migrate = at(d, DOWN(0, 'v0.0.3'));
+  const start = at(d, /^compose up -d --remove-orphans \[v0\.0\.1\]$/, migrate);
+  assert.ok(migrate >= 0 && start > migrate, d.join('\n'));
 });

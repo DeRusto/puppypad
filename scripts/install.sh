@@ -137,6 +137,12 @@ files=$(cd "$new/files" && find . -type f | sed 's|^\./||' | sort)
 # expects. A release without a SCHEMA file is 0.
 schema_of() { n=$(cat "$1" 2>/dev/null || true); case "$n" in ''|*[!0-9]*) echo 0 ;; *) echo "$n" ;; esac; }
 cur_schema=$(schema_of SCHEMA) new_schema=$(schema_of "$new/files/SCHEMA")
+# The database has the last word: an upgrade killed after its app started has moved it on before writing SCHEMA.
+# Asked through the current image's own better-sqlite3, which every release has; a failed ask leaves SCHEMA's number.
+if [ "$mode" != fresh ]; then
+  db_schema=$(docker compose run --rm -T --no-deps app node -e "console.log(require('better-sqlite3')('/data/puppypad.db', { readonly: true, fileMustExist: true }).pragma('user_version', { simple: true }))" 2>/dev/null | tail -n 1 | tr -dc 0-9 || true)
+  if [ -n "$db_schema" ] && [ "$db_schema" -gt "$cur_schema" ]; then cur_schema=$db_schema; fi
+fi
 
 # the release's own installer does the rest: a fix to how upgrades work then applies to the upgrade
 # that brings it, not only to the one after. Its copy came with the checksummed bundle; it downloads
