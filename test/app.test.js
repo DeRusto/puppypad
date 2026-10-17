@@ -675,6 +675,10 @@ test('rename and move files and folders', async () => {
   assert.equal(res.status, 302);
   assert.ok(fs.existsSync(path.join(dir, 'media', 'pics', 'old', 'dog.png')));
   assert.ok(!fs.existsSync(path.join(dir, 'pics')));
+  // a backslash path lands in its folder, and the dashboard opens there
+  res = await move('about/notes.md', 'about\\notes2.md');
+  assert.equal(res.headers.location, `/dashboard?dir=about&ok=${encodeURIComponent('Moved about/notes.md to about/notes2.md.')}`);
+  await move('about/notes2.md', 'about/notes.md');
   // refusals
   assert.match((await move('media/pics', 'media/pics/inner')).text, /cannot go inside itself/);
   assert.match((await move('about/notes.md', 'index.html')).text, /already there/);

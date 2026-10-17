@@ -6,7 +6,7 @@ const Stripe = require('stripe');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { db, DATA_DIR, SITES_DIR, SHOTS_DIR } = require('./db');
+const { db, DATA_DIR, SITES_DIR } = require('./db');
 const U = require('./util');
 const V = require('./views');
 const { readZip, writeZip } = require('./zip');
@@ -15,6 +15,7 @@ const style = require('./style');
 const upgrade = require('./upgrade');
 const W = require('./widgets');
 const H = require('./history');
+const { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES } = require('./sitefiles');
 
 // ---------- config ----------
 const env = process.env;
@@ -99,35 +100,6 @@ const q = {
   userById: db.prepare('SELECT * FROM users WHERE id = ?'),
   userByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
 };
-// a save or upload: bump the directory, queue a fresh screenshot, and log at most one feed event per hour,
-// naming the files it changed (later changes in the same hour join that event)
-// shortcut: keeps the newest 50 names per event, so "and N more" undercounts a bigger batch; store a count if that matters
-const eventFiles = (old, rels) => [...new Set([...rels, ...lines(old)])].slice(0, 50).join('\n');
-function markUpdated(userId, rels = []) {
-  const t = now();
-  const u = q.userById.get(userId);
-  if (u) recordHistory(u, rels.join(' ') || 'change');
-  db.prepare('UPDATE users SET updated_at = ?, shot_dirty = 1 WHERE id = ?').run(t, userId);
-  const last = db.prepare("SELECT id, created_at, files FROM events WHERE user_id = ? AND kind = 'update' ORDER BY id DESC LIMIT 1").get(userId);
-  if (last && t - last.created_at < 3600000) {
-    if (rels.length) db.prepare('UPDATE events SET files = ? WHERE id = ?').run(eventFiles(last.files, rels), last.id);
-    return;
-  }
-  db.prepare("INSERT INTO events (user_id, kind, files, created_at) VALUES (?, 'update', ?, ?)").run(userId, eventFiles('', rels), t);
-  db.prepare('UPDATE users SET updates = updates + 1 WHERE id = ?').run(userId);
-}
-// queue a saved page or script for review if it looks like phishing or mining; one open flag per site at a time
-// the types a browser runs as a page or script; supporters may upload the rarer ones (xhtml, shtml, mjs) too
-const SCANNED = /\.(x?html?|shtml|m?js|svg|xml)$/i;
-function autoFlag(user, rel, content) {
-  if (!SCANNED.test(rel)) return;
-  const signals = U.phishSignals(content);
-  if (!signals.length || db.prepare("SELECT 1 FROM reports WHERE site = ? AND reason = 'Auto-flag' AND status = 'open'").get(user.username)) return;
-  const details = `${rel}: ${signals.join(', ')}`;
-  db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES (?, 'Auto-flag', ?, ?)").run(user.username, details, now());
-  sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] auto-flag: ${user.username}`, `${details}\n\nReview: ${cfg.BASE_URL}/admin`);
-}
-const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
 // uploads and unpacked zips land here first: on disk, not in memory, and on the same volume as the sites so they move in with a rename
 const UPLOAD_TMP = path.join(DATA_DIR, 'tmp');
 fs.rmSync(UPLOAD_TMP, { recursive: true, force: true }); // whatever a crash left behind
@@ -156,7 +128,6 @@ const LIVE = 'verified = 1 AND banned = 0';
 const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
 const listed = () => `${LIVE} AND hidden = 0 AND updates > 0 AND created_at <= ${listedSince()}`;
 const isListed = (u) => !!(u.verified && !u.banned && !u.hidden && u.updates > 0 && u.created_at <= listedSince());
-const siteDir = (name) => path.join(SITES_DIR, name);
 // Each member keeps the largest QUOTA_MB they have had: raising it in .env grows every site, lowering it only affects new signups
 db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
 const quotaMB = (user) => Math.max(user.quota_mb || 0, cfg.QUOTA_MB);
@@ -209,8 +180,11 @@ const limitsFor = (user) => {
     quotaMB: sup ? Math.max(quotaMB(user), cfg.SUPPORTER_QUOTA_MB) : quotaMB(user),
     fileMB: sup ? Math.max(cfg.MAX_FILE_MB, cfg.SUPPORTER_MAX_FILE_MB) : cfg.MAX_FILE_MB,
     anyType: sup,
+    historyDays: sup ? cfg.SUPPORTER_HISTORY_DAYS : cfg.HISTORY_DAYS,
   };
 };
+// every change to a site's folder goes through here (src/sitefiles.js)
+const files = createSiteFiles({ cfg, limitsFor, sendMail });
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
 const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.owner_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
@@ -223,51 +197,11 @@ function deleteAccountRows(user) {
   // never-confirmed accounts were never online, so their names are free again at once
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
 }
-// runs after any commit still going; the request doesn't wait for it
-const removeHistory = (u) => H.remove(u.id).catch((e) => console.error(`file history remove for ${u.username} failed:`, e.message));
 function deleteAccount(user, rows = deleteAccountRows) {
   const extra = db.prepare('SELECT id, username FROM users WHERE owner_id = ?').all(user.id);
   rows(user);
-  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); removeHistory(s); }
-  fs.rmSync(siteDir(user.username), { recursive: true, force: true });
-  removeHistory(user);
-  fs.rmSync(shotPath(user.username), { force: true });
-  usageCache.delete(user.username);
-}
-// A site's bytes and file count, kept rather than walked per request: walking a 500 MB folder stalls every other site.
-// The writes made here keep it current, and refreshUsage() rewalks every site in the background to catch changes made outside the app (a restore)
-const usageCache = new Map();
-function usage(name) {
-  if (!usageCache.has(name)) usageCache.set(name, U.dirSize(siteDir(name))); // only before the first refresh reaches this site
-  return usageCache.get(name);
-}
-async function refreshUsage() {
-  for (const { username } of db.prepare('SELECT username FROM users').all()) {
-    const before = usageCache.get(username);
-    try {
-      const fresh = await U.dirSizeAsync(siteDir(username));
-      // a write during the walk already stored newer totals, which the walk may have missed
-      if (usageCache.get(username) === before) usageCache.set(username, fresh);
-    } catch { usageCache.delete(username); } // changed while walked: the next look rewalks
-  }
-}
-// file history (src/history.js): old versions stay for HISTORY_DAYS, longer for supporters, and take at most the site's quota again
-const historyDays = (user) => (isSupporter(ownerRow(user)) ? cfg.SUPPORTER_HISTORY_DAYS : cfg.HISTORY_DAYS);
-const historyKeep = (user) => ({ since: now() - historyDays(user) * DAY, maxBytes: limitsFor(user).quotaMB * 1048576 });
-// history is a convenience: a failure is logged, never shown to the member or allowed to fail their save
-const recordHistory = (user, message) => H.record(user.id, siteDir(user.username), message, historyKeep(user)).catch((e) => console.error(`file history for ${user.username} failed:`, e.message));
-// a starting point for sites that have none yet (new, or here before history was), and the daily trim for the rest
-async function historySweep() {
-  for (const u of db.prepare('SELECT * FROM users').all()) {
-    if (!H.exists(u.id)) await recordHistory(u, 'history begins');
-    else await H.trim(u.id, siteDir(u.username), historyKeep(u)).catch((e) => console.error(`file history trim for ${u.username} failed:`, e.message));
-  }
-}
-// resolve a member path inside their folder, or null
-function resolveIn(user, rel) {
-  const root = siteDir(user.username);
-  const full = path.resolve(root, rel);
-  return full === root || full.startsWith(root + path.sep) ? full : null;
+  for (const s of extra) files.removeSite(s);
+  files.removeSite(user);
 }
 
 // ---------- app ----------
@@ -869,10 +803,7 @@ main.post('/signup', async (req, res) => {
     return fail(q.userByName.get(username) ? 'That site name is taken.' : 'That email already has a site. Log in or reset your password.');
   }
   try {
-    fs.mkdirSync(siteDir(username), { recursive: true });
-    fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
-    await H.remove(id); // ids are reused after the newest account goes; never hand over someone else's versions
-    recordHistory(q.userById.get(id), 'history begins');
+    await files.create(q.userById.get(id), starters.render(starter, username, cfg));
   } catch {
     try { deleteAccount(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
     return fail('Something went wrong making your site. Try again.', 500);
@@ -970,66 +901,13 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(ownerRow(user)), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(ownerRow(user)), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
 const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null);
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, msgOf(req)));
 
-// The path a file named `name` gets in folder `dir`, or null if its name or type is not allowed
-const uploadRel = (dir, name, anyType) => U.safeRel((dir ? dir + '/' : '') + name.replace(/\\/g, '/').replace(/\s+/g, '_'), { anyType });
-
-// write beside the target and rename over it, so a failed write never leaves a replaced file half-written
-function writeAtomic(full, data) {
-  const tmp = `${full}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-  try {
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(tmp, data);
-    fs.renameSync(tmp, full);
-  } catch (e) {
-    fs.rmSync(tmp, { force: true });
-    throw e;
-  }
-}
-const MAX_FILES = 2000; // the byte quota alone lets a member mint unlimited empty files; this is far above any real site
-
-// Write uploaded or unzipped files into a member's folder through the same checks: safe name, allowed type, quota.
-// Each file is { name, data } in memory or { name, path, size } in UPLOAD_TMP; the caller removes temp files that were not moved in.
-function saveFiles(user, dir, files, skipped) {
-  const size = usage(user.username);
-  const lim = limitsFor(user);
-  let used = size.total;
-  let count = size.count;
-  const saved = [];
-  for (const f of files) {
-    const rel = uploadRel(dir, f.name, lim.anyType);
-    const full = rel && resolveIn(user, rel);
-    if (!full) { skipped.push(`${f.name} (name or file type not allowed)`); continue; }
-    const exists = fs.existsSync(full);
-    const old = exists && fs.statSync(full).isFile() ? fs.statSync(full).size : 0;
-    if (!exists && count >= MAX_FILES) { skipped.push(`${f.name} (too many files: ${MAX_FILES} max)`); continue; }
-    const bytes = f.data ? f.data.length : f.size;
-    if (bytes > lim.fileMB * 1048576) { skipped.push(`${f.name} (bigger than ${lim.fileMB} MB)`); continue; }
-    if (used - old + bytes > lim.quotaMB * 1048576) { skipped.push(`${f.name} (over your ${lim.quotaMB} MB limit)`); continue; }
-    try {
-      if (f.data) writeAtomic(full, f.data);
-      else { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.renameSync(f.path, full); } // a rename replaces the old file in one step
-    } catch {
-      skipped.push(`${f.name} (a file or folder with that name is in the way)`);
-      continue;
-    }
-    used += bytes - old;
-    if (!exists) count++;
-    // record each write as it lands, so a later failure in the batch can't leave the totals short
-    usageCache.set(user.username, { total: used, count });
-    // only pages and scripts are scanned, so only they are read back
-    if (SCANNED.test(rel)) autoFlag(user, rel, f.data ? f.data.toString('utf8') : fs.readFileSync(full, 'utf8'));
-    saved.push(rel);
-  }
-  if (saved.length) markUpdated(user.id, saved);
-  return saved;
-}
 const savedMsg = (saved, skipped, verb) => ({
   ok: saved.length ? `${verb} ${saved.length} file${saved.length === 1 ? '' : 's'}.` : '',
   err: skipped.length ? `Skipped: ${skipped.slice(0, 20).join(', ')}${skipped.length > 20 ? ` and ${skipped.length - 20} more` : ''}. Allowed types: ${[...U.ALLOWED_EXT].join(', ')}.` : '',
@@ -1052,14 +930,13 @@ async function handleUpload(req, res, err) {
   if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return fail('That folder name is not allowed.', 400);
-  const skipped = [];
-  const files = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), path: f.path, size: f.size }));
+  const ups = (req.files || []).map((f) => ({ name: path.basename(f.originalname.replace(/\\/g, '/')), path: f.path, size: f.size }));
   if (req.body.shrink === '1') {
-    for (const f of files) f.size = await U.shrinkImage(f.path, f.name);
+    for (const f of ups) f.size = await U.shrinkImage(f.path, f.name);
     // the shrinking took a while; a ban, reset or deletion meanwhile must still stop the write
     if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
   }
-  const saved = saveFiles(req.ctx.user, dir, files, skipped);
+  const { saved, skipped } = files.writeMany(req.ctx.user, dir, ups);
   if (json) return res.json({ saved: saved.length, skipped });
   showDashboard(req, res, savedMsg(saved, skipped, 'Uploaded'));
 }
@@ -1077,14 +954,14 @@ async function importZip(req, res, err) {
   let zip;
   try {
     const lim = limitsFor(req.ctx.user);
-    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: lim.fileMB * 1048576, maxTotalBytes: lim.quotaMB * 1048576, allowed: (name) => !!uploadRel(dir, name, lim.anyType) });
+    zip = await readZip(req.file.path, { tmpDir: UPLOAD_TMP, maxFileBytes: lim.fileMB * 1048576, maxTotalBytes: lim.quotaMB * 1048576, allowed: (name) => !!files.relFor(req.ctx.user, dir, name) });
   } catch (e) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }
-  const skipped = zip.skipped;
   try {
     if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out, banned or deleted while the zip arrived
-    showDashboard(req, res, savedMsg(saveFiles(req.ctx.user, dir, zip.files, skipped), skipped, 'Imported'));
+    const { saved, skipped } = files.writeMany(req.ctx.user, dir, zip.files);
+    showDashboard(req, res, savedMsg(saved, [...zip.skipped, ...skipped], 'Imported'));
   } finally {
     dropTemp(zip.files);
   }
@@ -1115,24 +992,6 @@ main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   const insert = req.query.widget ? W.snippet(cfg, req.ctx.user, String(req.query.widget), isSupporter(req.ctx.login)) : null;
   res.send(V.editor(req.ctx, null, { rel, content: exists ? fs.readFileSync(full, 'utf8') : blank, isNew: !exists, images: await siteImages(req.ctx.user, rel), insert }));
 });
-// write one text file through the file-count and quota checks; returns why it was not saved, or null once it is
-function saveText(user, full, content) {
-  const size = Buffer.byteLength(content);
-  const exists = fs.existsSync(full) && fs.statSync(full).isFile();
-  const old = exists ? fs.statSync(full).size : 0;
-  const used = usage(user.username);
-  const lim = limitsFor(user);
-  if (!exists && used.count >= MAX_FILES) return `your site already has ${MAX_FILES} files, the most we keep`;
-  if (size > lim.fileMB * 1048576) return `files can be at most ${lim.fileMB} MB`;
-  if (used.total - old + size > lim.quotaMB * 1048576) return `this would go over your ${lim.quotaMB} MB limit`;
-  try {
-    writeAtomic(full, content);
-  } catch {
-    return 'a file or folder with that name is in the way';
-  }
-  usageCache.set(user.username, { total: used.total - old + size, count: used.count + (exists ? 0 : 1) });
-  return null;
-}
 main.post('/dashboard/save', auth, canEdit, async (req, res) => {
   const user = req.ctx.user;
   const rel = U.safeRel(req.body.path);
@@ -1140,11 +999,9 @@ main.post('/dashboard/save', auth, canEdit, async (req, res) => {
   if (!full) return res.status(400).send(V.notice(req.ctx, 'Cannot save', '<p>That file path is not allowed. <a href="/dashboard">Back to my site.</a></p>'));
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
   const isNew = !(fs.existsSync(full) && fs.statSync(full).isFile());
-  const err = saveText(user, full, content);
+  const err = files.write(user, rel, content);
   const images = await siteImages(user, rel);
   if (err) return res.status(400).send(V.editor(req.ctx, { err: `Not saved: ${err}.` }, { rel, content, isNew, images }));
-  autoFlag(user, rel, content);
-  markUpdated(user.id, [rel]);
   res.send(V.editor(req.ctx, { ok: 'Saved. Your page is live.' }, { rel, content, isNew: false, images }));
 });
 // the style editor writes puppypad.css; it never touches a page without asking
@@ -1169,9 +1026,8 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
   const s = style.clean({ ...req.body, bg: req.body.bg === 'own' ? req.body.ownbg : req.body.bg });
   if (!s) return res.redirect(`/dashboard/style?err=${encodeURIComponent('Pick each setting from the form.')}`);
   const full = path.join(siteDir(user.username), 'puppypad.css');
-  const err = saveText(user, full, style.merge(readText(full), s, cfg.BASE_URL));
+  const err = files.write(user, 'puppypad.css', style.merge(readText(full), s, cfg.BASE_URL));
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
-  markUpdated(user.id, ['puppypad.css']);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
 });
 main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
@@ -1179,48 +1035,30 @@ main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
   const full = path.join(siteDir(user.username), 'index.html');
   const html = readText(full);
   if (html === null || style.hasLink(html)) return res.redirect('/dashboard/style');
-  const content = style.link(html);
-  const err = saveText(user, full, content);
+  const err = files.write(user, 'index.html', style.link(html));
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not linked: ${err}.`)}`);
-  autoFlag(user, 'index.html', content);
-  markUpdated(user.id, ['index.html']);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Your front page now uses puppypad.css.')}`);
 });
 // put a starter layout back as the front page: straight away when there is none, after a confirm when it would replace one
 main.post('/dashboard/starter', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   if (!starters.valid(req.body.starter)) return showDashboard(req, res, { err: 'Pick one of the starter layouts.' }, 400);
-  const full = path.join(siteDir(user.username), 'index.html');
   const exists = hasIndex(user);
   if (exists && req.body.confirm !== '1') return res.send(V.starterConfirm(req.ctx, req.body.starter));
   if (!U.limit(`starter:${user.id}`, 20, 3600000)) return showDashboard(req, res, { err: 'That is a lot of fresh starts. Try again in an hour.' }, 429);
-  const err = saveText(user, full, starters.render(req.body.starter, user.username, cfg));
-  if (err) return showDashboard(req, res, { err: `Not made: ${err}.` }, 400);
   // a fresh screenshot, but not an edit: a starter alone doesn't put a site on the public lists
-  db.prepare('UPDATE users SET shot_dirty = 1, starter = ? WHERE id = ?').run(req.body.starter, user.id);
-  recordHistory(user, 'starter');
+  const err = files.write(user, 'index.html', starters.render(req.body.starter, user.username, cfg), { feed: false });
+  if (err) return showDashboard(req, res, { err: `Not made: ${err}.` }, 400);
+  db.prepare('UPDATE users SET starter = ? WHERE id = ?').run(req.body.starter, user.id);
   const name = starters.LIST.find((s) => s.id === req.body.starter).name;
   res.redirect(`/dashboard?ok=${encodeURIComponent(`${exists ? 'Replaced' : 'Made'} your front page (index.html) from the ${name} starter.`)}`);
 });
-// delete one of a member's files, and the folders that leaves empty; false when there is no such file
-function deleteFile(user, rel) {
-  const full = rel && resolveIn(user, rel);
-  if (!full || !fs.existsSync(full) || !fs.statSync(full).isFile()) return false;
-  const { size } = fs.statSync(full);
-  const used = usage(user.username);
-  fs.unlinkSync(full);
-  usageCache.set(user.username, { total: used.total - size, count: used.count - 1 });
-  const root = siteDir(user.username);
-  for (let d = path.dirname(full); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
-  return true;
-}
 main.post('/dashboard/delete', auth, canEdit, (req, res) => {
-  if (deleteFile(req.ctx.user, U.safeRel(req.body.path, { anyType: true }))) markUpdated(req.ctx.user.id);
+  files.deleteFiles(req.ctx.user, [req.body.path]);
   res.redirect(`/dashboard?ok=${encodeURIComponent('File deleted.')}`);
 });
 // rename or move a file or folder; folders keep their contents, and nothing is ever overwritten
 const isDirAt = (full) => !!full && fs.existsSync(full) && fs.statSync(full).isDirectory();
-const depthBelow = (full) => Math.max(0, ...fs.readdirSync(full, { withFileTypes: true }).map((e) => (e.isDirectory() ? 1 + depthBelow(path.join(full, e.name)) : 1)));
 main.get('/dashboard/move', auth, canEdit, (req, res) => {
   const from = U.safeRel(req.query.path, { file: false });
   const full = from && resolveIn(req.ctx.user, from);
@@ -1232,39 +1070,19 @@ main.post('/dashboard/move', auth, canEdit, (req, res) => {
   const from = U.safeRel(req.body.from, { file: false });
   const src = from && resolveIn(user, from);
   if (!src || !fs.existsSync(src)) return res.redirect(`/dashboard?err=${encodeURIComponent('That file or folder is not there any more.')}`);
-  const dir = isDirAt(src);
-  const want = String(req.body.to || '').trim().replace(/^\/+|\/+$/g, '');
-  const fail = (err) => res.status(400).send(V.move(req.ctx, { err }, { from, to: want, dir }));
-  const to = U.safeRel(want, { file: !dir, anyType: limitsFor(user).anyType });
-  const dst = to && resolveIn(user, to);
-  if (!dst) return fail(dir
-    ? 'Use a folder path like pics or old/pics, made of letters, numbers, dots, hyphens and underscores.'
-    : 'Use a path like about.html or pics/cat.png, made of letters, numbers, dots, hyphens and underscores, ending in an allowed file type.');
-  if (to === from) return fail('That is where it already is.');
-  if (dir && (to + '/').startsWith(from + '/')) return fail('A folder cannot go inside itself.');
-  if (fs.existsSync(dst)) return fail(`Something called ${to} is already there. Pick another name.`);
-  if (dir && to.split('/').length + depthBelow(src) > 6) return fail('That would nest files more than 6 folders deep.');
-  try {
-    fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.renameSync(src, dst);
-  } catch {
-    return fail('Not moved: a file is in the way of that path.');
-  }
-  usageCache.set(user.username, { ...usage(user.username) }); // same totals, new entry: a refresh walking mid-move may have counted it twice or not at all
-  const root = siteDir(user.username);
-  for (let d = path.dirname(src); d !== root && fs.readdirSync(d).length === 0; d = path.dirname(d)) fs.rmdirSync(d); // tidy empty folders
-  // a .txt renamed to .html becomes a page, so it gets the same phishing check a saved page does
-  if (!dir && SCANNED.test(to) && !SCANNED.test(from)) autoFlag(user, to, fs.readFileSync(dst, 'utf8'));
-  markUpdated(user.id, dir ? [] : [to]); // a folder is no page to link to
-  const parent = to.split('/').slice(0, -1).join('/');
-  res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${to}.`)}`);
+  const to = String(req.body.to || '').trim().replace(/^\/+|\/+$/g, '');
+  const err = files.move(user, from, to);
+  if (err) return res.status(400).send(V.move(req.ctx, { err }, { from, to, dir: isDirAt(src) }));
+  const moved = U.safeRel(to, { file: false }); // the path as stored: backslashes become folders
+  const parent = moved.split('/').slice(0, -1).join('/');
+  res.redirect(`/dashboard?dir=${encodeURIComponent(parent)}&ok=${encodeURIComponent(`Moved ${from} to ${moved}.`)}`);
 });
 // file history: deleted files to bring back, every kept version of one file, and putting an old version back
 main.get('/dashboard/history', auth, async (req, res) => {
   const user = req.ctx.user;
   const all = await H.deleted(user.id, siteDir(user.username));
   const { page, pages } = pageOf(req, all.length);
-  res.send(V.historyDeleted(req.ctx, msgOf(req), { rows: all.slice((page - 1) * PER_PAGE, page * PER_PAGE), page, pages, days: historyDays(user) }));
+  res.send(V.historyDeleted(req.ctx, msgOf(req), { rows: all.slice((page - 1) * PER_PAGE, page * PER_PAGE), page, pages, days: limitsFor(user).historyDays }));
 });
 main.get('/dashboard/history/file', auth, async (req, res) => {
   const user = req.ctx.user;
@@ -1273,7 +1091,7 @@ main.get('/dashboard/history/file', auth, async (req, res) => {
   const tree = siteDir(user.username);
   const all = await H.versions(user.id, tree, rel);
   const { page, pages } = pageOf(req, all.length);
-  res.send(V.history(req.ctx, msgOf(req), { rel, rows: all.slice((page - 1) * PER_PAGE, page * PER_PAGE), page, pages, exists: fs.existsSync(path.join(tree, rel)), days: historyDays(user) }));
+  res.send(V.history(req.ctx, msgOf(req), { rel, rows: all.slice((page - 1) * PER_PAGE, page * PER_PAGE), page, pages, exists: fs.existsSync(path.join(tree, rel)), days: limitsFor(user).historyDays }));
 });
 main.get('/dashboard/history/view', auth, async (req, res) => {
   const rel = U.safeRel(req.query.path);
@@ -1289,10 +1107,8 @@ main.post('/dashboard/history/restore', auth, canEdit, async (req, res) => {
   const back = (kind, text) => res.redirect(`/dashboard/history/file?path=${encodeURIComponent(rel || '')}&${kind}=${encodeURIComponent(text)}`);
   const old = full && await H.show(user.id, siteDir(user.username), req.body.v, rel);
   if (!old) return back('err', 'That version is not kept any more.');
-  const err = saveText(user, full, old);
+  const err = files.write(user, rel, old);
   if (err) return back('err', `Not restored: ${err}.`);
-  autoFlag(user, rel, old.toString('utf8'));
-  markUpdated(user.id, [rel]);
   back('ok', `Restored ${rel}. The version it replaced is kept in this list too.`);
 });
 main.get('/dashboard/links', auth, async (req, res) => {
@@ -1338,11 +1154,7 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
       .run(username, `${username}@sites.invalid`, owner.id, req.ip, starters.DEFAULT, cfg.QUOTA_MB, t, t);
   } catch (err) { if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); throw err; }
   try {
-    fs.mkdirSync(siteDir(username), { recursive: true });
-    fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starters.DEFAULT, username, cfg));
-    const site = q.userByName.get(username);
-    await H.remove(site.id); // as at signup: a reused id must start clean
-    recordHistory(site, 'history begins');
+    await files.create(q.userByName.get(username), starters.render(starters.DEFAULT, username, cfg));
   } catch {
     db.prepare('DELETE FROM users WHERE username = ?').run(username);
     fs.rmSync(siteDir(username), { recursive: true, force: true });
@@ -1515,21 +1327,18 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   if (q.userByName.get(name) || (held && held.user_id !== user.id)) return fail('That site name is taken.');
   const t = now();
   try {
-    fs.mkdirSync(siteDir(user.username), { recursive: true });
     db.transaction(() => {
       db.prepare('UPDATE users SET username = ?, renamed_at = ?, shot_dirty = 1 WHERE id = ?').run(name, t, user.id);
       db.prepare('DELETE FROM released_names WHERE name = ?').run(name);
       db.prepare('INSERT OR REPLACE INTO released_names (name, released_at, user_id) VALUES (?, ?, ?)').run(user.username, t, user.id);
       db.prepare('UPDATE reports SET site = ? WHERE site = ?').run(name, user.username);
-      fs.renameSync(siteDir(user.username), siteDir(name)); // last, so a failed move rolls the rows back
+      files.rename(user.username, name); // last, so a failed move rolls the rows back
     })();
   } catch (err) {
     if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); // a signup took it meanwhile
     console.error('rename failed:', err.message);
     return fail('Something went wrong renaming your site. Nothing was changed.', 500);
   }
-  try { fs.renameSync(shotPath(user.username), shotPath(name)); } catch { /* none yet; shot_dirty brings one */ }
-  if (usageCache.has(user.username)) { usageCache.set(name, usageCache.get(user.username)); usageCache.delete(user.username); }
   res.redirect(`/dashboard?ok=${encodeURIComponent(`Your site is now ${cfg.siteUrl(name)}. The old address redirects there for 90 days. Pages that spell out the old address or name need editing by hand.`)}`);
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
@@ -1638,9 +1447,8 @@ main.post('/dashboard/widgets/copy', auth, canEdit, (req, res) => {
   const rel = `${req.body.fx}.js`;
   const full = resolveIn(user, rel);
   if (fs.existsSync(full)) return back('err', `You already have ${rel}. Rename or delete it first to copy a fresh one.`);
-  const err = saveText(user, full, src);
+  const err = files.write(user, rel, src);
   if (err) return back('err', `Not copied: ${err}.`);
-  markUpdated(user.id, [rel]);
   back('ok', `Copied ${rel} into your site. Now add it to a page.`);
 });
 
@@ -1680,7 +1488,7 @@ const apiCurrent = (user) => {
 };
 api.get('/site', (req, res) => {
   const u = req.ctx.user;
-  const used = usage(u.username);
+  const used = files.usage(u.username);
   const lim = limitsFor(u);
   res.json({
     name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: isListed(u), hidden: !!u.hidden,
@@ -1712,8 +1520,7 @@ api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err
     if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files. Send them in a field called "files".' });
     const dir = U.safeRel(req.body?.dir || '', { file: false });
     if (dir === null) return res.status(400).json({ error: 'That folder name is not allowed.' });
-    const skipped = [];
-    const saved = saveFiles(req.ctx.user, dir, req.files.map((f) => ({ name: f.originalname, path: f.path, size: f.size })), skipped);
+    const { saved, skipped } = files.writeMany(req.ctx.user, dir, req.files.map((f) => ({ name: f.originalname, path: f.path, size: f.size })));
     res.json({ saved, skipped });
   } catch (e) { next(e); } finally { dropTemp(req.files || []); }
 }, true));
@@ -1727,16 +1534,11 @@ api.post('/delete', express.urlencoded({ extended: false }), express.json(), (re
     const rels = list.map((p) => U.safeRel(p, { anyType: true }));
     const bad = list.find((p, i) => !rels[i]);
     if (bad !== undefined) return res.status(400).json({ error: `That path is not allowed: ${String(bad).slice(0, 100)}` });
-    const deleted = [];
-    const missing = [];
-    for (const rel of new Set(rels)) (deleteFile(user, rel) ? deleted : missing).push(rel);
-    if (deleted.length) markUpdated(user.id);
-    return res.json({ deleted, missing });
+    return res.json(files.deleteFiles(user, rels));
   }
   const rel = U.safeRel(req.body?.path, { anyType: true });
   if (!rel) return res.status(400).json({ error: 'Send the path of one file, like pics/cat.png.' });
-  if (!deleteFile(user, rel)) return res.status(404).json({ error: `There is no file called ${rel}.` });
-  markUpdated(user.id);
+  if (!files.deleteFiles(user, [rel]).deleted.length) return res.status(404).json({ error: `There is no file called ${rel}.` });
   res.json({ deleted: rel });
 });
 // a file's bytes as stored, for the CLI's pull; served as a download so a member's page never runs on this origin
@@ -1783,7 +1585,7 @@ const showAdmin = (req, res, m) => {
     q,
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, disk: usage(u.username).total, bandwidth: bwToday(u) })),
+    users: users.map((u) => ({ ...u, disk: files.usage(u.username).total, bandwidth: bwToday(u) })),
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
@@ -1941,16 +1743,16 @@ const housekeeping = () => {
   } catch (e) { console.error('housekeeping failed:', e.message); }
 };
 setInterval(housekeeping, 3600000).unref();
-const refreshAll = () => refreshUsage().catch((e) => console.error('disk totals refresh failed:', e.message));
+const refreshAll = () => files.refreshUsage().catch((e) => console.error('disk totals refresh failed:', e.message));
 setInterval(refreshAll, 3600000).unref();
-const sweepHistory = () => historySweep().catch((e) => console.error('file history sweep failed:', e.message));
+const sweepHistory = () => files.historySweep().catch((e) => console.error('file history sweep failed:', e.message));
 setInterval(sweepHistory, DAY).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
-app.forgetUsage = (name) => usageCache.delete(name); // for tests that put files on disk behind the app's back
-app.refreshUsage = refreshUsage;
-app.historySweep = historySweep;
+app.forgetUsage = files.forgetUsage; // for tests that put files on disk behind the app's back
+app.refreshUsage = files.refreshUsage;
+app.historySweep = files.historySweep;
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);
