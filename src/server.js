@@ -221,12 +221,14 @@ function deleteAccountRows(user) {
   // never-confirmed accounts were never online, so their names are free again at once
   if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
 }
+// runs after any commit still going; the request doesn't wait for it
+const removeHistory = (u) => H.remove(u.id).catch((e) => console.error(`file history remove for ${u.username} failed:`, e.message));
 function deleteAccount(user, rows = deleteAccountRows) {
   const extra = db.prepare('SELECT id, username FROM users WHERE owner_id = ?').all(user.id);
   rows(user);
-  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); H.remove(s.id); }
+  for (const s of extra) { fs.rmSync(siteDir(s.username), { recursive: true, force: true }); fs.rmSync(shotPath(s.username), { force: true }); usageCache.delete(s.username); removeHistory(s); }
   fs.rmSync(siteDir(user.username), { recursive: true, force: true });
-  H.remove(user.id);
+  removeHistory(user);
   fs.rmSync(shotPath(user.username), { force: true });
   usageCache.delete(user.username);
 }
@@ -867,7 +869,7 @@ main.post('/signup', async (req, res) => {
   try {
     fs.mkdirSync(siteDir(username), { recursive: true });
     fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starter, username, cfg));
-    H.remove(id); // ids are reused after the newest account goes; never hand over someone else's versions
+    await H.remove(id); // ids are reused after the newest account goes; never hand over someone else's versions
     recordHistory(q.userById.get(id), 'history begins');
   } catch {
     try { deleteAccount(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
@@ -1320,7 +1322,7 @@ main.post('/dashboard/webring', auth, canEdit, (req, res) => {
   res.redirect(`/dashboard/widgets?ok=${encodeURIComponent(join ? 'You joined the webring.' : 'You left the webring.')}`);
 });
 // several sites under one login (supporters): each extra site is a users row owned by the login row
-main.post('/dashboard/sites/new', auth, canEdit, (req, res) => {
+main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   const owner = ownerRow(req.ctx.user);
   const username = String(req.body.username || '').trim().toLowerCase();
   const fail = (e) => res.redirect(`/dashboard?err=${encodeURIComponent(e)}`);
@@ -1337,7 +1339,7 @@ main.post('/dashboard/sites/new', auth, canEdit, (req, res) => {
     fs.mkdirSync(siteDir(username), { recursive: true });
     fs.writeFileSync(path.join(siteDir(username), 'index.html'), starters.render(starters.DEFAULT, username, cfg));
     const site = q.userByName.get(username);
-    H.remove(site.id); // as at signup: a reused id must start clean
+    await H.remove(site.id); // as at signup: a reused id must start clean
     recordHistory(site, 'history begins');
   } catch {
     db.prepare('DELETE FROM users WHERE username = ?').run(username);
