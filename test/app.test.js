@@ -2304,10 +2304,12 @@ test('file history keeps each save of a text file, puts old versions back and br
   // a removal waits for a commit still running instead of failing under it, and nothing comes back after
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-scratch-'));
   fs.writeFileSync(path.join(scratch, 'a.html'), 'x');
-  const saving = H.record(999999, scratch, 'late save');
-  await H.remove(999999);
-  await saving;
-  assert.ok(!H.exists(999999));
+  try {
+    const saving = H.record(999999, scratch, 'late save');
+    await H.remove(999999);
+    await saving;
+    assert.ok(!H.exists(999999));
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
   // deleting the account deletes its history, in the background
   await post(m, '/dashboard/delete-account', { password: 'longpassword1' });
   for (let i = 0; i < 100 && H.exists(user.id); i++) await new Promise((r) => setTimeout(r, 50));

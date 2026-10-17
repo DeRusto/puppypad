@@ -109,7 +109,8 @@ async function show(id, tree, sha, rel) {
   try { return await git(id, tree, ['show', `${sha}:${rel}`], 'buffer'); } catch { return null; }
 }
 // queued behind any commit still running, or rm races git writing into the folder (ENOTEMPTY)
-const remove = (id) => queue(id, async () => fs.rmSync(gitDir(id), { recursive: true, force: true }))
-  .catch((e) => console.error(`file history remove for ${id} failed:`, e.message));
+const remove = (id) => queue(id, async () => fs.rmSync(gitDir(id), { recursive: true, force: true }));
+// reads wait in the queue too, so a reused id never reads a repository whose removal is still pending
+const queued = (fn) => (id, ...a) => queue(id, () => fn(id, ...a));
 
-module.exports = { HISTORY_DIR, record, trim: trimSite, versions, deleted, show, remove, exists };
+module.exports = { HISTORY_DIR, record, trim: trimSite, versions: queued(versions), deleted: queued(deleted), show: queued(show), remove, exists };
