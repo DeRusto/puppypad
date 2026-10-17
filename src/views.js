@@ -620,13 +620,16 @@ const support = (ctx, m, { until, customer, limits }) => {
   const c = ctx.cfg;
   const live = until > Date.now();
   const manage = customer ? `<form class="inline" method="post" action="/dashboard/support/portal">${csrfField(ctx)}<button>Manage billing, cancel or change card</button></form> <span class="note">on Stripe</span>` : '';
+  const buy = (plan, label) => `<form method="post" action="/dashboard/support">${csrfField(ctx)}<input type="hidden" name="plan" value="${plan}"><button>${label}</button></form>`;
+  const offers = [c.PRICE_ID ? buy('monthly', c.PRICE_ID_ANNUAL ? 'Become a supporter — monthly' : 'Become a supporter') : '',
+    c.PRICE_ID_ANNUAL ? buy('annual', c.PRICE_ID ? 'Become a supporter — yearly' : 'Become a supporter') : ''].filter(Boolean).join('\n');
   return layout(ctx, 'Support', `
 <section class="box"><h2>Support ${esc(c.SITE_NAME)}</h2>${msg(m)}
 <p>${esc(c.SITE_NAME)} is free and stays free. Supporters chip in for the server and get a few extras that cost us something to give.</p>
 ${perks(c)}
 ${live ? `<p class="ok" role="status">You are a supporter until ${date(until)}. Thank you!</p>${customer ? `<p>${manage}</p>` : ''}`
     : `${until ? `<p class="note">Your support ended ${date(until)}. Nothing was deleted: files over the free ${c.QUOTA_MB} MB stay online, and uploads wait until your site is back under it.</p>` : ''}
-${c.SUPPORT_ON ? `<form method="post" action="/dashboard/support">${csrfField(ctx)}<button>Become a supporter</button></form>
+${c.SUPPORT_ON ? `${offers}
 <p class="note">Payment is handled by Stripe; your card never touches our server. See the <a href="/rules#supporter-terms">supporter terms</a>.</p>${manage ? `<p>${manage}</p>` : ''}` : ''}`}
 <p>Your limits now: ${limits.quotaMB} MB of space, files up to ${limits.fileMB} MB${limits.anyType ? ', any file type' : ''}. <a href="/dashboard">Back to my pad</a></p></section>`);
 };

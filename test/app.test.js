@@ -17,6 +17,7 @@ process.env.SUPPORTER_MAX_FILE_MB = '2';
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
 process.env.STRIPE_PRICE_ID = 'price_test';
+process.env.STRIPE_PRICE_ID_ANNUAL = 'price_test_year';
 delete process.env.SMTP_HOST;
 delete process.env.TURNSTILE_SECRET_KEY;
 
@@ -25,14 +26,15 @@ const Stripe = require('stripe');
 const stripeCalls = [];
 // what the fake Stripe holds: open checkouts and subscriptions per customer; fail makes every call throw
 const fake = { customers: 0, open: [], subs: [], cancelled: [], fail: false };
-const listed = (data) => Object.assign(Promise.resolve({ data }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
+const listed = (data, limit = data.length) => Object.assign(Promise.resolve({ data: data.slice(0, limit), has_more: data.length > limit }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
 const stripeCall = (fn) => (...a) => { if (fake.fail) throw new Error('Stripe is down'); stripeCalls.push(a[0]); return fn(...a); };
 require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
   const s = new Stripe(key);
   s.customers = { create: stripeCall(async () => ({ id: `cus_test${++fake.customers}` })) };
   s.checkout = { sessions: {
     create: stripeCall(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
-    list: stripeCall(({ customer }) => listed(fake.open.filter((o) => o.customer === customer))),
+    list: stripeCall(({ customer, limit }) => listed(fake.open.filter((o) => o.customer === customer), limit)),
+    expire: stripeCall(async (id) => { fake.open = fake.open.filter((o) => o.id !== id); return { id }; }),
   } };
   s.subscriptions = {
     list: stripeCall(({ customer }) => listed(fake.subs.filter((o) => o.customer === customer))),
@@ -2374,7 +2376,7 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.deepEqual(call.line_items, [{ price: 'price_test', quantity: 1 }]);
   assert.deepEqual(call.subscription_data.billing_mode, { type: 'flexible' });
   // a second try before paying reopens the same checkout instead of starting a second subscription
-  fake.open.push({ customer: cus, url: 'https://checkout.stripe.com/c/pay/open' });
+  fake.open.push({ id: 'cs_open', customer: cus, url: 'https://checkout.stripe.com/c/pay/open', line_items: { data: [{ price: { id: 'price_test' } }] } });
   const again = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
   assert.equal(again.headers.location, 'https://checkout.stripe.com/c/pay/open');
   fake.open = [];
@@ -2440,4 +2442,72 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   // the terms and the privacy page say what supporting means and who takes the money
   assert.match((await req('get', '/rules')).text, /id="supporter-terms"/);
   assert.match((await req('get', '/privacy')).text, /processed by Stripe/);
+});
+
+test('supporter checkout searches all pages before reusing or expiring open sessions', async () => {
+  const m = await member('paged-checkout');
+  const cus = 'cus_paged';
+  db.prepare('UPDATE users SET stripe_customer_id = ? WHERE username = ?').run(cus, 'paged-checkout');
+  const open = (id, price, customer = cus) => ({ id, customer, url: `https://checkout.stripe.com/c/pay/${id}`, line_items: { data: [{ price: { id: price } }] } });
+  const others = Array.from({ length: 101 }, (_, i) => open(`cs_other_${i}`, 'price_test_year'));
+  const matching = open('cs_matching', 'price_test');
+  const unrelated = open('cs_unrelated', 'price_test_year', 'cus_unrelated');
+  const checkout = () => req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'monthly' });
+  fake.open = [unrelated, ...others, matching];
+  try {
+    const before = stripeCalls.length;
+    const reused = await checkout();
+    assert.equal(reused.status, 303);
+    assert.equal(reused.headers.location, matching.url);
+    assert.deepEqual(fake.open, [unrelated, ...others, matching]);
+    assert.equal(stripeCalls.length - before, 2); // only subscriptions and sessions listed; no expiry or creation
+
+    fake.open = [unrelated, ...others];
+    const start = stripeCalls.length;
+    const created = await checkout();
+    assert.equal(created.status, 303);
+    assert.equal(created.headers.location, 'https://checkout.stripe.com/c/pay/test');
+    assert.deepEqual(fake.open, [unrelated]);
+    assert.deepEqual(stripeCalls.slice(start + 2, -1), others.map((o) => o.id));
+    assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test', quantity: 1 }]);
+  } finally {
+    fake.open = [];
+  }
+});
+
+test('supporter checkout offers the monthly and the yearly price', async () => {
+  const m = await member('choosey');
+  const page = await req('get', '/dashboard/support').set('Cookie', m.cookie);
+  assert.match(page.text, /Become a supporter — monthly/);
+  assert.match(page.text, /Become a supporter — yearly/);
+  // the yearly button checks out at the yearly price
+  const yr = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'annual' });
+  assert.equal(yr.status, 303);
+  assert.equal(yr.headers.location, 'https://checkout.stripe.com/c/pay/test');
+  assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test_year', quantity: 1 }]);
+  // no plan in the post (the old single-button form) still checks out at the monthly price
+  const mo = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  assert.equal(mo.status, 303);
+  assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test', quantity: 1 }]);
+  const end = Math.floor(Date.now() / 1000) + 365 * 86400;
+  const cus = db.prepare('SELECT stripe_customer_id FROM users WHERE username = ?').get('choosey').stripe_customer_id;
+  // an open monthly checkout is reused for monthly, but replaced when the member picks yearly
+  fake.open.push({ id: 'cs_mo', customer: cus, url: 'https://checkout.stripe.com/c/pay/mo', line_items: { data: [{ price: { id: 'price_test' } }] } });
+  const same = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'monthly' });
+  assert.equal(same.headers.location, 'https://checkout.stripe.com/c/pay/mo');
+  const sw = await req('post', '/dashboard/support').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, plan: 'annual' });
+  assert.equal(sw.headers.location, 'https://checkout.stripe.com/c/pay/test');
+  assert.deepEqual(fake.open, []);
+  assert.deepEqual(stripeCalls.at(-1).line_items, [{ price: 'price_test_year', quantity: 1 }]);
+  // the webhook still just follows the subscription: a yearly one sets supporter_until a year out
+  const signer = new Stripe('sk_test_fake').webhooks;
+  const hook = (type, object, secret = 'whsec_test') => {
+    const payload = JSON.stringify({ id: `evt_${type}`, object: 'event', type, data: { object } });
+    return req('post', '/stripe/webhook').set('Content-Type', 'application/json')
+      .set('Stripe-Signature', signer.generateTestHeaderString({ payload, secret })).send(payload);
+  };
+  const sub = { id: 'sub_year', customer: cus, status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } };
+  fake.subs = fake.subs.filter((o) => o.id !== sub.id).concat(sub);
+  assert.equal((await hook('customer.subscription.created', sub)).status, 200);
+  assert.ok(db.prepare('SELECT supporter_until FROM users WHERE username = ?').get('choosey').supporter_until > end * 1000);
 });
