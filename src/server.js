@@ -17,6 +17,7 @@ const W = require('./widgets');
 const H = require('./history');
 const { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES } = require('./sitefiles');
 const { createLogins } = require('./logins');
+const { createBilling, BadSignature } = require('./billing');
 
 // ---------- config ----------
 const env = process.env;
@@ -65,9 +66,7 @@ const HOTLINK_MEDIA = /\.(png|jpe?g|gif|webp|ico|bmp|svg|midi?|mp3|ogg|wav)$/i;
 const BOT_UA = /bot|crawl|spider|slurp|preview|headless/i; // shortcut: a word list, not a bot database
 const STATS_DAYS = 30;
 const HOTLINK_PER_MIN = 60; // media requests a minute per site from pages on other domains
-const SUPPORT_GRACE = 3 * DAY; // Stripe retries a failed renewal for a few days before giving up
 
-const stripe = cfg.SUPPORT_ON ? new Stripe(env.STRIPE_SECRET_KEY) : null;
 const mailer = env.SMTP_HOST ? nodemailer.createTransport({
   host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), secure: Number(env.SMTP_PORT) === 465,
   auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
@@ -170,6 +169,9 @@ const MAX_SITES = 5;
 // what belongs to a site's login, from any of its sites (src/logins.js)
 const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site) });
 const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
+// the supporter tier's rules (src/billing.js), only while it is switched on; app.setStripe swaps the Stripe client for tests
+const makeBilling = (stripe) => createBilling({ cfg, logins, stripe, webhookSecret: env.STRIPE_WEBHOOK_SECRET });
+let billing = cfg.SUPPORT_ON ? makeBilling(new Stripe(env.STRIPE_SECRET_KEY)) : null;
 // every change to a site's folder goes through here (src/sitefiles.js)
 const files = createSiteFiles({ cfg, limitsFor, sendMail });
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
@@ -394,39 +396,17 @@ main.get('/healthz', (req, res) => {
 // Stripe tells us when a subscription starts, renews or ends. Signed with STRIPE_WEBHOOK_SECRET over the raw body,
 // so it sits ahead of the form parser and the CSRF/Origin check, and carries no session
 main.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
-  if (!stripe) return res.sendStatus(404);
-  let event;
-  try { event = stripe.webhooks.constructEvent(req.body, req.get('stripe-signature') || '', env.STRIPE_WEBHOOK_SECRET); } catch { return res.status(400).type('text').send('Bad signature'); }
+  if (!billing) return res.sendStatus(404);
   try {
-    const o = event.data.object;
-    if (event.type === 'checkout.session.completed' && o.customer) {
-      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND login_id IS NULL").run(String(o.customer), Number(o.client_reference_id) || 0);
-    } else if (event.type.startsWith('customer.subscription.')) {
-      // the payload may be stale (Stripe can deliver or retry events out of order), so apply the subscription as it is now
-      applySubscription(await stripe.subscriptions.retrieve(o.id));
-    }
+    await billing.receive(req.body, req.get('stripe-signature'));
     res.json({ received: true });
   } catch (e) {
+    if (e instanceof BadSignature) return res.status(400).type('text').send('Bad signature');
     console.error('stripe webhook failed:', e.message);
     res.sendStatus(500); // Stripe retries
   }
 });
-// a subscription's state sets supporter_until: paid up to the period's end (plus a few days for a late renewal), or over now
-function applySubscription(sub) {
-  const user = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer)) ||
-    db.prepare('SELECT * FROM users WHERE id = ? AND login_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
-  if (!user) return;
-  // newer Stripe API versions keep the period on each item
-  const item = sub.items?.data?.[0];
-  const start = (item?.current_period_start ?? sub.current_period_start ?? 0) * 1000;
-  const end = (item?.current_period_end ?? sub.current_period_end ?? 0) * 1000;
-  let until = null;
-  if (['active', 'trialing'].includes(sub.status) && end) until = end + SUPPORT_GRACE;
-  // a failed renewal already moved the period on, but only the one before it was paid: perks run the grace days past it
-  else if (sub.status === 'past_due' && start) until = start + SUPPORT_GRACE;
-  else if (['canceled', 'unpaid', 'incomplete_expired'].includes(sub.status)) until = Math.min(user.supporter_until, now());
-  db.prepare('UPDATE users SET stripe_customer_id = ?, supporter_until = COALESCE(?, supporter_until) WHERE id = ?').run(String(sub.customer), until, user.id);
-}
+
 
 // the HTTP API takes a member's API key in the Authorization header and never reads the session cookie,
 // so a page on another site can't use it with a visitor's login and it needs no CSRF token; its routes are under "HTTP API" below
@@ -1317,26 +1297,13 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
     logins.remove(req.ctx.user);
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
-  if (!(await cancelBilling(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
+  if (billing && !(await billing.cancel(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
   logins.remove(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
 });
 
 // ----- supporter tier (Stripe) -----
-// a deleted login must stop paying: its subscriptions are cancelled first, and the account stays if Stripe can't be reached
-async function cancelBilling(user) {
-  if (!isLogin(user) || !user.stripe_customer_id || !stripe) return true;
-  try {
-    for await (const sub of stripe.subscriptions.list({ customer: user.stripe_customer_id, status: 'all' })) {
-      if (!['canceled', 'incomplete_expired'].includes(sub.status)) await stripe.subscriptions.cancel(sub.id);
-    }
-    return true;
-  } catch (e) {
-    console.error('stripe cancel failed:', e.message);
-    return false;
-  }
-}
 // supporting is per login: an extra site's page shows and pays for the login that owns it
 const supportPage = (req, res, m, status = 200) => res.status(status).send(V.support(req.ctx, m, {
   until: req.ctx.login.supporter_until, customer: !!req.ctx.login.stripe_customer_id, limits: limitsFor(req.ctx.user),
@@ -1344,41 +1311,11 @@ const supportPage = (req, res, m, status = 200) => res.status(status).send(V.sup
 main.get('/dashboard/support', auth, (req, res) => (cfg.SUPPORT_ON || isSupporter(req.ctx.login) ? supportPage(req, res, msgOf(req)) : res.redirect('/dashboard')));
 // Stripe's hosted Checkout takes the card; the webhook above turns the perks on once it is paid
 main.post('/dashboard/support', auth, async (req, res) => {
-  if (!stripe) return res.redirect('/dashboard');
-  const already = () => supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
-  let login = req.ctx.login;
-  if (login.supporter_until > now() && login.stripe_customer_id) return already();
+  if (!billing) return res.redirect('/dashboard');
   try {
-    // one Stripe customer per login, made before checkout, so a second tab or a payment the webhook hasn't reported yet
-    // finds the same customer: an open checkout is reused and a live subscription refuses another
-    if (!login.stripe_customer_id) {
-      const customer = await stripe.customers.create({ email: login.email, metadata: { user_id: String(login.id) } });
-      // two requests at once: the first stored wins, the other customer is left unused
-      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id = ''").run(customer.id, login.id);
-      login = q.userById.get(login.id);
-    }
-    const subs = await stripe.subscriptions.list({ customer: login.stripe_customer_id, status: 'all', limit: 10 });
-    if (subs.data.some((x) => ['active', 'trialing', 'past_due', 'incomplete'].includes(x.status))) return already();
-    // the support page offers monthly, plus yearly while a yearly price is set; a choice that is not on offer takes the default price
-    const price = req.body.plan === 'annual' ? (cfg.PRICE_ID_ANNUAL || cfg.PRICE_ID) : (cfg.PRICE_ID || cfg.PRICE_ID_ANNUAL);
-    const openIds = [];
-    for await (const open of stripe.checkout.sessions.list({ customer: login.stripe_customer_id, status: 'open', limit: 100, expand: ['data.line_items'] })) {
-      if (open.line_items?.data[0]?.price?.id === price) return res.redirect(303, open.url);
-      openIds.push(open.id);
-    }
-    // only after every page has no matching checkout, drop the other plans so the member can switch
-    for (const id of openIds) await stripe.checkout.sessions.expire(id);
-    const session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      line_items: [{ price, quantity: 1 }],
-      client_reference_id: String(login.id),
-      // flexible billing mode: Stripe's recommended default for predictable proration and invoices
-      subscription_data: { metadata: { user_id: String(login.id) }, billing_mode: { type: 'flexible' } },
-      customer: login.stripe_customer_id,
-      success_url: `${cfg.BASE_URL}/dashboard/support?ok=${encodeURIComponent('Thank you! Your supporter perks switch on as soon as Stripe confirms the payment.')}`,
-      cancel_url: `${cfg.BASE_URL}/dashboard/support`,
-    });
-    res.redirect(303, session.url);
+    const go = await billing.checkout(req.ctx.login, req.body.plan);
+    if (go.already) return supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
+    res.redirect(303, go.url);
   } catch (e) {
     console.error('stripe checkout failed:', e.message);
     supportPage(req, res, { err: 'Stripe could not be reached. Nothing was charged; try again in a little while.' }, 502);
@@ -1386,10 +1323,11 @@ main.post('/dashboard/support', auth, async (req, res) => {
 });
 // Stripe's Customer Portal: cancel, change the card, see receipts
 main.post('/dashboard/support/portal', auth, async (req, res) => {
-  if (!stripe || !req.ctx.login.stripe_customer_id) return res.redirect('/dashboard/support');
+  if (!billing) return res.redirect('/dashboard/support');
   try {
-    const session = await stripe.billingPortal.sessions.create({ customer: req.ctx.login.stripe_customer_id, return_url: `${cfg.BASE_URL}/dashboard/support` });
-    res.redirect(303, session.url);
+    const url = await billing.portal(req.ctx.login);
+    if (!url) return res.redirect('/dashboard/support');
+    res.redirect(303, url);
   } catch (e) {
     console.error('stripe portal failed:', e.message);
     supportPage(req, res, { err: 'Stripe could not be reached. Try again in a little while.' }, 502);
@@ -1631,7 +1569,7 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
-    if (!(await cancelBilling(target))) return showAdmin(req, res, { err: `Stripe could not be reached to cancel ${target.username}'s supporter payments, so nothing was deleted.` });
+    if (billing && !(await billing.cancel(target))) return showAdmin(req, res, { err: `Stripe could not be reached to cancel ${target.username}'s supporter payments, so nothing was deleted.` });
     // the rows and the log entry commit together; the files go only after both have
     logins.remove(target, { inTransaction: (u) => adminLog(req, 'delete', u.username, reason) });
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
@@ -1716,6 +1654,7 @@ setInterval(sweepHistory, DAY).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
+app.setStripe = (client) => { billing = makeBilling(client); }; // tests bring an in-memory Stripe (test/fake-stripe.js)
 app.forgetUsage = files.forgetUsage; // for tests that put files on disk behind the app's back
 app.refreshUsage = files.refreshUsage;
 app.historySweep = files.historySweep;
