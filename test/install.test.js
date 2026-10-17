@@ -49,7 +49,8 @@ function sandbox() {
   fs.mkdirSync(bin);
   const log = path.join(tmp, 'docker.log');
   // docker: the new release never comes up (`up` fails while .env names v0.0.2); the database copy is a file
-  sh(path.join(bin, 'docker'), `echo "$*" >> ${log}
+  // each line ends with the release .env names at that moment, [v0.0.2], to show which image a command runs with
+  sh(path.join(bin, 'docker'), `echo "$* [$(sed -n 's/^PUPPYPAD_VERSION=//p' .env 2>/dev/null)]" >> ${log}
 case "$*" in
   *"compose up"*) ! grep -q '^PUPPYPAD_VERSION=v0.0.2$' .env ;;
   *"backup('/data/backup.db')"*) touch data/backup.db ;;
@@ -58,14 +59,17 @@ case "$*" in
 esac`);
   sh(path.join(bin, 'crontab'), `if [ "$1" = -l ]; then cat ${tmp}/crontab 2>/dev/null; else cat > ${tmp}/crontab; fi`);
   sh(path.join(bin, 'rclone'), `echo "rclone $*" >> ${log}`);
-  // a release is the bundle make-bundle.sh would build, with VERSION and docker-compose.yml marking which one it is
-  const release = (tag) => {
+  // a release is the bundle make-bundle.sh would build, with VERSION and docker-compose.yml marking which one it is;
+  // schema writes its SCHEMA file (none: an older release), installer replaces its scripts/install.sh
+  const release = (tag, { schema, installer } = {}) => {
     const stage = path.join(tmp, `stage-${tag}`);
     fs.mkdirSync(path.join(stage, 'scripts'), { recursive: true });
     for (const f of ['.env.example', '.env.caddy.example', 'Caddyfile', 'README.md', 'LICENSE']) fs.copyFileSync(path.join(REPO, f), path.join(stage, f));
     for (const f of ['install.sh', 'backup.sh', 'upgrade-watch.sh']) fs.copyFileSync(path.join(REPO, 'scripts', f), path.join(stage, 'scripts', f));
     fs.writeFileSync(path.join(stage, 'docker-compose.yml'), `# ${tag}\n`);
     fs.writeFileSync(path.join(stage, 'VERSION'), `${tag}\n`);
+    if (schema !== undefined) fs.writeFileSync(path.join(stage, 'SCHEMA'), `${schema}\n`);
+    if (installer) sh(path.join(stage, 'scripts/install.sh'), installer);
     if (tag === 'v0.0.2') fs.writeFileSync(path.join(stage, 'ADDED.txt'), 'new in v0.0.2\n');
     const out = path.join(web, 'DeRusto/puppypad/releases/download', tag);
     fs.mkdirSync(out, { recursive: true });
@@ -76,7 +80,10 @@ esac`);
   const run = (cmd, args, extra = {}, input) => spawnSync(cmd, args, { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', input });
   // a first install is piped into sh, as the README's curl line does
   const fresh = (tag) => run('sh', ['-s', tag], {}, fs.readFileSync(path.join(REPO, 'scripts/install.sh')));
-  return { tmp, root, bin, log, release, run, fresh, read: (f) => fs.readFileSync(path.join(root, f), 'utf8') };
+  // the docker commands run so far, one per line, and the data folders backup.sh copies
+  const docker = () => fs.readFileSync(log, 'utf8').split('\n').filter(Boolean);
+  const data = () => { for (const d of ['data/sites', 'data/shots']) fs.mkdirSync(path.join(root, d), { recursive: true }); };
+  return { tmp, root, bin, log, release, run, fresh, docker, data, read: (f) => fs.readFileSync(path.join(root, f), 'utf8') };
 }
 
 test('installer: a first install refuses a folder that holds other files', () => {
@@ -114,6 +121,8 @@ test('installer: an upgrade that does not come up puts every file and .env value
   // the database copy runs in a throwaway container, so it works while the app is down
   assert.match(fs.readFileSync(s.log, 'utf8'), /compose run --rm -T --no-deps app node/);
   assert.doesNotMatch(fs.readFileSync(s.log, 'utf8'), /compose exec -T app (node -e "require\('better|rm)/);
+  // neither release has a schema, so the database is left alone
+  assert.doesNotMatch(fs.readFileSync(s.log, 'utf8'), /schema\.js/);
 
   // one copy, kept current: deleted files and old full archives go, history comes along, and the remote mirrors it
   fs.writeFileSync(path.join(s.root, 'backups/puppypad-20000101-0315.tar.gz'), '');
@@ -138,4 +147,57 @@ test('installer: an upgrade that does not come up puts every file and .env value
   assert.ok(!fs.existsSync(path.join(s.root, 'ran')));
   assert.equal(watch('upgrade v0.0.3').status, 0);
   assert.equal(s.read('ran'), 'v0.0.3\n');
+});
+
+// the index of the first docker command matching re, after index `from`
+const at = (lines, re, from = -1) => lines.findIndex((l, i) => i > from && re.test(l));
+const DOWN = (n, tag) => new RegExp(`^compose run --rm -T --no-deps app node src/schema\\.js down ${n} \\[${tag}\\]$`);
+
+test('installer: a failed upgrade to a newer schema puts the database back with the new image before the old release starts', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.2', { schema: 1 });
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.data();
+  const up = s.run('scripts/install.sh', ['v0.0.2']);
+  assert.equal(up.status, 1, up.stdout + up.stderr);
+  assert.match(up.stdout, /putting the database back to schema 0/);
+  const d = s.docker();
+  const failed = at(d, /^compose up -d --remove-orphans \[v0\.0\.2\]$/);
+  const stop = at(d, /^compose stop app \[v0\.0\.2\]$/, failed);
+  const down = at(d, DOWN(0, 'v0.0.2'), stop);
+  const back = at(d, /^compose up -d --remove-orphans \[v0\.0\.1\]$/, down);
+  assert.ok(failed >= 0 && stop > failed && down > stop && back > down, d.join('\n'));
+  assert.equal(s.read('VERSION'), 'v0.0.1\n');
+  assert.ok(!fs.existsSync(path.join(s.root, 'SCHEMA')));
+});
+
+test('installer: moving to an older schema keeps control, backs up and puts the database back before switching', () => {
+  const s = sandbox();
+  s.release('v0.0.1', { installer: 'echo "handed over to the v0.0.1 installer"; exit 7' });
+  s.release('v0.0.3', { schema: 1 });
+  assert.equal(s.fresh('v0.0.3').status, 0);
+  assert.equal(s.read('SCHEMA'), '1\n');
+  s.data();
+  const down = s.run('scripts/install.sh', ['v0.0.1']);
+  assert.equal(down.status, 0, down.stdout + down.stderr);
+  assert.doesNotMatch(down.stdout, /handed over/);
+  const d = s.docker();
+  const backup = at(d, /backup\('\/data\/backup\.db'\).* \[v0\.0\.3\]$/);
+  const stop = at(d, /^compose stop app \[v0\.0\.3\]$/, backup);
+  const migrate = at(d, DOWN(0, 'v0.0.3'), stop);
+  const start = at(d, /^compose up -d --remove-orphans \[v0\.0\.1\]$/, migrate);
+  assert.ok(backup >= 0 && stop > backup && migrate > stop && start > migrate, d.join('\n'));
+  assert.equal(s.read('VERSION'), 'v0.0.1\n');
+  assert.ok(!fs.existsSync(path.join(s.root, 'SCHEMA'))); // v0.0.1 has none, so the next upgrade compares against 0
+});
+
+test('installer: an upgrade still hands over to the new release installer', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.3', { schema: 1, installer: 'echo "handed over to the v0.0.3 installer: $1"' });
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  const up = s.run('scripts/install.sh', ['v0.0.3']);
+  assert.equal(up.status, 0, up.stdout + up.stderr);
+  assert.match(up.stdout, /handed over to the v0\.0\.3 installer: v0\.0\.3/);
 });
