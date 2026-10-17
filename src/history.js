@@ -108,6 +108,8 @@ async function show(id, tree, sha, rel) {
   if (!SHA.test(String(sha)) || !exists(id)) return null;
   try { return await git(id, tree, ['show', `${sha}:${rel}`], 'buffer'); } catch { return null; }
 }
-const remove = (id) => fs.rmSync(gitDir(id), { recursive: true, force: true });
+// queued behind any commit still running, or rm races git writing into the folder (ENOTEMPTY)
+const remove = (id) => queue(id, async () => fs.rmSync(gitDir(id), { recursive: true, force: true }))
+  .catch((e) => console.error(`file history remove for ${id} failed:`, e.message));
 
 module.exports = { HISTORY_DIR, record, trim: trimSite, versions, deleted, show, remove, exists };
