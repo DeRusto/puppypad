@@ -467,7 +467,7 @@ ${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
 <input type="text" id="newname" name="username" required maxlength="30">
 <label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</section>
 
-`}<section class="box">${user.owner_id ? '<h2>Delete this site</h2><p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>'}
+`}<section class="box">${user.login_id ? '<h2>Delete this site</h2><p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>'}
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
 }

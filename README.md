@@ -135,7 +135,7 @@ servers can't pull them.
 and `scripts/install.sh v1.2.3` moves to a given one (older ones too). An upgrade:
 
 1. downloads the release bundle, checks it against `SHA256SUMS`, and hands over to that release's
-   own `install.sh`
+   own `install.sh` (except when the release expects an older database schema; see below)
 2. pulls the new images by the digests the bundle records, so re-pushing a tag can't change what a
    release runs
 3. runs `scripts/backup.sh`
@@ -152,9 +152,23 @@ and add `COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml` to `.env`: do
 loads both, and upgrades never touch it. Don't use `docker-compose.override.yml`; the installer
 refuses it, since a source checkout uses that name to build images from source.
 
-Every download and pull has a time limit. A rollback leaves the database as the new release left it,
-which is fine while schema changes only add tables and columns; the backup from step 3 is in
-`backups/latest`, until the next nightly backup, if it isn't.
+Every download and pull has a time limit.
+
+**Database schema.** The database records a schema number (`src/schema.js`), and each release bundle
+says which one it expects in `SCHEMA` (none means 0). Changes that older code can't run with, like a
+renamed column, come with a step back. When the installer moves to a release with a lower schema,
+whether going back after a failed upgrade or moving to an older release on purpose, it stops the app
+and runs the steps back with the image of the release it leaves, before the older release starts.
+Moving to an older schema, the installer keeps control instead of handing over to the older
+release's installer, which doesn't know the steps. The newer app re-applies them when it starts
+again. The backup from step 3 stays in `backups/latest` until the next nightly backup.
+
+From a git checkout there's no installer. Before checking out an older version (or restoring a backup
+into one), put the database back to that version's schema (0 for every release before this
+mechanism) with the newer code still in place:
+
+    docker compose stop app
+    docker compose run --rm --no-deps app node src/schema.js down 0
 
 **From /admin.** The "Server version" box at the bottom of `/admin` shows the running release, the
 newest one with its notes, and a button that runs the upgrade above. The app never upgrades itself:

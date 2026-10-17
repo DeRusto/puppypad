@@ -133,12 +133,17 @@ fetch -o "$new/SHA256SUMS" "$web/$repo/releases/download/$target/SHA256SUMS"
 tar -xzf "$new/puppypad-$target.tar.gz" -C "$new/files" --no-same-owner
 [ "$(cat "$new/files/VERSION" 2>/dev/null)" = "$target" ] || { echo "the bundle isn't $target"; exit 1; }
 files=$(cd "$new/files" && find . -type f | sed 's|^\./||' | sort)
+# database schema numbers (src/schema.js): what the installed release left the database at, and what the target
+# expects. A release without a SCHEMA file is 0.
+schema_of() { n=$(cat "$1" 2>/dev/null || true); case "$n" in ''|*[!0-9]*) echo 0 ;; *) echo "$n" ;; esac; }
+cur_schema=$(schema_of SCHEMA) new_schema=$(schema_of "$new/files/SCHEMA")
 
 # the release's own installer does the rest: a fix to how upgrades work then applies to the upgrade
 # that brings it, not only to the one after. Its copy came with the checksummed bundle; it downloads
 # and checks again, then finds itself identical and carries on. Once per run, so two releases can't
-# hand back and forth.
-if [ "${PUPPYPAD_HANDED_OFF:-}" != "$target" ] && ! cmp -s "$new/files/scripts/install.sh" scripts/install.sh; then
+# hand back and forth. Not to a release with a lower schema: its installer doesn't know how to put the
+# database back, so this one does the switch.
+if [ "${PUPPYPAD_HANDED_OFF:-}" != "$target" ] && [ "$new_schema" -ge "$cur_schema" ] && ! cmp -s "$new/files/scripts/install.sh" scripts/install.sh; then
   echo "== handing over to $target's installer"
   copy=$(mktemp .upgrade/install-XXXXXX)
   cp "$new/files/scripts/install.sh" "$copy"
@@ -160,12 +165,22 @@ set_images() { set_env PUPPYPAD_APP_IMAGE "$1"; set_env PUPPYPAD_SHOTS_IMAGE "$2
 # VERSION is left for put_version, once the switch has worked: it is what says "already on".
 put_files() {
   for f in $files; do
-    [ "$f" = VERSION ] && continue
+    [ "$f" = VERSION ] || [ "$f" = SCHEMA ] && continue
     mkdir -p "$(dirname "$f")"
     cp -p "$new/files/$f" "$f.new" && mv -f "$f.new" "$f"
   done
 }
-put_version() { cp -p "$new/files/VERSION" VERSION.new && mv -f VERSION.new VERSION; }
+# SCHEMA goes with it, and goes away for a release without one, so it always names the running release's schema
+put_version() {
+  if [ -f "$new/files/SCHEMA" ]; then cp -p "$new/files/SCHEMA" SCHEMA.new && mv -f SCHEMA.new SCHEMA; else rm -f SCHEMA; fi
+  cp -p "$new/files/VERSION" VERSION.new && mv -f VERSION.new VERSION
+}
+# undoes the database steps above $1 with the image .env names now (the release being left, which knows them),
+# with the app stopped so its code never runs against the older layout
+schema_down() {
+  echo "== putting the database back to schema $1"
+  docker compose stop app && docker compose run --rm -T --no-deps app node src/schema.js down "$1"
+}
 
 # ---------- first install ----------
 if [ "$mode" = fresh ]; then
@@ -198,6 +213,9 @@ PUPPYPAD_VERSION=$target PUPPYPAD_APP_IMAGE=$app_img PUPPYPAD_SHOTS_IMAGE=$shots
 
 echo "== backing up before the upgrade"
 scripts/backup.sh
+if [ "$new_schema" -lt "$cur_schema" ]; then
+  schema_down "$new_schema" || { echo "could not put the database back; nothing was switched"; docker compose up -d || true; exit 1; }
+fi
 
 # keep what a rollback puts back: the files this release replaces, the ones it adds, and the .env
 # values it changes. prev.env is written last and removed once the upgrade is settled, so if it is
@@ -267,14 +285,17 @@ if docker compose up -d --remove-orphans && healthy && all_running; then
 fi
 
 echo "== $target did not come up healthy; going back"
+if [ "$new_schema" -gt "$cur_schema" ]; then
+  schema_down "$cur_schema" || echo "could not put the database back, so ${old:-the git checkout} may not start; backups/latest/backup.db holds the database from before the upgrade"
+fi
 tar -xf "$prev"
 for f in $added; do rm -f "$f"; done
 set_env PUPPYPAD_VERSION "$(prev_env 1)"
 set_images "$(prev_env 2)" "$(prev_env 3)" "$(prev_env 4)"
 rm -f "$prevenv" # back on the last working state, so the next attempt starts from here
 docker compose up -d --remove-orphans || true
-# the database stays as the new release left it: schema changes are new tables and columns, which
-# older code ignores. If a release ever needs more, backups/latest still holds the database from before the upgrade.
+# the database is as the new release left it, less any schema steps undone above; new tables and columns need
+# no step, since older code ignores them. backups/latest still holds the database from before the upgrade.
 if healthy; then echo "$target failed its health check; went back to ${old:-the git checkout}"
 else echo "went back to ${old:-the git checkout}, but it is not healthy either; check docker compose logs app"; fi
 exit 1
