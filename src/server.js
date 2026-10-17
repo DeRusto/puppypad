@@ -16,6 +16,7 @@ const upgrade = require('./upgrade');
 const W = require('./widgets');
 const H = require('./history');
 const { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES } = require('./sitefiles');
+const { createLogins } = require('./logins');
 
 // ---------- config ----------
 const env = process.env;
@@ -130,7 +131,6 @@ const listed = () => `${LIVE} AND hidden = 0 AND updates > 0 AND created_at <= $
 const isListed = (u) => !!(u.verified && !u.banned && !u.hidden && u.updates > 0 && u.created_at <= listedSince());
 // Each member keeps the largest QUOTA_MB they have had: raising it in .env grows every site, lowering it only affects new signups
 db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
-const quotaMB = (user) => Math.max(user.quota_mb || 0, cfg.QUOTA_MB);
 
 // the current name of the site that gave up `name` in a rename, while that name is still held
 const renamedTo = (name) => db.prepare(`SELECT u.username FROM released_names r JOIN users u ON u.id = r.user_id WHERE r.name = ? AND r.released_at > ? AND ${LIVE}`).get(String(name), now() - NAME_HOLD)?.username;
@@ -161,49 +161,20 @@ const stillCurrent = (req, user) => {
     (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
 };
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
-const isAdmin = (user) => !!user.verified && cfg.ADMIN_EMAILS.has(user.email);
-// logins waiting on their second step, which a password change or "log out everywhere" also ends
-const dropLogins = (userId) => db.prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'login2fa'").run(userId);
 function startSession(res, userId) {
   const t = U.newToken();
   db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
   res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
 }
 const MAX_SITES = 5;
-const isSupporter = (user) => user.supporter_until > now() || isAdmin(user);
-const ownerRow = (user) => (user.owner_id ? q.userById.get(user.owner_id) : user);
-// what a site may store: free limits, or bigger ones and any file type while its login supports.
-// When support lapses nothing is deleted; uploads are refused until the site is back under the free limits
-const limitsFor = (user) => {
-  const sup = isSupporter(ownerRow(user));
-  return {
-    quotaMB: sup ? Math.max(quotaMB(user), cfg.SUPPORTER_QUOTA_MB) : quotaMB(user),
-    fileMB: sup ? Math.max(cfg.MAX_FILE_MB, cfg.SUPPORTER_MAX_FILE_MB) : cfg.MAX_FILE_MB,
-    anyType: sup,
-    historyDays: sup ? cfg.SUPPORTER_HISTORY_DAYS : cfg.HISTORY_DAYS,
-  };
-};
+// what belongs to a site's login, from any of its sites (src/logins.js)
+const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site) });
+const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
 // every change to a site's folder goes through here (src/sitefiles.js)
 const files = createSiteFiles({ cfg, limitsFor, sendMail });
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
-const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.owner_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
+const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
-// a login row and its extra sites: for its sessions, API keys and bans
-const loginIds = '(SELECT id FROM users WHERE id = ? OR owner_id = ?)';
-const sitesOf = (user) => { const id = user.owner_id || user.id; return db.prepare('SELECT * FROM users WHERE id = ? OR owner_id = ? ORDER BY id').all(id, id); };
-function deleteAccountRows(user) {
-  for (const s of db.prepare('SELECT username FROM users WHERE owner_id = ?').all(user.id)) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(s.username, now());
-  db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
-  // never-confirmed accounts were never online, so their names are free again at once
-  if (user.verified) db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)').run(user.username, now());
-}
-function deleteAccount(user, rows = deleteAccountRows) {
-  const extra = db.prepare('SELECT id, username FROM users WHERE owner_id = ?').all(user.id);
-  rows(user);
-  for (const s of extra) files.removeSite(s);
-  files.removeSite(user);
-}
-
 // ---------- app ----------
 // Express 5 leaves req.body undefined when no parser ran (a GET, or a POST that is not a form); handlers read fields off it freely
 const bodyDefault = (req, res, next) => { req.body ??= {}; next(); };
@@ -294,7 +265,7 @@ site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }
   db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
   // capped so a spam wave from many addresses can't flood the owner's inbox
   if (req.owner.gb_notify === 'instant' && U.limit(`gbmail:${req.owner.id}`, 10, 3600000)) {
-    sendMail(ownerRow(req.owner).email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
+    sendMail(loginOf(req.owner).email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
   }
   res.redirect(back);
 });
@@ -429,7 +400,7 @@ main.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (
   try {
     const o = event.data.object;
     if (event.type === 'checkout.session.completed' && o.customer) {
-      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND owner_id IS NULL").run(String(o.customer), Number(o.client_reference_id) || 0);
+      db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND login_id IS NULL").run(String(o.customer), Number(o.client_reference_id) || 0);
     } else if (event.type.startsWith('customer.subscription.')) {
       // the payload may be stale (Stripe can deliver or retry events out of order), so apply the subscription as it is now
       applySubscription(await stripe.subscriptions.retrieve(o.id));
@@ -443,7 +414,7 @@ main.post('/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), async (
 // a subscription's state sets supporter_until: paid up to the period's end (plus a few days for a late renewal), or over now
 function applySubscription(sub) {
   const user = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer)) ||
-    db.prepare('SELECT * FROM users WHERE id = ? AND owner_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
+    db.prepare('SELECT * FROM users WHERE id = ? AND login_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
   if (!user) return;
   // newer Stripe API versions keep the period on each item
   const item = sub.items?.data?.[0];
@@ -471,8 +442,7 @@ main.use((req, res, next) => {
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
       if (user) {
-        const login = ownerRow(user); // an extra site's admin rights and email are its login's
-        req.ctx = withFlair({ cfg, user, login, csrf: s.csrf, isAdmin: isAdmin(login), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n });
+        req.ctx = withFlair({ cfg, user, login: loginOf(user), csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n });
         req.sessionHash = s.token_hash;
       }
     }
@@ -567,7 +537,7 @@ function showProfile(req, res, name, m, status = 200) {
     p: hasShot(p),
     following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
     blocking: !!me && blocked(me.id, p.id),
-    login: me && ownerRow(me),
+    login: me && loginOf(me),
     comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
     events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
     followers: followPage(req, 'follower_id', 'followed_id', p.id, 'fpage'),
@@ -638,7 +608,7 @@ const NOTE_TEXT = { follow: 'started following you', comment: 'commented on your
 // the optional email for one kind of notification; capped like guestbook mail so a burst can't flood the inbox
 function notify(owner, actor, kind, extra = '') {
   if (owner.id === actor.id || !owner.note_mail.split(' ').includes(kind) || !U.limit(`notemail:${owner.id}`, 10, 3600000)) return;
-  sendMail(ownerRow(owner).email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
+  sendMail(loginOf(owner).email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
     `${actor.username} ${NOTE_TEXT[kind]}.${extra ? `\n\n${extra}` : ''}\n\nSee your notifications, or change which ones we email you about: ${cfg.BASE_URL}/notifications`);
 }
 // a comment or like lands back on the page of ours it was made from, never on another site
@@ -805,7 +775,7 @@ main.post('/signup', async (req, res) => {
   try {
     await files.create(q.userById.get(id), starters.render(starter, username, cfg));
   } catch {
-    try { deleteAccount(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
+    try { logins.remove(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
     return fail('Something went wrong making your site. Try again.', 500);
   }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
@@ -831,7 +801,7 @@ main.post('/login', async (req, res) => {
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(user ? `login:id:${user.id}` : `login:name:${username}`, 10, 900000)) {
     return res.status(429).send(V.login(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, { username }));
   }
-  const ok = !!user && !user.owner_id && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
+  const ok = !!user && isLogin(user) && (await U.checkPw(String(req.body.password || ''), user.pw_hash));
   const cur = ok && q.userById.get(user.id); // re-read: two-factor may have been turned on while the hash ran
   if (!cur || cur.pw_hash !== user.pw_hash) {
     return res.status(401).send(V.login(req.ctx, { err: 'Wrong site name, email or password.' }, { username }));
@@ -883,9 +853,8 @@ main.post('/reset', async (req, res) => {
   const user = useToken(req.body.token, 'reset');
   if (!user) return expired();
   db.prepare("UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?").run(pwHash, user.id);
-  db.prepare(`UPDATE users SET api_key = '' WHERE id IN ${loginIds}`).run(user.id, user.id); // a reset may follow a break-in, so the API keys of all its sites go too
-  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(user.id, user.id);
-  dropLogins(user.id);
+  logins.revokeApiKeys(user); // a reset may follow a break-in, so the API keys of all its sites go too
+  logins.endSessions(user);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
   if (user.totp_secret) return res.send(V.notice(req.ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'));
   startSession(res, user.id);
@@ -901,7 +870,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(ownerRow(user)), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(ownerRow(user)) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1141,7 +1110,7 @@ main.post('/dashboard/webring', auth, canEdit, (req, res) => {
 });
 // several sites under one login (supporters): each extra site is a users row owned by the login row
 main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
-  const owner = ownerRow(req.ctx.user);
+  const owner = loginOf(req.ctx.user);
   const username = String(req.body.username || '').trim().toLowerCase();
   const fail = (e) => res.redirect(`/dashboard?err=${encodeURIComponent(e)}`);
   if (!isSupporter(owner)) return fail('Several sites under one login is for supporters.');
@@ -1150,7 +1119,7 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
   const t = now();
   try {
-    db.prepare("INSERT INTO users (username, email, pw_hash, verified, owner_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
+    db.prepare("INSERT INTO users (username, email, pw_hash, verified, login_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
       .run(username, `${username}@sites.invalid`, owner.id, req.ip, starters.DEFAULT, cfg.QUOTA_MB, t, t);
   } catch (err) { if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); throw err; }
   try {
@@ -1208,7 +1177,7 @@ main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   res.redirect(gbBack(req));
 });
 main.post('/account/password', auth, async (req, res) => {
-  const user = ownerRow(req.ctx.user); // an extra site has no password, email or 2FA of its own
+  const user = loginOf(req.ctx.user); // an extra site has no password, email or 2FA of its own
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const password = String(req.body.new_password || '');
   if (!U.limit(`pwchange:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
@@ -1219,15 +1188,14 @@ main.post('/account/password', auth, async (req, res) => {
   const pwHash = await U.hashPw(password);
   if (!stillCurrent(req, user)) return res.redirect('/login');
   db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
-  db.prepare(`UPDATE users SET api_key = '' WHERE id IN ${loginIds}`).run(user.id, user.id);
-  // log out everywhere else and switch off the API key, in case the old password leaked
-  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds} AND token_hash != ?`).run(user.id, user.id, req.sessionHash);
-  dropLogins(user.id);
+  // log out everywhere else and switch off the API keys, in case the old password leaked
+  logins.revokeApiKeys(user);
+  logins.endSessions(user, { except: req.sessionHash });
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
 main.post('/account/email', auth, async (req, res) => {
-  const user = ownerRow(req.ctx.user);
+  const user = loginOf(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
@@ -1255,8 +1223,7 @@ main.get('/account/email/confirm', (req, res) => {
 });
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
-  db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(ownerRow(req.ctx.user).id, ownerRow(req.ctx.user).id);
-  dropLogins(ownerRow(req.ctx.user).id);
+  logins.endSessions(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice(req.ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'));
 });
@@ -1280,12 +1247,12 @@ const twoFactorPage = async (req, m, secret) => {
   return V.twoFactor(req.ctx, m, secret, uri, await QRCode.toString(uri, { type: 'svg', margin: 2 }));
 };
 main.get('/account/2fa', auth, async (req, res) => {
-  if (ownerRow(req.ctx.user).totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
+  if (loginOf(req.ctx.user).totp_secret) return res.redirect(`/site/${req.ctx.user.username}#security`);
   const secret = U.newTotpSecret();
   res.set('Cache-Control', 'no-store').send(await twoFactorPage(req, null, secret));
 });
 main.post('/account/2fa/on', auth, async (req, res) => {
-  const user = ownerRow(req.ctx.user);
+  const user = loginOf(req.ctx.user);
   const secret = String(req.body.secret || '');
   if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
   const fail = async (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(await twoFactorPage(req, { err }, secret));
@@ -1301,7 +1268,7 @@ main.post('/account/2fa/on', auth, async (req, res) => {
   res.set('Cache-Control', 'no-store').send(V.recoveryCodes(req.ctx, codes.map((c) => `${c.slice(0, 5)}-${c.slice(5)}`)));
 });
 main.post('/account/2fa/off', auth, async (req, res) => {
-  const user = ownerRow(req.ctx.user);
+  const user = loginOf(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
   if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still on.');
@@ -1320,7 +1287,7 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   if (name === user.username) return fail('That is already your site name.');
   if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
   if (!U.limit(`rename:${user.id}`, 5, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), ownerRow(user).pw_hash))) return fail('Wrong password. Nothing was changed.');
+  if (!(await U.checkPw(String(req.body.password || ''), loginOf(user).pw_hash))) return fail('Wrong password. Nothing was changed.');
   if (!stillCurrent(req, user)) return res.redirect('/login');
   // a member may take back a name they gave up themselves
   const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
@@ -1343,15 +1310,15 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
-  if (!(await U.checkPw(String(req.body.password || ''), ownerRow(req.ctx.user).pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
+  if (!(await U.checkPw(String(req.body.password || ''), loginOf(req.ctx.user).pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
   if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
-  if (req.ctx.user.owner_id) { // an extra site goes alone, and the session moves back to the login
-    db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(req.ctx.user.owner_id, req.sessionHash);
-    deleteAccount(req.ctx.user);
+  if (!isLogin(req.ctx.user)) { // an extra site goes alone, and the session moves back to the login
+    db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(loginOf(req.ctx.user).id, req.sessionHash);
+    logins.remove(req.ctx.user);
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
   if (!(await cancelBilling(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
-  deleteAccount(req.ctx.user);
+  logins.remove(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
 });
@@ -1359,7 +1326,7 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
 // ----- supporter tier (Stripe) -----
 // a deleted login must stop paying: its subscriptions are cancelled first, and the account stays if Stripe can't be reached
 async function cancelBilling(user) {
-  if (user.owner_id || !user.stripe_customer_id || !stripe) return true;
+  if (!isLogin(user) || !user.stripe_customer_id || !stripe) return true;
   try {
     for await (const sub of stripe.subscriptions.list({ customer: user.stripe_customer_id, status: 'all' })) {
       if (!['canceled', 'incomplete_expired'].includes(sub.status)) await stripe.subscriptions.cancel(sub.id);
@@ -1465,7 +1432,7 @@ main.post('/dashboard/api', auth, async (req, res) => {
   if (user.banned) return res.redirect('/dashboard');
   if (!U.limit(`apikey:${user.id}`, 5, 900000)) return show({ err: 'Too many attempts. Wait 15 minutes and try again.' }, '', 429);
   // a key outlives the session, so making one takes the password, as a rename does
-  if (!(await U.checkPw(String(req.body.password || ''), ownerRow(user).pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
+  if (!(await U.checkPw(String(req.body.password || ''), loginOf(user).pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
   if (!stillCurrent(req, user)) return res.redirect('/login');
   const key = `pp_${U.newToken()}`;
   db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(U.sha(key), user.id);
@@ -1652,7 +1619,7 @@ main.post('/admin/report-close', auth, adminOnly, (req, res) => {
 });
 main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
-  if (!target || target.owner_id) return showAdmin(req, res, { err: 'No login with that site name.' });
+  if (!target || !isLogin(target)) return showAdmin(req, res, { err: 'No login with that site name.' });
   const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
   db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
   showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
@@ -1660,14 +1627,13 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
 main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
-  const login = ownerRow(target);
-  if (isAdmin(login)) return showAdmin(req, res, { err: 'That is an admin account.' });
+  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'delete') {
     if (!(await cancelBilling(target))) return showAdmin(req, res, { err: `Stripe could not be reached to cancel ${target.username}'s supporter payments, so nothing was deleted.` });
     // the rows and the log entry commit together; the files go only after both have
-    deleteAccount(target, db.transaction((u) => { deleteAccountRows(u); adminLog(req, 'delete', u.username, reason); }));
+    logins.remove(target, { inTransaction: (u) => adminLog(req, 'delete', u.username, reason) });
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
   }
   const ban = action === 'ban' ? 1 : 0;
@@ -1675,7 +1641,7 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login.
   // banned = 2 marks an extra site taken down only along with its login, so restoring the login brings back those
   // and never one a moderator took down on its own (banned = 1)
-  const sites = target.owner_id ? [target] : sitesOf(target).filter((s) => s.id === target.id || s.banned === (ban ? 0 : 2));
+  const sites = isLogin(target) ? sitesOf(target).filter((s) => s.id === target.id || s.banned === (ban ? 0 : 2)) : [target];
   db.transaction(() => {
     for (const s of sites) {
       db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban && s.id !== target.id ? 2 : ban, ban ? reason : null, s.id);
@@ -1683,7 +1649,7 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
       else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(s.id);
     }
     adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
-    if (ban) db.prepare(`DELETE FROM sessions WHERE user_id IN ${loginIds}`).run(login.id, login.id);
+    if (ban) logins.endSessions(target);
   })();
   if (ban) for (const s of sites) fs.rmSync(shotPath(s.username), { force: true });
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
@@ -1711,14 +1677,14 @@ const housekeeping = () => {
     const statsFrom = statsSince();
     db.prepare('DELETE FROM page_views WHERE day < ?').run(statsFrom);
     db.prepare('DELETE FROM referrers WHERE day < ?').run(statsFrom);
-    for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) deleteAccount(u);
+    for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) logins.remove(u);
     // daily guestbook digests: at most one a day per site, only when someone signed since the last
     for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
       const cutoff = now();
       const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
       if (!rows.length) continue;
       const held = rows.filter((e) => !e.approved).length;
-      sendMail(ownerRow(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
+      sendMail(loginOf(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
         `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(gbEntryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${gbMailFooter}`)
         // only a digest that went out moves the cutoff, so a failed one is retried at the next hourly run
         .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
@@ -1731,7 +1697,7 @@ const housekeeping = () => {
         WHERE e.kind = 'update' AND e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND s.verified = 1 AND s.banned = 0 AND s.hidden = 0
         AND e.created_at > ? AND e.created_at <= ? ORDER BY e.id DESC`).all(u.id, u.digest_at, cutoff);
       if (!rows.length) { done(); continue; }
-      sendMail(ownerRow(u).email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,
+      sendMail(loginOf(u).email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,
         `${rows.slice(0, 100).map((e) => `${e.username} ${V.eventText(e, (f) => f)}\n${cfg.siteUrl(e.username)}/`).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\nStop these emails: ${cfg.BASE_URL}/notifications`)
         .then((sent) => { if (sent) done(); }); // a failed digest is retried at the next hourly run
     }

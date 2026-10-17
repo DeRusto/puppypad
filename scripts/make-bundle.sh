@@ -15,6 +15,7 @@ mkdir -p "$stage/scripts" "$out"
 cp docker-compose.yml Caddyfile .env.example .env.caddy.example README.md LICENSE "$stage/"
 cp scripts/backup.sh scripts/install.sh scripts/upgrade-watch.sh "$stage/scripts/"
 echo "$tag" > "$stage/VERSION"
+node src/schema.js version > "$stage/SCHEMA" # the database schema this release expects; scripts/install.sh compares them
 [ -z "$images" ] || cp "$images" "$stage/IMAGES"
 tar -czf "$out/puppypad-$tag.tar.gz" -C "$stage" --owner=0 --group=0 .
 cp scripts/install.sh "$out/install.sh"
