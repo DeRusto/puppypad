@@ -2398,7 +2398,7 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   // a failed renewal: Stripe moves the period on anyway, but the perks only last the grace days past the paid one
   const renewed = Math.floor(Date.now() / 1000) - 5 * 86400;
   await subHook('customer.subscription.updated', { ...live, status: 'past_due', items: { data: [{ current_period_start: renewed, current_period_end: renewed + 30 * 86400 }] } });
-  assert.ok(row().supporter_until <= Date.now());
+  assert.equal(row().supporter_until, (renewed + 3 * 86400) * 1000);
   await subHook('customer.subscription.updated', live); // the retry went through
   assert.ok(row().supporter_until > end * 1000);
 
