@@ -163,10 +163,12 @@ Moving to an older schema, the installer keeps control instead of handing over t
 release's installer, which doesn't know the steps. The newer app re-applies them when it starts
 again. The backup from step 3 stays in `backups/latest` until the next nightly backup.
 
-From a git checkout there's no installer. Before checking out an older version (or restoring a backup
-into one), put the database back to that version's schema (0 for every release before this
-mechanism) with the newer code still in place:
+From a git checkout there's no installer. Before checking out an older version, put the database
+back to that version's schema (0 for every release before this mechanism) with the newer code still
+in place. Back up first. To bring back a newer backup for older code, do the restore above but leave
+the app stopped, then run only the last two commands:
 
+    scripts/backup.sh
     docker compose stop app
     docker compose run --rm --no-deps app node src/schema.js down 0
 

@@ -54,6 +54,7 @@ function sandbox() {
 case "$*" in
   *"compose up"*) ! grep -q '^PUPPYPAD_VERSION=v0.0.2$' .env ;;
   *"user_version"*) cat data/user_version 2>/dev/null || echo 0 ;;
+  *"schema.js down"*) [ ! -f data/down_fails ] ;;
   *"backup('/data/backup.db')"*) touch data/backup.db ;;
   *"rm -f /data/backup.db"*) rm -f data/backup.db ;;
   *) exit 0 ;;
@@ -222,4 +223,22 @@ test('installer: after an upgrade that died before writing SCHEMA, going back st
   const migrate = at(d, DOWN(0, 'v0.0.3'));
   const start = at(d, /^compose up -d --remove-orphans \[v0\.0\.1\]$/, migrate);
   assert.ok(migrate >= 0 && start > migrate, d.join('\n'));
+});
+
+test('installer: when the database cannot be put back after a failed upgrade, the older release is not started on it', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.2', { schema: 1 });
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.data();
+  fs.writeFileSync(path.join(s.root, 'data/down_fails'), '');
+  const up = s.run('scripts/install.sh', ['v0.0.2']);
+  assert.equal(up.status, 1, up.stdout + up.stderr);
+  assert.match(up.stdout, /could not put the database back/);
+  const d = s.docker();
+  assert.ok(at(d, DOWN(0, 'v0.0.2')) >= 0, d.join('\n'));
+  assert.equal(at(d, /^compose up .*\[v0\.0\.1\]$/), -1, d.join('\n'));
+  // left as the failed attempt: the next run of the installer starts from it and tries the step back again
+  assert.ok(fs.existsSync(path.join(s.root, '.upgrade/prev.env')));
+  assert.equal(s.read('VERSION'), 'v0.0.1\n');
 });

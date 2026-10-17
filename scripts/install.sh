@@ -291,8 +291,12 @@ if docker compose up -d --remove-orphans && healthy && all_running; then
 fi
 
 echo "== $target did not come up healthy; going back"
-if [ "$new_schema" -gt "$cur_schema" ]; then
-  schema_down "$cur_schema" || echo "could not put the database back, so ${old:-the git checkout} may not start; backups/latest/backup.db holds the database from before the upgrade"
+# the older release must never start on a layout it can't read: if the step back fails, stop here with the app
+# down and the files of $target still in place. prev.env stays, so running the installer again goes back from here.
+if [ "$new_schema" -gt "$cur_schema" ] && ! schema_down "$cur_schema"; then
+  echo "could not put the database back, so ${old:-the git checkout} was not started and the app is stopped."
+  echo "Run scripts/install.sh ${old:-<release>} again to retry; backups/latest/backup.db holds the database from before the upgrade."
+  exit 1
 fi
 tar -xf "$prev"
 for f in $added; do rm -f "$f"; done

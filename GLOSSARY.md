@@ -9,7 +9,7 @@ A member's homepage: one folder of files served at its own subdomain. A login ha
 _Avoid_: account (that is the login), page
 
 **Login**:
-The account a member signs in with. It owns one site (up to five for supporters) and holds the email, password, two-factor login, supporter status and admin rights for all of them.
+What a member signs in with. It owns one site (up to five for supporters) and holds the email, password, two-factor login, supporter status and admin rights for all of them.
 _Avoid_: account, owner, user
 
 **Site files**:
