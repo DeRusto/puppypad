@@ -1326,7 +1326,8 @@ main.post('/dashboard/support/portal', auth, async (req, res) => {
   if (!billing) return res.redirect('/dashboard/support');
   try {
     const url = await billing.portal(req.ctx.login);
-    res.redirect(303, url || '/dashboard/support');
+    if (!url) return res.redirect('/dashboard/support');
+    res.redirect(303, url);
   } catch (e) {
     console.error('stripe portal failed:', e.message);
     supportPage(req, res, { err: 'Stripe could not be reached. Try again in a little while.' }, 502);

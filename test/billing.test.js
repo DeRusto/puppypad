@@ -189,3 +189,30 @@ test('cancel stops every subscription still billing, and says false when Stripe 
   console.error = () => {};
   try { assert.equal(await billing.cancel(login), false); } finally { console.error = err; }
 });
+
+test('checkout finds a live subscription past the first ten', async () => {
+  const stripe = fakeStripe();
+  const old = Array.from({ length: 12 }, (_, i) => ({ id: `sub_old${i}`, customer: 'cus_many', status: 'canceled' }));
+  stripe.state.subs = [...old, { id: 'sub_new', customer: 'cus_many', status: 'active' }];
+  assert.deepEqual(await make(stripe).checkout(add({ stripe_customer_id: 'cus_many' }), 'monthly'), { already: true });
+});
+
+test('receive: a late cancel of an old subscription leaves the perks a newer paying one gave', async () => {
+  const stripe = fakeStripe();
+  const login = add({ stripe_customer_id: 'cus_two' });
+  const end = secs(Date.now() + 30 * DAY);
+  await event(stripe, 'customer.subscription.created', { id: 'sub_new', customer: 'cus_two', status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  await event(stripe, 'customer.subscription.deleted', { id: 'sub_old', customer: 'cus_two', status: 'canceled', metadata: {} });
+  assert.equal(row(login).supporter_until, end * 1000 + 3 * DAY);
+  // once nothing else pays, the cancel ends them
+  stripe.state.subs = stripe.state.subs.map((s) => ({ ...s, status: 'canceled' }));
+  await event(stripe, 'customer.subscription.deleted', { id: 'sub_new', customer: 'cus_two', status: 'canceled', metadata: {} });
+  assert.ok(row(login).supporter_until <= Date.now());
+});
+
+test('cancel also expires open checkouts, so a deleted login cannot start paying later', async () => {
+  const stripe = fakeStripe();
+  stripe.state.open = [open('cs_left', 'cus_x', 'price_month'), open('cs_theirs', 'cus_y', 'price_month')];
+  assert.equal(await make(stripe).cancel(add({ stripe_customer_id: 'cus_x' })), true);
+  assert.deepEqual(stripe.state.open.map((o) => o.id), ['cs_theirs']);
+});

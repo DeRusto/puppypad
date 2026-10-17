@@ -13,7 +13,7 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
   const byId = db.prepare('SELECT * FROM users WHERE id = ?');
 
   // a subscription's state sets supporter_until: paid up to the period's end (plus a few days for a late renewal), or over now
-  function apply(sub) {
+  async function apply(sub) {
     const login = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer)) ||
       db.prepare('SELECT * FROM users WHERE id = ? AND login_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
     if (!login) return;
@@ -25,7 +25,13 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
     if (['active', 'trialing'].includes(sub.status) && end) until = end + GRACE;
     // a failed renewal already moved the period on, but only the one before it was paid: perks run the grace days past it
     else if (sub.status === 'past_due' && start) until = start + GRACE;
-    else if (['canceled', 'unpaid', 'incomplete_expired'].includes(sub.status)) until = Math.min(login.supporter_until, Date.now());
+    else if (['canceled', 'unpaid', 'incomplete_expired'].includes(sub.status)) {
+      // a late event about an old subscription must not end perks a newer one is paying for
+      for await (const other of stripe.subscriptions.list({ customer: String(sub.customer), status: 'all' })) {
+        if (other.id !== sub.id && ['active', 'trialing', 'past_due'].includes(other.status)) return;
+      }
+      until = Math.min(login.supporter_until, Date.now());
+    }
     db.prepare('UPDATE users SET stripe_customer_id = ?, supporter_until = COALESCE(?, supporter_until) WHERE id = ?').run(String(sub.customer), until, login.id);
   }
 
@@ -42,8 +48,9 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
       db.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id = ''").run(customer.id, login.id);
       login = byId.get(login.id);
     }
-    const subs = await stripe.subscriptions.list({ customer: login.stripe_customer_id, status: 'all', limit: 10 });
-    if (subs.data.some((x) => LIVE.includes(x.status))) return { already: true };
+    for await (const sub of stripe.subscriptions.list({ customer: login.stripe_customer_id, status: 'all', limit: 100 })) {
+      if (LIVE.includes(sub.status)) return { already: true };
+    }
     // the support page offers monthly, plus yearly while a yearly price is set; a choice that is not on offer takes the default price
     const price = plan === 'annual' ? (cfg.PRICE_ID_ANNUAL || cfg.PRICE_ID) : (cfg.PRICE_ID || cfg.PRICE_ID_ANNUAL);
     const openIds = [];
@@ -82,14 +89,16 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
       db.prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ? AND login_id IS NULL').run(String(o.customer), Number(o.client_reference_id) || 0);
     } else if (event.type.startsWith('customer.subscription.')) {
       // the payload may be stale (Stripe can deliver or retry events out of order), so apply the subscription as it is now
-      apply(await stripe.subscriptions.retrieve(o.id));
+      await apply(await stripe.subscriptions.retrieve(o.id));
     }
   }
 
-  // a deleted login must stop paying: true once nothing bills it, false (never a throw) when Stripe can't be reached
+  // a deleted login must stop paying: true once nothing bills it or can start to, false (never a throw) when Stripe can't be reached
   async function cancel(site) {
     if (!logins.isLogin(site) || !site.stripe_customer_id) return true;
     try {
+      // an open checkout left in another tab could still be paid after the login is gone
+      for await (const open of stripe.checkout.sessions.list({ customer: site.stripe_customer_id, status: 'open', limit: 100 })) await stripe.checkout.sessions.expire(open.id);
       for await (const sub of stripe.subscriptions.list({ customer: site.stripe_customer_id, status: 'all' })) {
         if (!ENDED.includes(sub.status)) await stripe.subscriptions.cancel(sub.id);
       }

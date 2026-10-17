@@ -24,7 +24,7 @@ function fakeStripe() {
     subscriptions: {
       list: call(({ customer, limit }) => listed(state.subs.filter((o) => o.customer === customer), limit)),
       retrieve: call(async (id) => state.subs.find((o) => o.id === id)),
-      cancel: call(async (id) => { state.cancelled.push(id); return { id, status: 'canceled' }; }),
+      cancel: call(async (id) => { state.cancelled.push(id); state.subs = state.subs.map((o) => (o.id === id ? { ...o, status: 'canceled' } : o)); return { id, status: 'canceled' }; }),
     },
     billingPortal: { sessions: { create: call(async () => ({ url: 'https://billing.stripe.com/p/session/test' })) } },
   };
