@@ -21,36 +21,17 @@ process.env.STRIPE_PRICE_ID_ANNUAL = 'price_test_year';
 delete process.env.SMTP_HOST;
 delete process.env.TURNSTILE_SECRET_KEY;
 
-// Stripe's API is never called: Checkout and the billing portal answer from here, and webhooks are signed for real
 const Stripe = require('stripe');
-const stripeCalls = [];
-// what the fake Stripe holds: open checkouts and subscriptions per customer; fail makes every call throw
-const fake = { customers: 0, open: [], subs: [], cancelled: [], fail: false };
-const listed = (data, limit = data.length) => Object.assign(Promise.resolve({ data: data.slice(0, limit), has_more: data.length > limit }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
-const stripeCall = (fn) => (...a) => { if (fake.fail) throw new Error('Stripe is down'); stripeCalls.push(a[0]); return fn(...a); };
-require.cache[require.resolve('stripe')].exports = function FakeStripe(key) {
-  const s = new Stripe(key);
-  s.customers = { create: stripeCall(async () => ({ id: `cus_test${++fake.customers}` })) };
-  s.checkout = { sessions: {
-    create: stripeCall(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
-    list: stripeCall(({ customer, limit }) => listed(fake.open.filter((o) => o.customer === customer), limit)),
-    expire: stripeCall(async (id) => { fake.open = fake.open.filter((o) => o.id !== id); return { id }; }),
-  } };
-  s.subscriptions = {
-    list: stripeCall(({ customer }) => listed(fake.subs.filter((o) => o.customer === customer))),
-    retrieve: stripeCall(async (id) => fake.subs.find((o) => o.id === id)),
-    cancel: stripeCall(async (id) => { fake.cancelled.push(id); return { id, status: 'canceled' }; }),
-  };
-  s.billingPortal = { sessions: { create: stripeCall(async () => ({ url: 'https://billing.stripe.com/p/session/test' })) } };
-  return s;
-};
-
 // without SMTP the app prints mail to the console; keep it so tests can follow the links
 const mail = [];
 const log = console.log;
 console.log = (...a) => { const s = a.join(' '); if (s.startsWith('[mail not configured]')) mail.push(s); else log(...a); };
 
 const app = require('../src/server');
+// Stripe's API is never called: the app gets an in-memory Stripe, and webhooks are signed for real
+const stripe = require('./fake-stripe').fakeStripe();
+const { state: fake, calls: stripeCalls } = stripe;
+app.setStripe(stripe);
 const { db } = require('../src/db');
 const U = require('../src/util');
 
