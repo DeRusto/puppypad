@@ -508,9 +508,13 @@ function applySubscription(sub) {
     db.prepare('SELECT * FROM users WHERE id = ? AND owner_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
   if (!user) return;
   // newer Stripe API versions keep the period on each item
-  const end = (sub.items?.data?.[0]?.current_period_end ?? sub.current_period_end ?? 0) * 1000;
+  const item = sub.items?.data?.[0];
+  const start = (item?.current_period_start ?? sub.current_period_start ?? 0) * 1000;
+  const end = (item?.current_period_end ?? sub.current_period_end ?? 0) * 1000;
   let until = null;
-  if (['active', 'trialing', 'past_due'].includes(sub.status) && end) until = end + SUPPORT_GRACE;
+  if (['active', 'trialing'].includes(sub.status) && end) until = end + SUPPORT_GRACE;
+  // a failed renewal already moved the period on, but only the one before it was paid: perks run the grace days past it
+  else if (sub.status === 'past_due' && start) until = start + SUPPORT_GRACE;
   else if (['canceled', 'unpaid', 'incomplete_expired'].includes(sub.status)) until = Math.min(user.supporter_until, now());
   db.prepare('UPDATE users SET stripe_customer_id = ?, supporter_until = COALESCE(?, supporter_until) WHERE id = ?').run(String(sub.customer), until, user.id);
 }

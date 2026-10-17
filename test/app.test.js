@@ -2395,6 +2395,13 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.equal(portal.headers.location, 'https://billing.stripe.com/p/session/test');
   assert.equal(stripeCalls.at(-1).customer, cus);
 
+  // a failed renewal: Stripe moves the period on anyway, but the perks only last the grace days past the paid one
+  const renewed = Math.floor(Date.now() / 1000) - 5 * 86400;
+  await subHook('customer.subscription.updated', { ...live, status: 'past_due', items: { data: [{ current_period_start: renewed, current_period_end: renewed + 30 * 86400 }] } });
+  assert.equal(row().supporter_until, (renewed + 3 * 86400) * 1000);
+  await subHook('customer.subscription.updated', live); // the retry went through
+  assert.ok(row().supporter_until > end * 1000);
+
   // cancelled: the perks and the flair stop at once
   await subHook('customer.subscription.deleted', { ...live, status: 'canceled' });
   assert.ok(row().supporter_until <= Date.now());
