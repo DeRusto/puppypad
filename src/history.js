@@ -5,7 +5,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./db');
-const { TEXT_EXT } = require('./util');
+const { TEXT_EXT, keyedQueue } = require('./util');
 
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
 const gitDir = (id) => path.join(HISTORY_DIR, `${Number(id)}.git`);
@@ -19,14 +19,7 @@ const ci = (ext) => ext.replace(/[a-z]/g, (c) => `[${c}${c.toUpperCase()}]`); //
 const EXCLUDE = ['*', '!*/', ...[...TEXT_EXT].map((e) => `!*.${ci(e)}`)].join('\n') + '\n';
 
 // one git command at a time per site, or two saves race for the index lock
-const queues = new Map();
-function queue(id, fn) {
-  const p = (queues.get(id) || Promise.resolve()).then(fn);
-  const tail = p.catch(() => {});
-  queues.set(id, tail);
-  tail.then(() => { if (queues.get(id) === tail) queues.delete(id); });
-  return p;
-}
+const queue = keyedQueue().run;
 
 // made beside its place and renamed in, so a crash halfway never leaves a broken repository to trip over
 async function init(id) {

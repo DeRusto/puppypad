@@ -2,6 +2,7 @@
 // It takes the Stripe client to use, shaped like the Stripe SDK: the real one in production, an in-memory one in tests
 // (test/fake-stripe.js). Routes keep sign-in, the form token, whether the tier is on, and the pages and status codes.
 const { db } = require('./db');
+const { keyedQueue } = require('./util');
 
 const GRACE = 3 * 86400000; // Stripe retries a failed renewal for a few days before giving up
 const LIVE = ['active', 'trialing', 'past_due', 'incomplete']; // a second subscription is refused while one of these exists
@@ -36,9 +37,16 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
   }
 
   // { url } to send the member to Stripe Checkout, or { already: true } while they support or a subscription is live.
-  // Throws when Stripe can't be reached.
-  async function checkout(site, plan) {
-    let login = logins.loginOf(site);
+  // Throws when Stripe can't be reached. One login's checkouts run one at a time, so two at once can't both find no open
+  // checkout and each make one: the second waits, then reuses what the first made.
+  // shortcut: the queue is per process, which covers the single app container; use Stripe idempotency keys if the app ever runs as several
+  const queues = keyedQueue(); // by login id; a failed checkout still lets the next one go
+  function checkout(site, plan) {
+    const id = logins.loginOf(site).id;
+    return queues.run(id, () => checkoutNow(id, plan));
+  }
+  async function checkoutNow(id, plan) {
+    let login = byId.get(id); // as the checkout before it left it
     if (login.supporter_until > Date.now() && login.stripe_customer_id) return { already: true };
     // one Stripe customer per login, made before checkout, so a second tab or a payment the webhook hasn't reported yet
     // finds the same customer: an open checkout is reused and a live subscription refuses another
@@ -109,7 +117,8 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
     }
   }
 
-  return { checkout, portal, receive, cancel };
+  const pendingCheckouts = queues.size; // for tests: logins with a checkout running or waiting
+  return { checkout, portal, receive, cancel, pendingCheckouts };
 }
 
 module.exports = { createBilling, BadSignature };

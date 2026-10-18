@@ -194,4 +194,18 @@ function totpStep(secret, code, t = Date.now()) {
 
 const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-module.exports = { esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };
+// Runs work one at a time per key: each call starts once the key's previous one has settled (returned or thrown) and
+// gets its own result or error. Keys with nothing waiting are dropped, so finished keys cost nothing.
+function keyedQueue() {
+  const tails = new Map();
+  const run = (key, fn) => {
+    const p = (tails.get(key) || Promise.resolve()).then(fn);
+    const tail = p.catch(() => {});
+    tails.set(key, tail);
+    tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
+    return p;
+  };
+  return { run, size: () => tails.size };
+}
+
+module.exports = { keyedQueue, esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };
