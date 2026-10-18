@@ -256,8 +256,17 @@ test('checkouts for different logins at once each get their own session', async 
   const stripe = fakeStripe();
   const made = keepCreated(stripe);
   const billing = make(stripe);
-  const [a, b] = await Promise.all([billing.checkout(add({ stripe_customer_id: 'cus_p' }), 'monthly'), billing.checkout(add({ stripe_customer_id: 'cus_q' }), 'monthly')]);
-  assert.notEqual(a.url, b.url);
+  // hold the first login's checkout inside a Stripe call; the second login's must finish meanwhile
+  const list = stripe.subscriptions.list;
+  let release;
+  const held = new Promise((r) => { release = r; });
+  stripe.subscriptions.list = (args) => (args.customer === 'cus_p' ? Object.assign(held.then(() => list(args)), { [Symbol.asyncIterator]: async function* () { await held; yield* list(args); } }) : list(args));
+  const slow = billing.checkout(add({ stripe_customer_id: 'cus_p' }), 'monthly');
+  const fast = await billing.checkout(add({ stripe_customer_id: 'cus_q' }), 'monthly');
+  assert.ok(fast.url);
+  assert.equal(made(), 1); // the held login hasn't got that far yet
+  release();
+  assert.notEqual((await slow).url, fast.url);
   assert.equal(made(), 2);
 });
 

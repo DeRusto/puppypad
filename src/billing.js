@@ -2,6 +2,7 @@
 // It takes the Stripe client to use, shaped like the Stripe SDK: the real one in production, an in-memory one in tests
 // (test/fake-stripe.js). Routes keep sign-in, the form token, whether the tier is on, and the pages and status codes.
 const { db } = require('./db');
+const { keyedQueue } = require('./util');
 
 const GRACE = 3 * 86400000; // Stripe retries a failed renewal for a few days before giving up
 const LIVE = ['active', 'trialing', 'past_due', 'incomplete']; // a second subscription is refused while one of these exists
@@ -39,14 +40,10 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
   // Throws when Stripe can't be reached. One login's checkouts run one at a time, so two at once can't both find no open
   // checkout and each make one: the second waits, then reuses what the first made.
   // shortcut: the queue is per process, which covers the single app container; use Stripe idempotency keys if the app ever runs as several
-  const queues = new Map(); // login id -> the end of its queue
+  const queues = keyedQueue(); // by login id; a failed checkout still lets the next one go
   function checkout(site, plan) {
     const id = logins.loginOf(site).id;
-    const run = (queues.get(id) || Promise.resolve()).then(() => checkoutNow(id, plan));
-    const tail = run.catch(() => {}); // a failed checkout still lets the next one go
-    queues.set(id, tail);
-    tail.then(() => { if (queues.get(id) === tail) queues.delete(id); });
-    return run;
+    return queues.run(id, () => checkoutNow(id, plan));
   }
   async function checkoutNow(id, plan) {
     let login = byId.get(id); // as the checkout before it left it
@@ -120,7 +117,7 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
     }
   }
 
-  const pendingCheckouts = () => queues.size; // for tests: logins with a checkout running or waiting
+  const pendingCheckouts = queues.size; // for tests: logins with a checkout running or waiting
   return { checkout, portal, receive, cancel, pendingCheckouts };
 }
 
