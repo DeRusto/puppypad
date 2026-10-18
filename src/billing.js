@@ -36,9 +36,20 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
   }
 
   // { url } to send the member to Stripe Checkout, or { already: true } while they support or a subscription is live.
-  // Throws when Stripe can't be reached.
-  async function checkout(site, plan) {
-    let login = logins.loginOf(site);
+  // Throws when Stripe can't be reached. One login's checkouts run one at a time, so two at once can't both find no open
+  // checkout and each make one: the second waits, then reuses what the first made.
+  // shortcut: the queue is per process, which covers the single app container; use Stripe idempotency keys if the app ever runs as several
+  const queues = new Map(); // login id -> the end of its queue
+  function checkout(site, plan) {
+    const id = logins.loginOf(site).id;
+    const run = (queues.get(id) || Promise.resolve()).then(() => checkoutNow(id, plan));
+    const tail = run.catch(() => {}); // a failed checkout still lets the next one go
+    queues.set(id, tail);
+    tail.then(() => { if (queues.get(id) === tail) queues.delete(id); });
+    return run;
+  }
+  async function checkoutNow(id, plan) {
+    let login = byId.get(id); // as the checkout before it left it
     if (login.supporter_until > Date.now() && login.stripe_customer_id) return { already: true };
     // one Stripe customer per login, made before checkout, so a second tab or a payment the webhook hasn't reported yet
     // finds the same customer: an open checkout is reused and a live subscription refuses another
@@ -109,7 +120,8 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
     }
   }
 
-  return { checkout, portal, receive, cancel };
+  const pendingCheckouts = () => queues.size; // for tests: logins with a checkout running or waiting
+  return { checkout, portal, receive, cancel, pendingCheckouts };
 }
 
 module.exports = { createBilling, BadSignature };

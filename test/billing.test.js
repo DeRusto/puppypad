@@ -216,3 +216,63 @@ test('cancel also expires open checkouts, so a deleted login cannot start paying
   assert.equal(await make(stripe).cancel(add({ stripe_customer_id: 'cus_x' })), true);
   assert.deepEqual(stripe.state.open.map((o) => o.id), ['cs_theirs']);
 });
+
+// as real Stripe does: a created checkout is open and listable until it is paid or expires
+function keepCreated(stripe) {
+  let made = 0;
+  stripe.checkout.sessions.create = async (a) => {
+    stripe.calls.push(a);
+    const s = { id: `cs_made${++made}`, customer: a.customer, url: `https://checkout.stripe.com/c/pay/made${made}`, line_items: { data: [{ price: { id: a.line_items[0].price } }] } };
+    stripe.state.open.push(s);
+    return s;
+  };
+  return () => made;
+}
+
+test('two checkouts at once for one login give one session, from any of its sites', async () => {
+  const stripe = fakeStripe();
+  const made = keepCreated(stripe);
+  const billing = make(stripe);
+  const login = add({ stripe_customer_id: 'cus_race' });
+  const site = add({ login_id: login.id });
+  const [a, b] = await Promise.all([billing.checkout(login, 'monthly'), billing.checkout(site, 'monthly')]);
+  assert.equal(a.url, b.url);
+  assert.equal(made(), 1);
+  assert.equal(billing.pendingCheckouts(), 0);
+});
+
+test('two checkouts at once for a login without a customer make one customer and one session', async () => {
+  const stripe = fakeStripe();
+  const made = keepCreated(stripe);
+  const billing = make(stripe);
+  const login = add();
+  const [a, b] = await Promise.all([billing.checkout(login, 'monthly'), billing.checkout(login, 'monthly')]);
+  assert.equal(a.url, b.url);
+  assert.equal(stripe.state.customers, 1);
+  assert.equal(made(), 1);
+});
+
+test('checkouts for different logins at once each get their own session', async () => {
+  const stripe = fakeStripe();
+  const made = keepCreated(stripe);
+  const billing = make(stripe);
+  const [a, b] = await Promise.all([billing.checkout(add({ stripe_customer_id: 'cus_p' }), 'monthly'), billing.checkout(add({ stripe_customer_id: 'cus_q' }), 'monthly')]);
+  assert.notEqual(a.url, b.url);
+  assert.equal(made(), 2);
+});
+
+test('a checkout that throws reaches its caller and does not hold up the next one for that login', async () => {
+  const stripe = fakeStripe();
+  keepCreated(stripe);
+  const billing = make(stripe);
+  const login = add({ stripe_customer_id: 'cus_flaky' });
+  const list = stripe.subscriptions.list;
+  let first = true;
+  stripe.subscriptions.list = (...a) => { if (first) { first = false; throw new Error('Stripe is down'); } return list(...a); };
+  const [a, b] = await Promise.allSettled([billing.checkout(login, 'monthly'), billing.checkout(login, 'monthly')]);
+  assert.equal(a.status, 'rejected');
+  assert.match(a.reason.message, /Stripe is down/);
+  assert.equal(b.status, 'fulfilled');
+  assert.ok(b.value.url);
+  assert.equal(billing.pendingCheckouts(), 0);
+});
