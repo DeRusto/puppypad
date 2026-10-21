@@ -480,8 +480,8 @@ const links = (ctx, broken) => layout(ctx, 'Broken links', two(`
 ${broken.length ? `<p>These links and images in your pages point at files your site doesn't have. Fix the path, or upload the missing file.</p>
 <div class="scroll"><table><tr><th>Page</th><th>Points at</th></tr>${broken.slice(0, 500).map((b) => `<tr><td><a href="/dashboard/edit?path=${encodeURIComponent(b.file)}">${esc(b.file)}</a></td><td><code>${esc(b.link)}</code></td></tr>`).join('')}</table></div>
 ${broken.length > 500 ? `<p class="note">...and ${broken.length - 500} more.</p>` : ''}` : '<p class="ok" role="status">No broken links. Every link and image in your pages points at a file you have.</p>'}</section>`,
-aside('About this check', `<p>Every page and stylesheet on your site is read, and each link, image and stylesheet path in it is checked against your files.</p>
-<p class="note">Links to other websites aren't checked. Click a page name to open it in the editor.</p>`)), { noindex: true });
+aside('About this check', `<p>Each HTML page on your site is read, and its link, image and stylesheet paths are checked against your files.</p>
+<p class="note">Paths inside CSS files and links to other websites aren't checked. Click a page name to open it in the editor.</p>`)), { noindex: true });
 
 const statTable = (head, rows, cell) => (rows.length ? `<div class="scroll"><table><tr><th>${head}</th><th>Views</th></tr>${rows.map((r) => `<tr><td>${cell(r)}</td><td class="num">${r.views}</td></tr>`).join('')}</table></div>` : '<p class="note">Nothing yet.</p>');
 const stats = (ctx, { days, pages, referrers }) => {

@@ -108,7 +108,7 @@ summary{cursor:pointer;font:700 15px var(--display);color:var(--blue)}details>:n
 .edbar .acts{margin-left:auto;align-items:center;font-size:13px}
 .crumbs{font-size:13px;color:var(--soft);margin:0 0 6px}
 .wgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:12px;margin-top:12px}
-.wcard{display:flex;flex-direction:column;gap:8px;min-width:0;background:#fff;border:2px solid var(--quilt);border-radius:8px;padding:10px 12px}.wcard p,.wcard pre{margin:0}
+.wcard{display:flex;flex-direction:column;gap:8px;min-width:0;background:#fff;border:2px solid var(--quilt);border-radius:8px;padding:10px 12px}.wcard p,.wcard pre{margin:0}.wcard img{max-width:100%;height:auto}
 .side .meter{margin:0}
 .chip{font:700 12px var(--display);background:var(--pee);border:2px solid #e0b800;border-radius:6px;padding:1px 8px}
 .chip[hidden]{display:none}
