@@ -29,7 +29,7 @@ textarea.code{min-height:60vh;white-space:pre;tab-size:2}
 button,.btn{font:700 15px var(--display);background:var(--pee);color:var(--ink);border:3px outset #fff3a8;padding:5px 16px;min-height:36px;cursor:pointer;align-self:flex-start;text-decoration:none;display:inline-block}
 a.btn:visited{color:var(--ink)}.btn.big{font-size:18px;padding:8px 22px}
 button:active,.btn:active{border-style:inset}
-button.link{background:none;border:0;color:var(--link);text-decoration:underline;padding:0;min-height:0;font:400 inherit var(--body)}
+button.link{background:none;border:0;color:var(--link);text-decoration:underline;padding:0;min-height:0;font-weight:400;font-size:inherit;font-family:var(--body)}
 button.danger{background:#c0392b;color:#fff;border-color:#e9a59d}
 .err{background:#ffdcdc;color:#7a0000;border:2px solid #c00;padding:6px 10px}
 .ok{background:#dff7df;color:#0b4d0b;border:2px solid #1a8f1a;padding:6px 10px}

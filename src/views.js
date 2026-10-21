@@ -493,11 +493,12 @@ ${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images
 <div><button>Save</button></div></form></section>
 ${CM_JS.map((f) => `<script src="${CM}/${f}"></script>`).join('')}
 <script>(function(){
-var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
+var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview'),dirty=document.getElementById('dirty'),saved=ta.value;
 var base=${JSON.stringify(`<base href="${siteBase}">`).replace(/</g, '\\u003c')};
 var get=function(){return ta.value},cm=null;
 // the preview runs in a sandboxed frame with no access to your login; <base> makes your images and stylesheets resolve
-function draw(){if(frame)frame.srcdoc=base+get()}
+// every edit (typing, undo, image and widget inserts) ends in draw(), so it also sets the Unsaved tag against the saved text
+function draw(){dirty.hidden=get()===saved;if(frame)frame.srcdoc=base+get()}
 if(window.CodeMirror){
   cm=CodeMirror.fromTextArea(ta,{mode:${JSON.stringify(CM_MODE[ext] || 'text/plain')},theme:'material-darker',lineNumbers:true,lineWrapping:true,tabSize:2,indentUnit:2,
     autoCloseTags:true,extraKeys:{'Ctrl-S':function(){form.requestSubmit()},'Cmd-S':function(){form.requestSubmit()},'Ctrl-Space':'autocomplete'}});
@@ -523,9 +524,6 @@ var ins=document.getElementById('insert'),snip=${JSON.stringify(insert ? insert.
 if(ins)ins.addEventListener('click',function(){
   if(cm){cm.replaceRange(snip,cm.getCursor());cm.focus()}else{ta.setRangeText(snip,ta.selectionStart,ta.selectionEnd,'end');ta.focus()}draw();
 });
-// the tag shows once the code differs from what was saved; saving reloads the page, which hides it again
-var dirty=document.getElementById('dirty'),shown=function(){dirty.hidden=false};
-if(cm)cm.on('change',shown);else ta.addEventListener('input',shown);
 })();</script>`, { wide: true, tight: true, head });
 };
 
