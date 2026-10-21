@@ -1487,6 +1487,7 @@ const showAdmin = (req, res, m) => {
   const { page, pages } = pageOf(req, open, 'rpage');
   res.send(V.admin(req.ctx, m, {
     q,
+    site: String(req.query.site || '').trim().slice(0, 100), // fills the site boxes after "act" on a report or member
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
     users: users.map((u) => ({ ...u, disk: files.usage(u.username).total, bandwidth: bwToday(u) })),

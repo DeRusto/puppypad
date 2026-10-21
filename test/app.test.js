@@ -1312,7 +1312,7 @@ test('bandwidth guard: daily cap per site, hotlinked media throttled, usage on d
   assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /Bandwidth today<\/div><div class="v">9 B <small>of 1024 MB/);
   const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
   const admin = (await req('get', '/admin?q=bigpad').set('Cookie', login.headers['set-cookie'][0].split(';')[0])).text;
-  assert.match(admin, /<td class="num">9 B<\/td><\/tr>/);
+  assert.match(admin, /<td class="num">9 B<\/td><td><a href="\/admin\?site=bigpad&amp;q=bigpad#act">act<\/a><\/td><\/tr>/);
 
   // over the cap: files rest until midnight UTC; yesterday's bytes do not count
   db.prepare("UPDATE users SET bw_bytes = ? WHERE username = 'bigpad'").run(1024 * 1048576);
@@ -1583,6 +1583,16 @@ const bossLogin = async () => {
 };
 const post = (m, url, body) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
 const eventOf = (name) => db.prepare('SELECT e.id FROM events e JOIN users u ON u.id = e.user_id WHERE u.username = ? ORDER BY e.id DESC').get(name).id;
+
+test('"act" on /admin fills every site box with that name, escaped', async () => {
+  const boss = await bossLogin();
+  const page = (await req('get', '/admin?site=picked').set('Cookie', boss.cookie)).text;
+  for (const id of ['bsite', 'ssite', 'fsite']) assert.match(page, new RegExp(`id="${id}" name="site" value="picked"`), id);
+  assert.match(page, /Acting on <b>picked<\/b>/);
+  const evil = (await req('get', `/admin?site=${encodeURIComponent('"><script>x</script>')}`).set('Cookie', boss.cookie)).text;
+  assert.ok(!evil.includes('<script>x'));
+  assert.match(evil, /value="&quot;&gt;&lt;script&gt;x&lt;\/script&gt;"/);
+});
 
 test('staff picks and the site of the week are set from /admin and shown on the home page while listed', async () => {
   const boss = await bossLogin();

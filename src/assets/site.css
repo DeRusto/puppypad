@@ -36,7 +36,7 @@ button.danger{background:#c0392b;color:#fff;border-color:#e9a59d}
 .hp{position:absolute;left:-9999px}
 fieldset.starters{border:2px inset var(--edge);display:flex;flex-direction:column;gap:6px;padding:8px 10px}fieldset.starters legend{font-size:14px;color:var(--blue)}
 .scroll{overflow-x:auto}
-table{border-collapse:collapse;width:100%;background:var(--pad)}
+table{border-collapse:collapse;width:100%;background:var(--pad);overflow-wrap:break-word}
 th,td{border-bottom:2px solid var(--quilt);padding:6px 8px;text-align:left;vertical-align:top}
 th{color:var(--soft);font-weight:400;font-size:12px;text-transform:uppercase;letter-spacing:.06em;border-bottom-color:var(--edge)}
 tr:hover td{background:#fff}
@@ -81,6 +81,7 @@ iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#f
 .pups{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0;padding:0}
 .pups a{display:inline-block;background:#fff;border:2px solid var(--quilt);border-radius:6px;padding:2px 10px;font-size:13px}
 .status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:0 0 12px}
+.status.four{grid-template-columns:repeat(4,minmax(0,1fr))}
 .meter{background:#fff;border:2px inset var(--edge);border-radius:8px;padding:10px 12px}
 .meter .k{font-size:12px;color:var(--soft);text-transform:uppercase;letter-spacing:.06em}
 .meter .v{font:700 18px var(--display);font-variant-numeric:tabular-nums}.meter .v small{font:400 13px var(--body);color:var(--soft)}
@@ -102,5 +103,5 @@ summary{cursor:pointer;font:700 15px var(--display);color:var(--blue)}details>:n
 .chip{font:700 12px var(--display);background:var(--pee);border:2px solid #e0b800;border-radius:6px;padding:1px 8px}
 .chip[hidden]{display:none}
 .edform{display:flex;flex-direction:column;gap:8px}
-@media (max-width:760px){.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split>img.wave{display:block;max-width:160px;margin:0 auto}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.edbar .acts{margin-left:0}}
+@media (max-width:760px){.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split>img.wave{display:block;max-width:160px;margin:0 auto}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.status.four{grid-template-columns:repeat(2,minmax(0,1fr))}.edbar .acts{margin-left:0}}
 .qr{width:200px;max-width:100%;margin:8px 0}
