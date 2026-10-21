@@ -30,10 +30,12 @@ function layout(ctx, title, body, opts = {}) {
       ? [`<a href="/feed">Feed</a>`, `<a href="/notifications">Notifications${ctx.unread ? ` (${ctx.unread})` : ''}</a>`, `<a href="/dashboard">My pad</a>`, ...(ctx.isAdmin ? [`<a href="/admin">Admin</a>`] : []),
         `<form class="inline" method="post" action="/logout"><input type="hidden" name="_csrf" value="${esc(csrf)}"><button class="link">Log out (${esc(user.username)})</button></form>`]
       : [`<a href="/signup">Get a free pad</a>`, `<a href="/login">Log in</a>`]),
-  ].join(' ');
+  ].join(' ')
+    // the tab for the section you are in wears the yellow: Home only on /, the others on their path and below it
+    .replace(/<a href="(\/[^"]*)">/g, (a, h) => (h === '/' ? ctx.path === '/' : ctx.path === h || ctx.path?.startsWith(`${h}/`)) ? `<a href="${h}" aria-current="page">` : a);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(fullTitle)}</title>${meta}<link rel="stylesheet" href="${CSS_URL}">${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
-<header class="box"><h1><a href="/">${esc(cfg.SITE_NAME)}</a></h1><p class="tagline">${esc(cfg.TAGLINE)}</p><nav aria-label="Main">${nav}</nav></header>
+<header class="box"><h1><a href="/">${esc(cfg.SITE_NAME)}</a></h1>${opts.tight ? '' : `<p class="tagline">${esc(cfg.TAGLINE)}</p>`}<nav aria-label="Main">${nav}</nav></header>
 ${body}
 <footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/privacy">Privacy</a> | <a href="/report">Report a site</a> | Abuse contact: ${esc(cfg.ABUSE_EMAIL)}</footer>
 </div></body></html>`;
@@ -51,7 +53,7 @@ const ago = (t) => {
 const isSup = (ctx, name) => !!ctx.supporters?.has(name);
 const nameTag = (ctx, name) => `${esc(name)}${isSup(ctx, name) ? `<img class="badge" src="/img/supporter.svg" alt="${esc(ctx.cfg.SITE_NAME)} supporter" title="${esc(ctx.cfg.SITE_NAME)} supporter">` : ''}`;
 const siteList = (ctx, rows) => rows.length
-  ? `<ul class="sites">${rows.map((r) => `<li><a href="${esc(ctx.cfg.siteUrl(r.username))}">${nameTag(ctx, r.username)}</a>${r.tagline ? ` - ${esc(r.tagline)}` : ''} <small>(updated ${ago(r.updated_at)}, ${r.hits} hits)</small></li>`).join('')}</ul>`
+  ? `<ul class="pups">${rows.map((r) => `<li><a href="${esc(ctx.cfg.siteUrl(r.username))}"${r.tagline ? ` title="${esc(r.tagline)}"` : ''}>${nameTag(ctx, r.username)}</a></li>`).join('')}</ul>`
   : `<p>The pad is clean. Make the first mess.</p>`;
 
 const shotImg = (ctx, r, link) => (r.shot
@@ -67,13 +69,22 @@ ${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div cla
 
 const ATOM_LINK = (title, href) => `<link rel="alternate" type="application/atom+xml" title="${esc(title)}" href="${esc(href)}">`;
 const home = (ctx, { sotw, picks, recent, newest, total, supporters = 0 }) => layout(ctx, 'Home', `
-<section class="box"><img class="pup" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"><img class="pup left" src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"><h2>Your own pad on the web</h2>
-<p>Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
-<p><a href="/signup">Claim your pad</a> | ${total} pad${total === 1 ? '' : 's'} in use so far${supporters ? ` | kept running by ${supporters} supporter${supporters === 1 ? '' : 's'} (<a href="/dashboard/support">chip in</a>)` : ''}</p><div style="clear:both"></div></section>
-${sotw ? `<section class="box"><h2>Site of the week</h2>${cards(ctx, [sotw])}</section>` : ''}
-${picks.length ? `<section class="box"><h2>Staff picks</h2>${cards(ctx, picks)}</section>` : ''}
-<section class="box"><img class="pup" src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"><h2>Fresh accidents <small>(recently updated)</small></h2><div style="clear:right"></div>${cards(ctx, recent)}<p style="margin-top:10px"><a href="/browse">See them all &gt;&gt;</a></p></section>
-<section class="box"><img class="pup" src="/img/pup-guestbook.webp" alt="Cartoon puppy with a pencil next to an open guestbook" width="180" height="114" loading="lazy"><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}<div style="clear:both"></div></section>`, {
+<section class="box split"><div><h2>Your own pad on the web</h2>
+<p class="lead">Sign up and you get <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>, ${ctx.cfg.QUOTA_MB} MB of space, a code editor with live preview, a hit counter and a guestbook. No templates, no algorithm. Write your own HTML, and do not worry about making a mess. That is what the pad is for.</p>
+<div class="cta"><a class="btn big" href="/signup">Claim your pad</a><a href="/random">or fetch a random pad first</a></div>
+<ul class="stamps"><li class="stamp">${ctx.cfg.QUOTA_MB} MB free</li><li class="stamp">Live preview editor</li><li class="stamp">Hit counter</li><li class="stamp">Guestbook</li><li class="stamp">No algorithm</li></ul>
+<p class="note">${total} pad${total === 1 ? '' : 's'} in use so far${supporters ? `, kept running by ${supporters} supporter${supporters === 1 ? '' : 's'} (<a href="/dashboard/support">chip in</a>)` : ''}</p></div>
+<img src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"></section>
+${sotw ? `<section class="box"><h2>Site of the week</h2><div class="sotw">${shotImg(ctx, sotw, ctx.cfg.siteUrl(sotw.username))}<div>
+<h3><a href="${esc(ctx.cfg.siteUrl(sotw.username))}">${nameTag(ctx, sotw.username)}</a> <a href="/site/${esc(sotw.username)}" class="t">[profile]</a></h3>
+${sotw.tagline ? `<p>${esc(sotw.tagline)}</p>` : ''}${sotw.tags ? `<p class="t">${tagLinks(sotw.tags)}</p>` : ''}
+<p class="note">${sotw.followers} follower${sotw.followers === 1 ? '' : 's'} | ${sotw.hits} hits</p></div></div></section>` : ''}
+${picks.length ? `<section class="box split"><div><h2>Staff picks</h2>${cards(ctx, picks)}</div><img src="/img/pup-coder.webp" alt="Cartoon puppy typing code on a retro computer" width="180" height="120" loading="lazy"></section>` : ''}
+<section class="box split"><div><h2>Fresh accidents <small>(recently updated)</small></h2>${cards(ctx, recent)}<p class="mt"><a href="/browse">See them all in the dog park &gt;&gt;</a></p></div>
+<img src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"></section>
+<section class="box split"><div><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}</div>
+<img src="/img/pup-guestbook.webp" alt="Cartoon puppy with a pencil next to an open guestbook" width="180" height="114" loading="lazy"></section>`, {
+  wide: true,
   fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
   description: `${ctx.cfg.SITE_NAME} is a free homepage host. Get yourname.${ctx.cfg.BASE_HOST}, ${ctx.cfg.QUOTA_MB} MB, a built-in editor, guestbook and hit counter. No templates, no algorithm \u2014 write your own HTML. Accidents welcome.`,
   path: '/',
@@ -90,7 +101,7 @@ const browse = (ctx, { rows, page, pages, sort, q }) => {
 <input type="search" id="q" name="q" maxlength="50" value="${esc(q)}"><button>Search</button></form>${q ? `<p><a href="/browse?sort=${sort}">Show every site</a></p>` : ''}
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}${qs}">${l}</a>`)).join(' ')}</p>
 ${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows)}
-<p style="margin-top:10px">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
+<p class="mt">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
 <p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { wide: true, noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
 };
 
@@ -133,7 +144,7 @@ ${mine ? '<p><a href="/dashboard">Edit my site</a></p>' : `<form class="inline" 
 <button name="action" value="${following ? 'unfollow' : 'follow'}">${following ? 'Unfollow' : ctx.user ? 'Follow' : 'Log in to follow'}</button></form>
 ${ctx.user ? `<form class="inline" method="post" action="/block">${csrfField(ctx)}<input type="hidden" name="site" value="${esc(p.username)}"><button class="link" name="action" value="${blocking ? 'unblock' : 'block'}">${blocking ? 'Unblock' : 'Block'}</button></form>` : ''}
 ${blocking ? `<p class="note">You blocked ${esc(p.username)}. Their comments and likes are hidden from you, and they can't comment on, like or follow your site.</p>` : ''}
-<p style="margin-top:10px"><a href="/report?site=${esc(p.username)}">Report this site</a></p>`}</div></div></section>
+<p class="mt"><a href="/report?site=${esc(p.username)}">Report this site</a></p>`}</div></div></section>
 <section class="box"><h2>Recent activity</h2>${events.length ? `<ul>${events.map((e) => `<li>${fileLinks(e, url)} <a href="${esc(updateUrl(p.username, e))}" class="note">${ago(e.created_at)}</a>${social(ctx, e, p.username, `/site/${p.username}`)}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>'}
 <p class="note"><a href="/site/${esc(p.username)}/feed.xml">Follow ${esc(p.username)} in a feed reader</a> (Atom).</p></section>
 <section class="box" id="comments"><h2>Comments</h2>${comments.rows.map((c) => commentHtml(ctx, c, mine, `/site/${p.username}`)).join('') || '<p class="note">No comments yet.</p>'}
@@ -225,7 +236,7 @@ const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `
 <form class="stack" method="post" action="/login">
 <label for="username">Site name or email</label><input type="text" id="username" name="username" value="${esc(v.username)}" required autocapitalize="none" autocomplete="username">
 <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
-<button>Log in</button></form><p style="margin-top:10px"><a href="/forgot">Forgot your password?</a></p></section>`);
+<button>Log in</button></form><p class="mt"><a href="/forgot">Forgot your password?</a></p></section>`);
 
 const login2fa = (ctx, m, token) => layout(ctx, 'Log in', `
 <section class="box"><h2>Two-factor login</h2>${msg(m)}
@@ -237,7 +248,7 @@ const login2fa = (ctx, m, token) => layout(ctx, 'Log in', `
 const twoFactor = (ctx, m, secret, uri, qr) => layout(ctx, 'Two-factor login', `
 <section class="box"><h2>Turn on two-factor login</h2>${msg(m)}
 <ol><li>Open an authenticator app on your phone (Google Authenticator, Authy, 1Password, Bitwarden and others all work).</li>
-<li>Add an account by scanning this QR code with the app:<div role="img" aria-label="QR code for your two-factor key" style="width:200px;max-width:100%;margin:8px 0">${qr}</div>
+<li>Add an account by scanning this QR code with the app:<div role="img" aria-label="QR code for your two-factor key" class="qr">${qr}</div>
 <span class="note">Can't scan it? Type this key instead: <code>${secret.match(/.{4}/g).join(' ')}</code>, or on your phone <a href="${esc(uri)}">tap here to add it</a>.</span></li>
 <li>Enter the 6-digit code the app shows.</li></ol>
 <form class="stack" method="post" action="/account/2fa/on">${csrfField(ctx)}<input type="hidden" name="secret" value="${esc(secret)}">
@@ -373,64 +384,69 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 <form class="inline" method="post" action="/dashboard/delete">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}"><button class="link">delete</button></form></td></tr>`;
     }),
   ].join('');
+  const meter = (k, v, of, part) => `<div class="meter"><div class="k">${k}</div><div class="v">${v}${of ? ` <small>${of}</small>` : ''}</div>${part === undefined ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.round(part * 1000) / 10)}%"></i></div>`}</div>`;
   return layout(ctx, 'My pad', `
-<section class="box"><h2>My pad</h2>${msg(m)}
+<section class="box"><h2>My pad: ${esc(user.username)}</h2>${msg(m)}
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
-${d.canAdd ? `<form class="stack" method="post" action="/dashboard/sites/new">${csrfField(ctx)}<label for="newsite">Add another site to this login (supporters, up to 5)</label><input type="text" id="newsite" name="username" required maxlength="30"><button>Add site</button></form>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
-<p>Address: <a href="${esc(url)}" target="_blank">${esc(url)}</a><br>Space used: ${fmtBytes(d.used.total)} of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'} | Bandwidth today: ${fmtBytes(d.bandwidth)} of ${cfg.BANDWIDTH_MB} MB | ${user.hits} hits | <a href="/dashboard/stats">visitor stats</a> | <a href="/dashboard/guestbook">guestbook entries</a> | <a href="/dashboard/links">check for broken links</a> | <a href="/dashboard/history">bring back deleted files</a> | <a href="/dashboard/widgets">widgets</a> | <a href="/dashboard/api">API key</a> | <a href="/site/${esc(user.username)}">my profile</a>${d.support ? ' | <a href="/dashboard/support">support us</a>' : ''}</p>
+<a class="addr" href="${esc(url)}" target="_blank">${esc(url)}</a>
+<div class="status">${meter('Space used', fmtBytes(d.used.total), `of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'}`, d.used.total / (d.quota * 1048576))}
+${meter('Bandwidth today', fmtBytes(d.bandwidth), `of ${cfg.BANDWIDTH_MB} MB`, d.bandwidth / (cfg.BANDWIDTH_MB * 1048576))}
+${meter('Hits', user.hits)}</div>
+<p class="links"><a href="/dashboard/stats">Visitor stats</a> <a href="/dashboard/guestbook">Guestbook entries</a> <a href="/dashboard/links">Check for broken links</a> <a href="/dashboard/history">Bring back deleted files</a> <a href="/dashboard/api">API key</a> <a href="/site/${esc(user.username)}">My profile</a>${d.support ? ' <a href="/dashboard/support">Support us</a>' : ''}</p>
 ${!d.hasIndex && !user.banned ? `<div id="noindex"><h3>Your site has no front page</h3>
 <p class="err">There is no <code>index.html</code> at the top of your site, so visitors to ${esc(url)} get a "page not found". Rename one of your pages to <code>index.html</code>, or make a new front page from a starter:</p>
 ${starterForm(ctx, 'Make my front page')}</div>` : ''}
 ${d.listed || user.banned || user.hidden ? '' : `<p class="note">Your site is online, but it shows up in the dog park, on the home page and in the webring (if you join it) only after your first edit${cfg.NEW_SITE_HOURS > 0 ? ` and once it is ${cfg.NEW_SITE_HOURS} hours old` : ''}. Make it yours!</p>`}
-<form class="stack" method="post" action="/dashboard/tagline">${csrfField(ctx)}<label for="tagline">One-line description for the site directory</label>
-<input type="text" id="tagline" name="tagline" maxlength="100" value="${esc(user.tagline)}"><button>Save description</button></form>
-<form class="stack" method="post" action="/dashboard/tags">${csrfField(ctx)}<label for="tags">Tags, so people can find your site in the dog park: up to 5, separated by spaces, like <code>pixel-art cats retro</code></label>
-<input type="text" id="tags" name="tags" maxlength="130" value="${esc(user.tags)}"><button>Save tags</button></form>
-<form class="stack" method="post" action="/dashboard/hidden">${csrfField(ctx)}<input type="hidden" name="hidden" value="${user.hidden ? '0' : '1'}">
-<p>${user.hidden ? 'Your site is hidden: it stays off the dog park, the home page, feeds and the webring, and asks search engines not to index it. Its address and profile still work.' : 'Want a quiet corner? Hide your site from browsing, feeds, the webring and search engines. Its address and profile keep working.'}</p>
-<button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form></section>
+${d.canAdd ? `<details><summary>Add another site to this login</summary><form class="stack" method="post" action="/dashboard/sites/new">${csrfField(ctx)}<label for="newsite">Site name (supporters, up to 5 sites)</label><div class="row"><input type="text" id="newsite" name="username" required maxlength="30"><button>Add site</button></div></form></details>` : ''}</section>
 
+<div class="cols"><div>
 <section class="box"><h2>Files in /${esc(d.dir)}</h2>
-<div class="scroll"><table><tr><th>Name</th><th>Size</th><th>Actions</th></tr>${rows || '<tr><td colspan="3">This folder is empty.</td></tr>'}</table></div>
-<h3>Upload files</h3>
-<form class="stack" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${d.fileMB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
-<div class="drop" id="drop"><label for="files">Drop files here, or pick them below. ${d.fileMB} MB each at most. Files with the same name are replaced.</label>
+<form class="stack" method="get" action="/dashboard/edit"><label for="newpath">New file or folder, for example <code>about.html</code> or <code>pics/index.html</code>. Folders are created for you.</label>
+<div class="row"><input type="text" id="newpath" name="path" value="${esc(d.dir ? d.dir + '/' : '')}" required><button>Create and edit</button></div></form>
+<div class="scroll mt"><table><tr><th>Name</th><th>Size</th><th>Actions</th></tr>${rows || '<tr><td colspan="3">This folder is empty.</td></tr>'}</table></div>
+<form class="stack mt" id="upform" method="post" action="/dashboard/upload" enctype="multipart/form-data" data-max="${d.fileMB * 1048576}">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
+<div class="drop" id="drop"><label for="files"><b>Drop files here</b>, or pick them below. ${d.fileMB} MB each at most. Files with the same name are replaced.</label>
 <input type="file" id="files" name="files" multiple required></div>
 <label><input type="checkbox" id="shrink" name="shrink" value="1"> Shrink photos bigger than ${SHRINK_PX} pixels across and drop their hidden camera details (smaller files load faster and save space)</label>
 <progress id="upbar" max="1" value="0" hidden></progress><p class="note" id="upnote" role="status"></p><button>Upload</button></form>
 ${UPLOADER(ctx)}
-<h3>Import a zip</h3>
+<details class="mt"><summary>Move in from another host, or back up</summary>
 <form class="stack" method="post" action="/dashboard/import" enctype="multipart/form-data">${csrfField(ctx)}<input type="hidden" name="dir" value="${esc(d.dir)}">
-<label for="zip">Moving in from another host? Zip up your site folder (up to ${cfg.ZIP_MAX_MB} MB) and it unpacks here, folders and all. Files with the same name are replaced.</label>
+<label for="zip">Zip up your site folder (up to ${cfg.ZIP_MAX_MB} MB) and it unpacks here, folders and all. Files with the same name are replaced.</label>
 <input type="file" id="zip" name="zip" accept=".zip,application/zip" required><button>Import zip</button></form>
-<h3>Download my site</h3>
-<p>Get every file as one <a href="/dashboard/download">.zip</a>, folders and all. Handy as a backup, or to move your site somewhere else.</p>
-<h3>New file or folder</h3>
-<form class="stack" method="get" action="/dashboard/edit"><label for="newpath">File path, for example <code>about.html</code> or <code>pics/index.html</code>. Folders are created for you.</label>
-<input type="text" id="newpath" name="path" value="${esc(d.dir ? d.dir + '/' : '')}" required><button>Create and edit</button></form></section>
+<p>Get every file as one <a href="/dashboard/download">.zip</a>, folders and all. Handy as a backup, or to move your site somewhere else.</p></details></section>
+</div><div class="side">
 
-${d.hasIndex && !user.banned ? `<section class="box"><h2>Start over with a starter</h2>
+<section class="box"><h2>In the dog park</h2>
+<form class="stack" method="post" action="/dashboard/tagline">${csrfField(ctx)}<label for="tagline">One-line description</label>
+<div class="row"><input type="text" id="tagline" name="tagline" maxlength="100" value="${esc(user.tagline)}"><button>Save</button></div></form>
+<form class="stack mt" method="post" action="/dashboard/tags">${csrfField(ctx)}<label for="tags">Tags: up to 5, separated by spaces, like <code>pixel-art cats retro</code></label>
+<div class="row"><input type="text" id="tags" name="tags" maxlength="130" value="${esc(user.tags)}"><button>Save</button></div></form>
+<form class="stack mt" method="post" action="/dashboard/hidden">${csrfField(ctx)}<input type="hidden" name="hidden" value="${user.hidden ? '0' : '1'}">
+<p class="note">${user.hidden ? 'Your site is hidden: it stays off the dog park, the home page, feeds and the webring, and asks search engines not to index it. Its address and profile still work.' : 'Want a quiet corner? Hide your site from browsing, feeds, the webring and search engines. Its address and profile keep working.'}</p>
+<button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form></section>
+
+<section class="box"><h2>Make it yours</h2><ul class="menu">
+${user.banned ? '' : '<li><a href="/dashboard/style">Style editor</a><span>Colours, fonts and a background picture without writing CSS. It writes <code>puppypad.css</code> for you.</span></li>'}
+<li><a href="/dashboard/widgets">Widgets</a><span>Hit counter, guestbook, status line, webring bar, buttons and more, with a snippet for each.</span></li></ul>
+${d.hasIndex && !user.banned ? `<details><summary>Start over with a starter</summary>
 <p>Want your front page back the way it started, or a different look? Pick a starter and it replaces your <code>index.html</code>. We ask before anything is overwritten, and your other files stay put.</p>
-${starterForm(ctx, 'Use this starter')}</section>
+${starterForm(ctx, 'Use this starter')}</details>` : ''}
+<p class="note mt">Custom 404 page: upload a file named <code>not_found.html</code>.</p></section>
 
-` : ''}${user.banned ? '' : `<section class="box"><h2>Colours and fonts</h2>
-<p>Restyle your pages without writing CSS: the <a href="/dashboard/style">style editor</a> writes <code>puppypad.css</code> for you, background picture and all.</p></section>
-
-`}<section class="box"><h2>Widgets</h2><p>Hit counter, guestbook, status line, webring bar, buttons and more: the <a href="/dashboard/widgets">widgets page</a> has a snippet for each, and adds one to a page for you.</p>
-<h3>Custom 404 page</h3><p>Upload a file named <code>not_found.html</code>.</p></section>
-
-${user.banned ? '' : `<section class="box"><h2>Rename my site</h2>
+<section class="box careful"><h2>Careful</h2>
+${user.banned ? '' : `<details><summary>Rename my site</summary>
 ${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
     ? `<p>You renamed your site recently. You can rename it again on ${new Date(user.renamed_at + cfg.RENAME_DAYS * 86400000).toISOString().slice(0, 10)}.</p>`
     : `<p>Pick a new name and your site moves to its new address, files, followers, guestbook and all. The old address redirects to the new one for 90 days, and nobody else can take it meanwhile. You can rename once every ${cfg.RENAME_DAYS} days.</p>
 <form class="stack" method="post" action="/dashboard/rename">${csrfField(ctx)}<label for="newname">New site name (3-30 lowercase letters, numbers or hyphens)</label>
 <input type="text" id="newname" name="username" required maxlength="30">
-<label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</section>
-
-`}<section class="box">${user.login_id ? '<h2>Delete this site</h2><p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<h2>Delete my account</h2><p>This removes your site, files and guestbook for good.</p>'}
+<label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</details>`}
+<details><summary>${user.login_id ? 'Delete this site' : 'Delete my account'}</summary>${user.login_id ? '<p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<p>This removes your site, files and guestbook for good.</p>'}
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
-<input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></section>`);
+<input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></details></section>
+</div></div>`, { wide: true });
 }
 
 const links = (ctx, broken) => layout(ctx, 'Broken links', `
@@ -467,13 +483,14 @@ const editor = (ctx, m, { rel, content, isNew, images = [], insert = null }) => 
   const siteBase = `${ctx.cfg.siteUrl(ctx.user.username)}/${dir ? dir + '/' : ''}`;
   const head = CM_CSS.map((f) => `<link rel="stylesheet" href="${CM}/${f}">`).join('');
   return layout(ctx, `Edit ${rel}`, `
-<section class="box"><h2>${isNew ? 'New file' : 'Editing'}: ${esc(rel)}</h2>${msg(m)}
-<form id="edform" method="post" action="/dashboard/save" style="display:flex;flex-direction:column;gap:8px">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
+<section class="box"><div class="edbar"><h2>${isNew ? 'New file' : 'Editing'}: <code>${esc(rel)}</code></h2><span class="chip" id="dirty" role="status" hidden>Unsaved changes</span>
+<div class="acts"><button form="edform">Save</button><a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a>${isNew ? '' : `<a href="/dashboard/history/file?path=${encodeURIComponent(rel)}">Older versions</a>`}<a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a></div></div>${msg(m)}
+<form id="edform" class="edform" method="post" action="/dashboard/save">${csrfField(ctx)}<input type="hidden" name="path" value="${esc(rel)}">
 <div class="edwrap"><div><label for="content">Code (Ctrl+S or Cmd+S saves)</label> <span class="note" id="findbar" hidden><button type="button" class="link" id="find">find</button> <button type="button" class="link" id="replace">replace</button></span><textarea class="code" id="content" name="content" spellcheck="false">${esc(content)}</textarea></div>
 ${isHtml ? '<div><label for="preview">Live preview (unsaved)</label><iframe class="preview" id="preview" title="Live preview" sandbox="allow-scripts"></iframe></div>' : ''}</div>
 ${isHtml && insert ? `<div class="note"><button type="button" id="insert">Insert the ${esc(insert.name)} at the cursor</button> Click where it should go in the code first, then save.</div>` : ''}
 ${isHtml && images.length ? `<div><label for="imgpick">Insert one of your images at the cursor</label> <select id="imgpick"><option value="">Pick an image...</option>${images.map((i) => `<option>${esc(i)}</option>`).join('')}</select></div>` : ''}
-<div><button>Save</button> <a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="${esc(ctx.cfg.siteUrl(ctx.user.username))}/${esc(rel)}" target="_blank">View saved page</a>${isNew ? '' : ` | <a href="/dashboard/history/file?path=${encodeURIComponent(rel)}">Older versions</a>`}</div></form></section>
+<div><button>Save</button></div></form></section>
 ${CM_JS.map((f) => `<script src="${CM}/${f}"></script>`).join('')}
 <script>(function(){
 var ta=document.getElementById('content'),form=document.getElementById('edform'),frame=document.getElementById('preview');
@@ -506,7 +523,10 @@ var ins=document.getElementById('insert'),snip=${JSON.stringify(insert ? insert.
 if(ins)ins.addEventListener('click',function(){
   if(cm){cm.replaceRange(snip,cm.getCursor());cm.focus()}else{ta.setRangeText(snip,ta.selectionStart,ta.selectionEnd,'end');ta.focus()}draw();
 });
-})();</script>`, { wide: true, head });
+// the tag shows once the code differs from what was saved; saving reloads the page, which hides it again
+var dirty=document.getElementById('dirty'),shown=function(){dirty.hidden=false};
+if(cm)cm.on('change',shown);else ta.addEventListener('input',shown);
+})();</script>`, { wide: true, tight: true, head });
 };
 
 const styleEditor = (ctx, m, { s, page, tail, offerLink, images }) => {

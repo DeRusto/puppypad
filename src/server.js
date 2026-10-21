@@ -415,13 +415,13 @@ main.use('/api', api);
 // session
 main.use((req, res, next) => {
   const m = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === COOKIE);
-  req.ctx = withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce });
+  req.ctx = withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce, path: req.path });
   if (m && m[1]) {
     const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
     if (s && s.expires > now()) {
       const user = q.userById.get(s.user_id);
       if (user) {
-        req.ctx = withFlair({ cfg, user, login: loginOf(user), csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n });
+        req.ctx = withFlair({ cfg, user, login: loginOf(user), csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n, path: req.path });
         req.sessionHash = s.token_hash;
       }
     }

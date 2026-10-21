@@ -937,7 +937,7 @@ test('uploads are turned away while the disk is too full to hold them', async ()
 test('the space-used line stays right through uploads, edits, replacements and deletes without rewalking the folder', async () => {
   const m = await member('tally');
   const dir = path.join(process.env.DATA_DIR, 'sites', 'tally');
-  const shown = async () => (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/Space used: (.*?) of .*? in (\d+) file/).slice(1).join(' / ');
+  const shown = async () => (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/Space used<\/div><div class="v">(.*?) <small>of .*? in (\d+) file/).slice(1).join(' / ');
   const realWalk = U.dirSize;
   let walks = 0;
   U.dirSize = (...a) => { walks++; return realWalk(...a); };
@@ -1309,7 +1309,7 @@ test('bandwidth guard: daily cap per site, hotlinked media throttled, usage on d
   assert.equal((await req('get', '/', host)).status, 200);
   assert.equal(bw().bw_bytes, 9);
   assert.equal(bw().bw_day, new Date().toISOString().slice(0, 10));
-  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /Bandwidth today: 9 B of 1024 MB/);
+  assert.match((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /Bandwidth today<\/div><div class="v">9 B <small>of 1024 MB/);
   const login = await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' });
   const admin = (await req('get', '/admin?q=bigpad').set('Cookie', login.headers['set-cookie'][0].split(';')[0])).text;
   assert.match(admin, /<td class="num">9 B<\/td><\/tr>/);
@@ -1593,7 +1593,7 @@ test('staff picks and the site of the week are set from /admin and shown on the 
   await post(boss, '/admin/feature', { site: 'picked', action: 'pick' });
   await post(boss, '/admin/feature', { site: 'weekly', action: 'sotw' });
   let home = (await req('get', '/')).text;
-  assert.match(home, /Site of the week<\/h2><ul class="grid"><li class="card">[^]*?weekly/);
+  assert.match(home, /Site of the week<\/h2><div class="sotw">[^]*?weekly/);
   assert.match(home, /Staff picks<\/h2><ul class="grid"><li class="card">[^]*?picked/);
   assert.match((await req('get', '/admin').set('Cookie', boss.cookie)).text, /Site of the week: <a href="\/site\/weekly">/);
   // one site of the week at a time
