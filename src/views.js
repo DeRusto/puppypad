@@ -177,6 +177,7 @@ ${mine ? `<section class="box"><h2>Change password</h2>
     path: `/site/${p.username}`,
     ogImage: p.shot ? `${ctx.cfg.BASE_URL}/shots/${p.username}.jpg` : undefined,
     head: ATOM_LINK(`${p.username} on ${ctx.cfg.SITE_NAME}`, `/site/${p.username}/feed.xml`),
+    wide: true,
   });
 };
 
@@ -184,7 +185,7 @@ const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
 <section class="box"><h2>Your feed</h2>
 ${events.length ? `<ul class="feed">${events.map((e) => `<li${isSup(ctx, e.username) ? ' class="supporter"' : ''}>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${nameTag(ctx, e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} <a href="${esc(updateUrl(e.username, e))}" class="note">${ago(e.created_at)}</a>${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, '/feed')}</div></li>`).join('')}</ul>`
     : count ? '<p>The sites you follow have been quiet. Updates show up here.</p>'
-      : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`);
+      : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`, { wide: true });
 
 const NOTE_LINE = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
 // one update with its likes and every comment, newest first, a page at a time
@@ -211,7 +212,7 @@ ${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</sectio
 <form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(ctx.login.email)}.</p>
 ${box('follow', 'when someone follows my site')}${box('comment', 'when someone comments on my site or my updates')}${box('like', 'when someone likes one of my updates')}
 <label><input type="checkbox" name="digest" value="1"${u.digest ? ' checked' : ''}> a weekly digest of updates from the sites I follow</label>
-<button>Save</button></form></section>`);
+<button>Save</button></form></section>`, { wide: true });
 };
 
 const signup = (ctx, m, v = {}) => layout(ctx, 'Sign up', `
@@ -466,7 +467,7 @@ const stats = (ctx, { days, pages, referrers }) => {
 <h3>Views per day</h3>${statTable('Day (UTC)', days, (r) => esc(r.day))}
 <h3>Top pages</h3>${statTable('Page', pages, (r) => `<a href="${esc(url)}${esc(r.path)}" target="_blank">${esc(r.path)}</a>`)}
 <h3>Where visitors came from</h3>${statTable('Website', referrers, (r) => esc(r.host))}
-<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true, wide: true });
 };
 
 // CodeMirror comes from the codemirror npm package, served by us (see server.js); the version in the path lets browsers cache it for good
@@ -793,7 +794,7 @@ ${c.GOVERNING_LAW ? `
 you accept it.</p>
 
 <h3>Contact</h3>
-<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`, { description: `The rules and terms for ${ctx.cfg.SITE_NAME}, a free homepage host: what you can publish, what we remove, and how copyright complaints work.`, path: '/rules' });
+<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`, { description: `The rules and terms for ${ctx.cfg.SITE_NAME}, a free homepage host: what you can publish, what we remove, and how copyright complaints work.`, path: '/rules', wide: true });
 };
 
 const privacy = (ctx) => layout(ctx, 'Privacy', `
@@ -812,7 +813,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <h3>Deleting it</h3>
 <p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
-<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy' });
+<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy', wide: true });
 
 // polls /admin in the background and navigates only once it shows the run finished, so the app restarting
 // mid-upgrade never strands the page on a browser error; data-follow marks a page that is still busy
@@ -836,32 +837,51 @@ ${u.behind ? `<p>Release ${release} is out${u.publishedAt ? ` (published ${ago(u
 ${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll">${esc(u.log)}</pre></details>` : ''}`;
 };
 
-const admin = (ctx, m, { q, reports, users, signups, stats, log, upgrade, sotw, picks }) => layout(ctx, 'Admin', `
-<section class="box"><h2>Moderation</h2>${msg(m)}<p>${stats.users} members, ${stats.banned} banned, ${stats.supporters} supporters, ${stats.open} open reports.</p>
-<h3>Open reports</h3><div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th></th></tr>
+// moderation first: counts, then reports and members on the left, and the tools on the right.
+// "act" on a report or member row reloads with ?site= so every tool below already holds that name.
+const admin = (ctx, m, { q, site, reports, users, signups, stats, log, upgrade, sotw, picks }) => {
+  const act = (name) => `<a href="/admin?site=${encodeURIComponent(name)}${q ? `&amp;q=${encodeURIComponent(q)}` : ''}#act">act</a>`;
+  const siteField = (id) => `<label for="${id}">Site name</label><input type="text" id="${id}" name="site" value="${esc(site)}" required>`;
+  const count = (k, v) => `<div class="meter"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  return layout(ctx, 'Admin', `
+<section class="box"><h2>Admin</h2>${msg(m)}
+<div class="status four">${count('Members', stats.users)}${count('Banned', stats.banned)}${count('Supporters', stats.supporters)}${count('Open reports', stats.open)}</div></section>
+
+<div class="cols"><div>
+<section class="box"><h2>Open reports <small>(${stats.open})</small></h2>
+<div class="scroll"><table><tr><th>When</th><th>Site</th><th>Reason</th><th>Details</th><th>From</th><th>Actions</th></tr>
 ${reports.rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(ctx.cfg.siteUrl(r.site))}" target="_blank">${esc(r.site)}</a></td><td>${esc(r.reason)}</td><td>${esc(r.details)}</td><td>${esc(r.reporter_email || '')}<br><small>${esc(r.ip)}</small></td>
-<td><form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="rpage" value="${reports.page}"><button class="link">close</button></form></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>${pager((n) => `/admin?${q ? `q=${encodeURIComponent(q)}&` : ''}rpage=${n}`, reports.page, reports.pages)}
-<h3>Take a site down or restore it</h3>
-<form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}<label for="bsite">Site name</label><input type="text" id="bsite" name="site" required>
+<td><div class="acts">${act(r.site)}<form class="inline" method="post" action="/admin/report-close">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="rpage" value="${reports.page}"><button class="link">close</button></form></div></td></tr>`).join('') || '<tr><td colspan="6">Queue is empty.</td></tr>'}</table></div>${pager((n) => `/admin?${q ? `q=${encodeURIComponent(q)}&` : ''}rpage=${n}`, reports.page, reports.pages)}</section>
+
+<section class="box"><h2>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h2>
+<form class="stack" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label><div class="row"><input type="search" id="q" name="q" value="${esc(q)}"><button>Search</button></div>${q ? '<p class="note"><a href="/admin">Clear the search</a></p>' : ''}</form>
+<div class="scroll mt"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th><th></th></tr>
+${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.supporter_until > Date.now() ? `<br><small>supporter to ${date(u.supporter_until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td><td>${act(u.username)}</td></tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>'}</table></div></section>
+
+<section class="box"><h2>Moderation log <small>(last 100)</small></h2><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
+${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div></section>
+</div><div class="side">
+
+<section class="box" id="act"><h2>Act on a site</h2>
+${site ? `<p>Acting on <b>${esc(site)}</b>: <a href="${esc(ctx.cfg.siteUrl(site))}" target="_blank">site</a> | <a href="/site/${esc(site)}">profile</a> | <a href="/admin?q=${encodeURIComponent(site)}">find member</a></p>` : '<p class="note">Type a site name, or press "act" on a report or member to fill it in.</p>'}
+<form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}${siteField('bsite')}
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
-<div><button name="action" value="ban" class="danger">Take down</button> <button name="action" value="unban">Restore</button> <button name="action" value="delete" class="danger">Delete account and files</button></div></form>
-<h3>Supporters</h3>
-<form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}<label for="ssite">Site name of the login</label><input type="text" id="ssite" name="site" required>
-<label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365" required><button>Set supporter</button></form>
-<h3>Staff picks and site of the week</h3>
+<div class="acts"><button name="action" value="ban" class="danger">Take down</button><button name="action" value="unban">Restore</button></div>
+<details><summary>Delete for good</summary><p class="note">Removes the account and every file. This cannot be undone.</p><button name="action" value="delete" class="danger">Delete account and files</button></details></form>
+<details class="mt"><summary>Supporter</summary>
+<form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}${siteField('ssite')}
+<label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365" required><button>Set supporter</button></form></details>
+<details><summary>Staff picks and site of the week</summary>
 <p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
 The home page shows them while they are listed (not hidden, and past the new-site wait).</p>
-<form class="stack" method="post" action="/admin/feature">${csrfField(ctx)}<label for="fsite">Site name</label><input type="text" id="fsite" name="site">
-<div><button name="action" value="sotw">Make site of the week</button> <button name="action" value="pick">Add to staff picks</button> <button name="action" value="unpick">Remove from staff picks</button> <button name="action" value="unsotw">Clear site of the week</button></div></form>
-<h3>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h3>
-<form class="inline" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label> <input type="search" id="q" name="q" value="${esc(q)}"> <button>Search</button>${q ? ' <a href="/admin">clear</a>' : ''}</form>
-<div class="scroll"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th></tr>
-${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.supporter_until > Date.now() ? `<br><small>supporter to ${date(u.supporter_until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td></tr>`).join('') || '<tr><td colspan="7">No members found.</td></tr>'}</table></div>
-<h3>Signups per day</h3><div class="scroll"><table><tr><th>Day (UTC)</th><th>Signups</th></tr>
-${signups.map((d) => `<tr><td>${d.day}</td><td class="num">${d.n}</td></tr>`).join('') || '<tr><td colspan="2">None in the last 14 days.</td></tr>'}</table></div>
-<h3>Moderation log</h3><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
-${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div>
-${upgradeBox(ctx, upgrade)}</section>`);
+<form class="stack" method="post" action="/admin/feature">${csrfField(ctx)}<label for="fsite">Site name</label><input type="text" id="fsite" name="site" value="${esc(site)}">
+<div class="acts"><button name="action" value="sotw">Make site of the week</button><button name="action" value="pick">Add to staff picks</button><button name="action" value="unpick">Remove from staff picks</button><button name="action" value="unsotw">Clear site of the week</button></div></form></details></section>
+
+<section class="box"><h2>Signups per day</h2><div class="scroll"><table><tr><th>Day (UTC)</th><th>Signups</th></tr>
+${signups.map((d) => `<tr><td>${d.day}</td><td class="num">${d.n}</td></tr>`).join('') || '<tr><td colspan="2">None in the last 14 days.</td></tr>'}</table></div></section>
+${upgrade ? `<section class="box">${upgradeBox(ctx, upgrade)}</section>` : ''}
+</div></div>`, { wide: true });
+};
 
 // ---- pages served on member subdomains ----
 const bare = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title>
