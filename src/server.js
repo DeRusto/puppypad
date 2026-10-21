@@ -114,7 +114,7 @@ const tempBudget = (most) => (req, res, next) => {
   try { const s = fs.statfsSync(UPLOAD_TMP); spare = (s.bavail - s.blocks * HEALTH_MIN_FREE) * s.bsize; } catch { /* unknown: refuse */ }
   if (spare - tempReserved < bytes) {
     const msg = 'The server is short on space for uploads right now. Try again in a little while.';
-    return req.accepts(['html', 'json']) === 'json' ? res.status(503).json({ error: msg }) : res.status(503).send(V.notice(req.ctx, 'Try again soon', `<p>${msg}</p>`));
+    return req.accepts(['html', 'json']) === 'json' ? res.status(503).json({ error: msg }) : res.status(503).send(V.notices.busy(req.ctx, msg));
   }
   tempReserved += bytes;
   let held = true;
@@ -214,16 +214,15 @@ function withOgImage(buf, name) {
   const at = head.index + head[0].length;
   return Buffer.concat([buf.subarray(0, at), Buffer.from(`<meta property="og:image" content="${cfg.BASE_URL}/shots/${name}.jpg">`), buf.subarray(at)]);
 }
-const reportLink = (name) => `<p><small><a href="${cfg.BASE_URL}/report?site=${encodeURIComponent(name)}">Report this site</a></small></p>`;
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
   if (!owner || !owner.verified) {
     const to = renamedTo(req.siteName);
     // a day's cache, not forever: once the hold ends someone else may take the old name
     if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, cfg.siteUrl(to) + req.originalUrl);
-    return res.status(404).send(V.sitePage(cfg, 'This pad is empty', `<p>The name <b>${U.esc(req.siteName)}</b> is not a site on ${U.esc(cfg.SITE_NAME)}. <a href="${cfg.BASE_URL}/signup">Roll out a pad of your own.</a></p>`));
+    return res.status(404).send(V.sitePages.empty(cfg, req.siteName));
   }
-  if (owner.banned) return res.status(410).send(V.sitePage(cfg, 'This pad got rolled up', `<p>A moderator removed this site for breaking the house rules.</p>${reportLink(owner.username)}`));
+  if (owner.banned) return res.status(410).send(V.sitePages.banned(cfg, owner.username));
   req.owner = owner;
   if (owner.hidden) res.set('X-Robots-Tag', 'noindex');
   next();
@@ -276,7 +275,7 @@ site.use((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return res.status(405).type('text').send('Method not allowed');
   if (bwToday(req.owner) >= cfg.BANDWIDTH_MB * 1048576) {
     return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
-      .send(V.sitePage(cfg, 'This pad is resting', '<p>This site used up its bandwidth for today. It comes back at midnight UTC.</p>'));
+      .send(V.sitePages.resting(cfg));
   }
   let refHost = '';
   try { refHost = new URL(req.get('referer')).hostname; } catch {}
@@ -303,7 +302,7 @@ site.use((req, res) => {
     if (req.path === '/favicon.ico') return asset('favicon.svg', 'image/svg+xml')(req, res); // sites without an icon of their own get ours
     const custom = path.join(root, 'not_found.html');
     if (fs.existsSync(custom)) return res.status(404).sendFile(custom);
-    res.status(404).send(V.sitePage(cfg, '404 - Page not found', `<p>That page does not exist on this site. <a href="/">Go to the front page.</a></p>${reportLink(req.owner.username)}`));
+    res.status(404).send(V.sitePages.missing(cfg, req.owner.username));
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
@@ -451,7 +450,7 @@ main.use((req, res, next) => {
 });
 const auth = (req, res, next) => (req.ctx.user ? next() : res.redirect('/login'));
 const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard') : next());
-const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notice(req.ctx, 'Not found', '<p>No such page.</p>')));
+const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notices.noSuchPage(req.ctx)));
 
 // ----- SEO: robots, sitemap, brand assets -----
 const ASSETS_DIR = path.join(__dirname, 'assets');
@@ -460,6 +459,7 @@ const asset = (file, type) => (req, res) => res.set('Cache-Control', 'public, ma
 main.use(V.CM, express.static(path.dirname(require.resolve('codemirror/package.json')), { immutable: true, maxAge: '365d', index: false }));
 main.get('/favicon.ico', asset('favicon.svg', 'image/svg+xml')); // shortcut: SVG at the .ico path; browsers and Google accept SVG favicons
 main.get('/favicon.svg', asset('favicon.svg', 'image/svg+xml'));
+main.get('/site.css', (req, res) => res.set('Cache-Control', 'public, max-age=31536000, immutable').type('text/css').sendFile(path.join(ASSETS_DIR, 'site.css'))); // its URL carries a hash of the file, see views.js
 main.get('/og.svg', asset('og.svg', 'image/svg+xml'));
 main.get('/og.png', asset('og.png', 'image/png')); // the share-preview raster; og:image points here because several scrapers ignore SVG
 main.get('/img/supporter.svg', asset('supporter.svg', 'image/svg+xml'));
@@ -508,7 +508,7 @@ function showProfile(req, res, name, m, status = 200) {
   if (!p) {
     const to = renamedTo(String(name).toLowerCase());
     if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}`);
-    return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'));
+    return res.status(404).send(V.notices.noSuchSite(req.ctx));
   }
   const me = req.ctx.user;
   const viewer = me ? me.id : 0;
@@ -608,7 +608,7 @@ main.post('/comment', (req, res) => {
   if (!owner || !owner.verified || owner.banned || me.banned) return res.redirect('/browse');
   const body = String(req.body.body || '').trim().slice(0, 500);
   if (req.body.website || !body) return res.redirect(backTo(req, owner)); // bot filled the hidden field, or nothing written
-  if (!U.limit(`comment:${req.ip}`, 3, 600000)) return res.status(429).send(V.notice(req.ctx, 'Slow down', '<p>Too many comments from you. Try again in ten minutes.</p>'));
+  if (!U.limit(`comment:${req.ip}`, 3, 600000)) return res.status(429).send(V.notices.tooManyComments(req.ctx));
   if (!blocked(owner.id, me.id)) { // blocked: look like success
     db.prepare('INSERT INTO comments (user_id, author_id, event_id, body, created_at) VALUES (?,?,?,?,?)').run(owner.id, me.id, on ? on.ev.id : null, body, now());
     notify(owner, me, 'comment', body);
@@ -649,7 +649,7 @@ main.post('/block', auth, (req, res) => {
 main.get('/site/:name/update/:id', (req, res) => {
   const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
   const ev = p && db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(Number(req.params.id) || 0, p.id);
-  if (!ev) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>That update is gone. <a href="/browse">Browse sites.</a></p>'));
+  if (!ev) return res.status(404).send(V.notices.updateGone(req.ctx));
   const viewer = req.ctx.user ? req.ctx.user.id : 0;
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   res.send(V.update(req.ctx, { p, e: withSocial([ev], viewer)[0], comments: commentPage(req, 'c.event_id = @ev', { ev: ev.id, viewer }) }));
@@ -722,7 +722,7 @@ main.get('/privacy', (req, res) => res.send(V.privacy(req.ctx)));
 main.get('/signup', (req, res) => res.send(V.signup(req.ctx)));
 // full-page look at a starter layout, opened from the signup form
 main.get('/starters/:id', (req, res) => {
-  if (!starters.valid(req.params.id)) return res.status(404).send(V.notice(req.ctx, 'Not found', '<p>No such starter. <a href="/signup">Back to signup.</a></p>'));
+  if (!starters.valid(req.params.id)) return res.status(404).send(V.notices.noSuchStarter(req.ctx));
   res.send(starters.preview(req.params.id, cfg));
 });
 main.post('/signup', async (req, res) => {
@@ -731,7 +731,7 @@ main.post('/signup', async (req, res) => {
   const password = String(req.body.password || '');
   const starter = starters.valid(req.body.starter) ? req.body.starter : starters.DEFAULT;
   const fail = (err, code = 400) => res.status(code).send(V.signup(req.ctx, { err }, { username, email, starter }));
-  if (req.body.website) return res.send(V.notice(req.ctx, 'Check your email', '<p>We sent you a confirmation link.</p>')); // bot
+  if (req.body.website) return res.send(V.notices.signupBot(req.ctx)); // bot
   if (!U.limit(`signup:${req.ip}`, 5, 3600000)) return fail('Too many signups from your connection. Try again in an hour.', 429);
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
   if (!validEmail(email)) return fail('That email address does not look right.');
@@ -760,11 +760,11 @@ main.post('/signup', async (req, res) => {
   }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
     `Welcome! Confirm your email to put ${username}.${cfg.BASE_HOST} online:\n\n${cfg.BASE_URL}/verify?token=${makeToken(id, 'verify', 2 * DAY)}\n\nIf you did not sign up, ignore this message.`);
-  res.send(V.notice(req.ctx, 'Check your email', `<p>We sent a confirmation link to <b>${U.esc(email)}</b>. Your site goes live when you click it. The link works for 48 hours.</p>`));
+  res.send(V.notices.signupSent(req.ctx, email));
 });
 main.get('/verify', (req, res) => {
   const user = useToken(req.query.token, 'verify');
-  if (!user) return res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That confirmation link is no longer valid. <a href="/login">Log in</a> to get a new one.</p>'));
+  if (!user) return res.status(400).send(V.notices.signupLinkExpired(req.ctx));
   db.prepare('UPDATE users SET verified = 1, updated_at = ?, shot_dirty = 1 WHERE id = ?').run(now(), user.id);
   if (!user.verified) db.prepare("INSERT INTO events (user_id, kind, created_at) VALUES (?, 'join', ?)").run(user.id, now());
   if (user.totp_secret) return res.redirect('/login'); // an old signup link must not skip the second factor
@@ -790,7 +790,7 @@ main.post('/login', async (req, res) => {
     if (U.limit(`reverify:${user.id}`, 3, 3600000)) {
       await sendMail(user.email, `Confirm your ${cfg.SITE_NAME} site`, `Confirm your email:\n\n${cfg.BASE_URL}/verify?token=${makeToken(user.id, 'verify', 2 * DAY)}`);
     }
-    return res.send(V.notice(req.ctx, 'Confirm your email first', '<p>We sent you a fresh confirmation link. Click it to finish setting up.</p>'));
+    return res.send(V.notices.confirmFirst(req.ctx));
   }
   if (cur.totp_secret) return res.send(V.login2fa(req.ctx, null, makeToken(user.id, 'login2fa', 600000)));
   startSession(res, user.id);
@@ -800,7 +800,7 @@ main.post('/login', async (req, res) => {
 main.post('/login/2fa', (req, res) => {
   const token = String(req.body.token || '');
   const row = db.prepare("SELECT user_id FROM tokens WHERE token_hash = ? AND kind = 'login2fa' AND expires >= ?").get(U.sha(token), now());
-  if (!row) return res.status(400).send(V.notice(req.ctx, 'Log in again', '<p>That login took too long. <a href="/login">Log in again.</a></p>'));
+  if (!row) return res.status(400).send(V.notices.loginTimedOut(req.ctx));
   if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login2fa:${row.user_id}`, 10, 900000)) {
     return res.status(429).send(V.login2fa(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, token));
   }
@@ -820,14 +820,14 @@ main.post('/forgot', async (req, res) => {
   if (user && U.limit(`forgot:${user.id}`, 3, 3600000) && U.limit(`forgot:${req.ip}`, 10, 3600000)) {
     await sendMail(user.email, `Reset your ${cfg.SITE_NAME} password`, `Reset the password for ${user.username}:\n\n${cfg.BASE_URL}/reset?token=${makeToken(user.id, 'reset', 3600000)}\n\nThe link works for one hour. If you did not ask for this, ignore it.`);
   }
-  res.send(V.notice(req.ctx, 'Check your email', '<p>If that address has a site here, a reset link is on its way.</p>'));
+  res.send(V.notices.resetSent(req.ctx));
 });
 main.get('/reset', (req, res) => res.send(V.reset(req.ctx, null, String(req.query.token || ''))));
 main.post('/reset', async (req, res) => {
   const password = String(req.body.password || '');
   if (password.length < 10 || password.length > 200) return res.status(400).send(V.reset(req.ctx, { err: 'Use a password with at least 10 characters.' }, String(req.body.token || '')));
-  const expired = () => res.status(400).send(V.notice(req.ctx, 'Link expired', '<p>That reset link is no longer valid. <a href="/forgot">Request a new one.</a></p>'));
-  if (!U.limit(`reset:${req.ip}`, 10, 3600000)) return res.status(429).send(V.notice(req.ctx, 'Slow down', '<p>Too many reset attempts from your connection. Try again in an hour.</p>'));
+  const expired = () => res.status(400).send(V.notices.resetLinkExpired(req.ctx));
+  if (!U.limit(`reset:${req.ip}`, 10, 3600000)) return res.status(429).send(V.notices.tooManyResets(req.ctx));
   if (!tokenLive(req.body.token, 'reset')) return expired(); // hashing costs real time, so only for a link that works
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
@@ -836,7 +836,7 @@ main.post('/reset', async (req, res) => {
   logins.revokeApiKeys(user); // a reset may follow a break-in, so the API keys of all its sites go too
   logins.endSessions(user);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
-  if (user.totp_secret) return res.send(V.notice(req.ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'));
+  if (user.totp_secret) return res.send(V.notices.passwordSaved(req.ctx));
   startSession(res, user.id);
   res.redirect('/dashboard');
 });
@@ -945,7 +945,7 @@ main.post('/dashboard/save', auth, canEdit, async (req, res) => {
   const user = req.ctx.user;
   const rel = U.safeRel(req.body.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(user, rel);
-  if (!full) return res.status(400).send(V.notice(req.ctx, 'Cannot save', '<p>That file path is not allowed. <a href="/dashboard">Back to my site.</a></p>'));
+  if (!full) return res.status(400).send(V.notices.badPath(req.ctx));
   const content = String(req.body.content ?? '').replace(/\r\n/g, '\n');
   const isNew = !(fs.existsSync(full) && fs.statSync(full).isFile());
   const err = files.write(user, rel, content);
@@ -1193,19 +1193,18 @@ main.post('/account/email', auth, async (req, res) => {
 });
 main.get('/account/email/confirm', (req, res) => {
   const user = useToken(req.query.token, 'email');
-  const done = (title, html, code = 200) => res.status(code).send(V.notice(req.ctx, title, html));
-  if (!user || !user.new_email) return done('Link expired', '<p>That confirmation link is no longer valid. Ask for a new one from your profile page.</p>', 400);
-  if (q.userByEmail.get(user.new_email)) return done('Email taken', '<p>Another site signed up with that address in the meantime. Nothing was changed.</p>', 400);
+  if (!user || !user.new_email) return res.status(400).send(V.notices.emailLinkExpired(req.ctx));
+  if (q.userByEmail.get(user.new_email)) return res.status(400).send(V.notices.emailTaken(req.ctx));
   db.prepare('UPDATE users SET email = ?, new_email = NULL WHERE id = ?').run(user.new_email, user.id);
   sendMail(user.email, `Your ${cfg.SITE_NAME} email was changed`,
     `The email for ${user.username} is now ${user.new_email}. Mail about the site goes there from now on.\n\nIf this was not you, write to ${cfg.ABUSE_EMAIL}.`);
-  done('Email changed', `<p>Your email is now <b>${U.esc(user.new_email)}</b>.</p>`);
+  res.send(V.notices.emailChanged(req.ctx, user.new_email));
 });
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
   logins.endSessions(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
-  res.send(V.notice(req.ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'));
+  res.send(V.notices.loggedOutEverywhere(req.ctx));
 });
 // a code from the member's app, used at most once (its step must be newer than the last one used), or one of their recovery codes
 function useCode(user, raw) {
@@ -1300,7 +1299,7 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
   if (billing && !(await billing.cancel(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
   logins.remove(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
-  res.send(V.notice({ ...req.ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'));
+  res.send(V.notices.accountDeleted(req.ctx));
 });
 
 // ----- supporter tier (Stripe) -----
@@ -1465,14 +1464,14 @@ main.get('/report', (req, res) => res.send(V.report(req.ctx, null, { site: Strin
 main.post('/report', async (req, res) => {
   const siteName = String(req.body.site || '').trim().toLowerCase().replace(/^https?:\/\//, '').split(/[./]/)[0];
   const details = String(req.body.details || '').trim().slice(0, 2000);
-  if (req.body.website) return res.send(V.notice(req.ctx, 'Report sent', '<p>Thanks. A moderator will look at it.</p>'));
+  if (req.body.website) return res.send(V.notices.reportSent(req.ctx));
   if (!U.limit(`report:${req.ip}`, 5, 3600000)) return res.status(429).send(V.report(req.ctx, { err: 'Too many reports from your connection. Try again in an hour.' }, { site: siteName }));
   if (!q.userByName.get(siteName)) return res.status(400).send(V.report(req.ctx, { err: 'There is no site with that name.' }, { site: siteName }));
   if (!details) return res.status(400).send(V.report(req.ctx, { err: 'Tell us what is wrong.' }, { site: siteName }));
   db.prepare('INSERT INTO reports (site, reason, details, reporter_email, ip, created_at) VALUES (?,?,?,?,?,?)')
     .run(siteName, String(req.body.reason || 'Other').slice(0, 60), details, String(req.body.email || '').trim().slice(0, 200), req.ip, now());
   await sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] report: ${siteName}`, `${req.body.reason}\n\n${details}\n\nReview: ${cfg.BASE_URL}/admin`);
-  res.send(V.notice(req.ctx, 'Report sent', '<p>Thanks. A moderator will look at it.</p>'));
+  res.send(V.notices.reportSent(req.ctx));
 });
 
 // who did what in /admin; names are stored as text so the log outlives deleted accounts
@@ -1593,7 +1592,7 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
 });
 
-main.use((req, res) => res.status(404).send(V.notice(req.ctx, 'Not found', '<p>No such page. <a href="/">Go home.</a></p>')));
+main.use((req, res) => res.status(404).send(V.notices.notFound(req.ctx)));
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   // a body the parser refused (too big, malformed) is the sender's mistake, so it keeps its own 4xx status
   if (err.status >= 400 && err.status < 500) return res.status(err.status).type('text').send(err.status === 413 ? 'That form is too big to send.' : 'That request could not be read.');

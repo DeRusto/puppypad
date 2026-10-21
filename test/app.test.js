@@ -1204,6 +1204,15 @@ test('admin upgrade button only asks the host watcher for the release it showed'
   assert.equal((await req('post', '/admin/upgrade').set('Cookie', other.cookie).type('form').send({ _csrf: other.csrf, action: 'check' })).status, 404);
 });
 
+test('pages link the stylesheet by a URL that carries its hash, so it can be cached for a year', async () => {
+  const href = (await req('get', '/')).text.match(/<link rel="stylesheet" href="(\/site\.css\?v=[0-9a-f]{12})">/)[1];
+  const css = await req('get', href);
+  assert.equal(css.status, 200);
+  assert.match(css.headers['content-type'], /text\/css/);
+  assert.match(css.headers['cache-control'], /max-age=31536000, immutable/);
+  assert.match(css.text, /--pee:#ffe14d/);
+});
+
 test('SEO: robots, sitemap, favicon, and page meta', async () => {
   const robots = await req('get', '/robots.txt');
   assert.equal(robots.status, 200);
