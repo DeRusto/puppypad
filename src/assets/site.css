@@ -27,14 +27,21 @@ label{font-size:13px;color:var(--blue)}
 input[type=text],input[type=search],input[type=email],input[type=password],input[type=file],textarea,select{font:15px "Courier New",monospace;background:#fff;color:#000;border:2px inset var(--edge);padding:6px 8px;width:100%;max-width:100%}
 textarea.code{min-height:60vh;white-space:pre;tab-size:2}
 button,.btn{font:700 15px var(--display);background:var(--pee);color:var(--ink);border:3px outset #fff3a8;padding:5px 16px;min-height:36px;cursor:pointer;align-self:flex-start;text-decoration:none;display:inline-block}
-a.btn:visited{color:var(--ink)}.btn.big{font-size:18px;padding:8px 22px}
+a.btn:visited{color:var(--ink)}.btn.big,button.big{font-size:18px;padding:8px 22px}
 button:active,.btn:active{border-style:inset}
 button.link{background:none;border:0;color:var(--link);text-decoration:underline;padding:0;min-height:0;font-weight:400;font-size:inherit;font-family:var(--body)}
 button.danger{background:#c0392b;color:#fff;border-color:#e9a59d}
 .err{background:#ffdcdc;color:#7a0000;border:2px solid #c00;padding:6px 10px}
 .ok{background:#dff7df;color:#0b4d0b;border:2px solid #1a8f1a;padding:6px 10px}
 .hp{position:absolute;left:-9999px}
-fieldset.starters{border:2px inset var(--edge);display:flex;flex-direction:column;gap:6px;padding:8px 10px}fieldset.starters legend{font-size:14px;color:var(--blue)}
+fieldset.starters{border:2px inset var(--edge);border-radius:8px;display:flex;flex-direction:column;gap:6px;padding:8px 10px}fieldset.starters legend{font-size:13px;color:var(--blue)}
+/* the signup form: starters as a grid of cards, the picked one wears the yellow */
+form.stack.wide{max-width:none}form.stack.wide input:not([type=radio]):not([type=checkbox]){max-width:460px}
+form.stack.wide fieldset.starters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:6px 0}
+form.stack.wide fieldset.starters>label{display:flex;gap:8px;align-items:flex-start;background:#fff;border:2px solid var(--quilt);border-radius:8px;padding:8px 10px;color:var(--ink);cursor:pointer}
+form.stack.wide fieldset.starters>label:has(:checked){border-color:#e0b800;background:#fffbd6}
+label.check{color:var(--ink)}
+.perks{text-align:center}.perks img{width:160px;height:auto}.perks .stamps{justify-content:center}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;background:var(--pad);overflow-wrap:break-word}
 th,td{border-bottom:2px solid var(--quilt);padding:6px 8px;text-align:left;vertical-align:top}
@@ -103,5 +110,5 @@ summary{cursor:pointer;font:700 15px var(--display);color:var(--blue)}details>:n
 .chip{font:700 12px var(--display);background:var(--pee);border:2px solid #e0b800;border-radius:6px;padding:1px 8px}
 .chip[hidden]{display:none}
 .edform{display:flex;flex-direction:column;gap:8px}
-@media (max-width:760px){.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split>img.wave{display:block;max-width:160px;margin:0 auto}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.status.four{grid-template-columns:repeat(2,minmax(0,1fr))}.edbar .acts{margin-left:0}}
+@media (max-width:760px){form.stack.wide fieldset.starters{grid-template-columns:1fr}.perks img{width:120px}.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split>img.wave{display:block;max-width:160px;margin:0 auto}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.status.four{grid-template-columns:repeat(2,minmax(0,1fr))}.edbar .acts{margin-left:0}}
 .qr{width:200px;max-width:100%;margin:8px 0}

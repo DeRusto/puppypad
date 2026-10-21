@@ -215,29 +215,39 @@ ${box('follow', 'when someone follows my site')}${box('comment', 'when someone c
 <button>Save</button></form></section>`, { wide: true });
 };
 
-const signup = (ctx, m, v = {}) => layout(ctx, 'Sign up', `
+// the pitch beside the signup and login forms: what a pad comes with, and a way across to the other form
+const pitch = (ctx, h, cta) => `<aside class="box perks"><img src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143">
+<h2>${h}</h2><ul class="stamps"><li class="stamp">${ctx.cfg.QUOTA_MB} MB free</li><li class="stamp">Live preview editor</li><li class="stamp">Hit counter</li><li class="stamp">Guestbook</li><li class="stamp">No algorithm</li></ul>
+<p>Your own address at <code>yourname.${esc(ctx.cfg.BASE_HOST)}</code>. Write your own HTML, and do not worry about making a mess.</p>${cta}</aside>`;
+
+const signup = (ctx, m, v = {}) => layout(ctx, 'Sign up', `<div class="cols">
 <section class="box"><h2>Get a free pad</h2>${msg(m)}
-<form class="stack" method="post" action="/signup">
-<label for="username">Site name (3-30 letters, numbers, hyphens). Your address will be name.${esc(ctx.cfg.BASE_HOST)}</label>
-<input type="text" id="username" name="username" value="${esc(v.username)}" maxlength="30" required autocapitalize="none" autocomplete="username">
-<label for="email">Email (we send one confirmation link, nothing else)</label>
-<input type="email" id="email" name="email" value="${esc(v.email)}" required autocomplete="email">
-<label for="password">Password (10 characters or more)</label>
-<input type="password" id="password" name="password" minlength="10" required autocomplete="new-password">
+<form class="stack wide" method="post" action="/signup">
+<label for="username">Site name</label>
+<input type="text" id="username" name="username" value="${esc(v.username)}" maxlength="30" required autocapitalize="none" autocomplete="username" aria-describedby="username-hint">
+<p class="note" id="username-hint">3-30 lowercase letters, numbers or hyphens. Your address will be <code>name.${esc(ctx.cfg.BASE_HOST)}</code>.</p>
+<label for="email">Email</label>
+<input type="email" id="email" name="email" value="${esc(v.email)}" required autocomplete="email" aria-describedby="email-hint">
+<p class="note" id="email-hint">We send one confirmation link, nothing else.</p>
+<label for="password">Password</label>
+<input type="password" id="password" name="password" minlength="10" required autocomplete="new-password" aria-describedby="password-hint">
+<p class="note" id="password-hint">10 characters or more.</p>
 <fieldset class="starters"><legend>Pick a starter layout. It is only a beginning: every colour, font and box is yours to change.</legend>
-${starters.LIST.map((s) => `<label><input type="radio" name="starter" value="${s.id}"${(v.starter || starters.DEFAULT) === s.id ? ' checked' : ''}> <b>${esc(s.name)}</b>: ${esc(s.blurb)} <a href="/starters/${s.id}" target="_blank">Peek</a></label>`).join('\n')}
+${starters.LIST.map((s) => `<label><input type="radio" name="starter" value="${s.id}"${(v.starter || starters.DEFAULT) === s.id ? ' checked' : ''}> <span><b>${esc(s.name)}</b><br>${esc(s.blurb)} <a href="/starters/${s.id}" target="_blank">Peek</a></span></label>`).join('\n')}
 </fieldset>
 <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input type="text" id="website" name="website" tabindex="-1" autocomplete="off"></div>
-<label><input type="checkbox" name="agree" value="1" required> I am 13 or older and have read the <a href="/rules" target="_blank">rules</a> and <a href="/privacy" target="_blank">privacy notice</a></label>
+<label class="check"><input type="checkbox" name="agree" value="1" required> I am 13 or older and have read the <a href="/rules" target="_blank">rules</a> and <a href="/privacy" target="_blank">privacy notice</a></label>
 ${ctx.cfg.TURNSTILE_SITE_KEY ? `<div class="cf-turnstile" data-sitekey="${esc(ctx.cfg.TURNSTILE_SITE_KEY)}"></div>` : ''}
-<button>Roll out my pad</button></form></section>`, { noindex: true, description: `Claim a free ${ctx.cfg.SITE_NAME} homepage: your own subdomain, ${ctx.cfg.QUOTA_MB} MB, a code editor with live preview, a guestbook and a hit counter.`, path: '/signup', ...(ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {}) });
+<button class="big">Roll out my pad</button></form></section>
+${pitch(ctx, 'What you get', '<p class="note">Already have a pad? <a href="/login">Log in</a>.</p>')}</div>`, { noindex: true, wide: true, description: `Claim a free ${ctx.cfg.SITE_NAME} homepage: your own subdomain, ${ctx.cfg.QUOTA_MB} MB, a code editor with live preview, a guestbook and a hit counter.`, path: '/signup', ...(ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {}) });
 
-const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `
+const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `<div class="cols">
 <section class="box"><h2>Log in</h2>${msg(m)}
 <form class="stack" method="post" action="/login">
 <label for="username">Site name or email</label><input type="text" id="username" name="username" value="${esc(v.username)}" required autocapitalize="none" autocomplete="username">
 <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
-<button>Log in</button></form><p class="mt"><a href="/forgot">Forgot your password?</a></p></section>`);
+<button>Log in</button></form><p class="mt"><a href="/forgot">Forgot your password?</a></p></section>
+${pitch(ctx, 'New here?', '<p><a class="btn big" href="/signup">Get a free pad</a></p>')}</div>`, { wide: true });
 
 const login2fa = (ctx, m, token) => layout(ctx, 'Log in', `
 <section class="box"><h2>Two-factor login</h2>${msg(m)}
