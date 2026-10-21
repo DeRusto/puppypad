@@ -2,77 +2,12 @@ const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
 const W = require('./widgets');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
-const CSS = `
-/* look: a puppy pad. blue plastic backing with paw prints, white quilted boxes, and one yellow accent for the accidents */
-:root{color-scheme:light;--back:#4aa9e6;--pad:#fdfeff;--ink:#14264f;--blue:#0b4f9e;--edge:#2f8fd0;--pee:#ffe14d;--soft:#4a5d85;--link:#0a3fc4;--visited:#7a2ea0}
-*{box-sizing:border-box}
-body{margin:0;padding:16px;background:var(--back) url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='120'%20height='120'%3E%3Cg%20fill='%23fff'%20fill-opacity='.2'%3E%3Cellipse%20cx='30'%20cy='40'%20rx='11'%20ry='9'/%3E%3Ccircle%20cx='14'%20cy='26'%20r='5'/%3E%3Ccircle%20cx='24'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='36'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='46'%20cy='26'%20r='5'/%3E%3Cg%20transform='translate%2860%2062%29%20rotate%2820%2030%2030%29'%3E%3Cellipse%20cx='30'%20cy='40'%20rx='11'%20ry='9'/%3E%3Ccircle%20cx='14'%20cy='26'%20r='5'/%3E%3Ccircle%20cx='24'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='36'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='46'%20cy='26'%20r='5'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");color:var(--ink);font:16px/1.45 "Comic Sans MS","Comic Neue","Chalkboard SE",cursive}
-a{color:var(--link)}a:visited{color:var(--visited)}a:hover{background:var(--pee);color:var(--ink)}
-a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px dashed var(--blue);outline-offset:2px}
-.site{max-width:820px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
-.box{background-color:var(--pad);background-image:repeating-linear-gradient(45deg,transparent 0 21px,#d6eafa 21px 22px),repeating-linear-gradient(-45deg,transparent 0 21px,#d6eafa 21px 22px);border:4px ridge var(--edge);padding:12px;min-width:0;overflow-wrap:anywhere}
-header.box{text-align:center}
-h1{font:700 clamp(32px,9vw,56px)/1.05 "Comic Sans MS","Comic Neue","Chalkboard SE",cursive;margin:0;color:var(--blue);text-align:center;
-background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20640%20110'%20preserveAspectRatio='none'%3E%3Cpath%20fill='%23ffe14d'%20d='M30%2058C26%2038%2052%2026%2088%2028C104%2014%20142%2012%20168%2020C196%208%20246%2010%20268%2020C298%208%20344%2012%20364%2024C398%2014%20436%2020%20452%2034C492%2030%20522%2044%20518%2064C524%2084%20496%2096%20462%2094C434%20106%20376%20106%20350%2096C318%20108%20254%20108%20228%2097C192%20107%20128%20105%20104%2094C68%20100%2038%2090%2034%2074C26%2068%2027%2064%2030%2058Z'/%3E%3Cellipse%20fill='%23ffffff'%20opacity='.35'%20cx='180'%20cy='40'%20rx='90'%20ry='9'%20transform='rotate(-3%20180%2040)'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='540'%20cy='82'%20rx='12'%20ry='5'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='14'%20cy='80'%20rx='8'%20ry='4'/%3E%3C/svg%3E") no-repeat center 58%/58% 118%}
-h1 a,h1 a:visited,h1 a:hover{color:inherit;text-decoration:none;background:none}
-.tagline{font-style:italic;color:var(--soft);margin:2px 0 8px}
-h2{font:700 24px "Comic Sans MS","Comic Neue",cursive;color:var(--blue);margin:0 0 8px}
-h2 small{font-size:14px;font-weight:400;color:var(--soft)}
-h3{margin:12px 0 4px;color:var(--blue);font-size:17px}
-p{margin:0 0 10px}
-nav{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center}
-form.inline{display:inline}
-form.stack{display:flex;flex-direction:column;gap:6px;max-width:460px}
-label{font-size:14px;color:var(--blue)}
-input[type=text],input[type=search],input[type=email],input[type=password],input[type=file],textarea,select{font:15px "Courier New",monospace;background:#fff;color:#000;border:2px inset var(--edge);padding:4px;width:100%;max-width:100%}
-textarea.code{min-height:60vh;white-space:pre;tab-size:2}
-button{font:700 14px "Comic Sans MS","Comic Neue",cursive;background:var(--pee);color:var(--ink);border:3px outset #fff3a8;padding:3px 12px;cursor:pointer;align-self:flex-start}
-button:active{border-style:inset}
-button.link{background:none;border:0;color:var(--link);text-decoration:underline;padding:0;font-weight:400}
-button.danger{background:#c0392b;color:#fff;border-color:#e9a59d}
-.err{background:#ffdcdc;color:#7a0000;border:2px solid #c00;padding:6px 10px}
-.ok{background:#dff7df;color:#0b4d0b;border:2px solid #1a8f1a;padding:6px 10px}
-.hp{position:absolute;left:-9999px}
-fieldset.starters{border:2px inset var(--edge);display:flex;flex-direction:column;gap:6px;padding:8px 10px}fieldset.starters legend{font-size:14px;color:var(--blue)}
-.scroll{overflow-x:auto}
-table{border-collapse:collapse;width:100%;background:var(--pad)}
-th,td{border:2px inset var(--edge);padding:4px 8px;text-align:left;vertical-align:top}
-th{color:var(--blue);font-weight:400}
-td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.sites{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.sites small,.note{color:var(--soft);font-size:13px}
-code,pre{font:14px "Courier New",monospace;color:var(--pee);background:var(--ink)}
-code{padding:0 3px}
-pre{padding:8px;overflow-x:auto;border:2px inset var(--edge);margin:0 0 10px}
-.b88{display:inline-flex;width:88px;height:31px;align-items:center;justify-content:center;text-align:center;font:700 10px/1.05 Verdana,sans-serif;border:2px outset var(--edge);background:var(--ink);color:var(--pee);text-transform:uppercase;text-decoration:none}
-footer{text-align:center;font-size:13px}
-.site.wide{max-width:1280px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;list-style:none;margin:0;padding:0}
-.card{display:flex;flex-direction:column;gap:4px;min-width:0}
-.card .t{font-size:13px;color:var(--soft)}
-.shot{display:block;aspect-ratio:4/3;width:100%;height:auto;max-width:100%;border:3px outset #9fd0f0;background:#eaf5fd;object-fit:cover;object-position:top}
-.shot.none{display:flex;align-items:center;justify-content:center;color:var(--blue);font:14px "Courier New",monospace;text-align:center;padding:6px;text-decoration:none}
-.sorts{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 10px}
-.prof{display:flex;flex-wrap:wrap;gap:14px}.prof>.pic{flex:1 1 260px;max-width:420px}.prof>.info{flex:2 1 260px;min-width:0}
-.names{display:flex;flex-wrap:wrap;gap:4px 12px}
-.badge{width:14px;height:14px;vertical-align:-2px;margin-left:3px}
-.supporter .shot{border:4px solid transparent;background:linear-gradient(#eaf5fd,#eaf5fd) padding-box,linear-gradient(90deg,#ff5f6d,#ffc371,#ffe14d,#47e891,#4fb3ff,#b07bff,#ff5f6d) 0 0/200% 100% border-box;animation:rainbow 6s linear infinite}
-@keyframes rainbow{to{background-position:0 0,200% 0}}
-@media (prefers-reduced-motion:reduce){.supporter .shot{animation:none}}
-.feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
-.feed li{display:flex;gap:10px;align-items:flex-start}
-.cmt{border-left:3px solid var(--edge);padding:2px 8px;margin:6px 0;background:#fff}.social{font-size:14px;margin-top:4px}.new{background:var(--pee)}.feed .shot{width:96px;flex:none;border-width:2px}
-.edwrap{display:flex;gap:10px;flex-wrap:wrap}.edwrap>div{flex:1 1 420px;min-width:0}
-.CodeMirror{height:65vh;border:2px inset var(--edge);font:14px/1.4 "Courier New",monospace}
-.drop{display:flex;flex-direction:column;gap:6px;border:3px dashed var(--edge);padding:12px;background:#fff}.drop.over{background:var(--pee)}
-progress{width:100%;max-width:460px}
-iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#fff}
-.pup{float:right;width:180px;height:auto;margin:0 0 8px 12px}
-.pup.left{float:left;margin:0 12px 8px 0}
-@media (min-width:561px) and (max-width:820px){.pup{width:120px}}
-@media (max-width:560px){.pup,.pup.left{float:none;display:block;margin:0 auto 8px}}
-`;
+// the look lives in assets/site.css; the hash in its URL changes with the file, so browsers can cache it for a year
+const CSS_URL = `/site.css?v=${crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'assets', 'site.css'))).digest('hex').slice(0, 12)}`;
 
 function layout(ctx, title, body, opts = {}) {
   const { cfg, user, csrf } = ctx;
@@ -97,7 +32,7 @@ function layout(ctx, title, body, opts = {}) {
       : [`<a href="/signup">Get a free pad</a>`, `<a href="/login">Log in</a>`]),
   ].join(' ');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(fullTitle)}</title>${meta}<style>${CSS}</style>${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
+<title>${esc(fullTitle)}</title>${meta}<link rel="stylesheet" href="${CSS_URL}">${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
 <header class="box"><h1><a href="/">${esc(cfg.SITE_NAME)}</a></h1><p class="tagline">${esc(cfg.TAGLINE)}</p><nav aria-label="Main">${nav}</nav></header>
 ${body}
 <footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/privacy">Privacy</a> | <a href="/report">Report a site</a> | Abuse contact: ${esc(cfg.ABUSE_EMAIL)}</footer>
@@ -328,6 +263,32 @@ const reset = (ctx, m, token) => layout(ctx, 'Choose a new password', `
 <input type="password" id="password" name="password" minlength="10" required autocomplete="new-password"><button>Save password</button></form></section>`);
 
 const notice = (ctx, title, html) => layout(ctx, title, `<section class="box"><h2>${esc(title)}</h2>${html}</section>`, { noindex: true });
+// the one-paragraph pages the server answers with; the status code is the route's choice
+const notices = {
+  busy: (ctx, msg) => notice(ctx, 'Try again soon', `<p>${esc(msg)}</p>`),
+  notFound: (ctx) => notice(ctx, 'Not found', '<p>No such page. <a href="/">Go home.</a></p>'),
+  noSuchPage: (ctx) => notice(ctx, 'Not found', '<p>No such page.</p>'),
+  noSuchSite: (ctx) => notice(ctx, 'Not found', '<p>There is no site with that name. <a href="/browse">Browse sites.</a></p>'),
+  updateGone: (ctx) => notice(ctx, 'Not found', '<p>That update is gone. <a href="/browse">Browse sites.</a></p>'),
+  noSuchStarter: (ctx) => notice(ctx, 'Not found', '<p>No such starter. <a href="/signup">Back to signup.</a></p>'),
+  tooManyComments: (ctx) => notice(ctx, 'Slow down', '<p>Too many comments from you. Try again in ten minutes.</p>'),
+  tooManyResets: (ctx) => notice(ctx, 'Slow down', '<p>Too many reset attempts from your connection. Try again in an hour.</p>'),
+  signupBot: (ctx) => notice(ctx, 'Check your email', '<p>We sent you a confirmation link.</p>'),
+  signupSent: (ctx, email) => notice(ctx, 'Check your email', `<p>We sent a confirmation link to <b>${esc(email)}</b>. Your site goes live when you click it. The link works for 48 hours.</p>`),
+  signupLinkExpired: (ctx) => notice(ctx, 'Link expired', '<p>That confirmation link is no longer valid. <a href="/login">Log in</a> to get a new one.</p>'),
+  confirmFirst: (ctx) => notice(ctx, 'Confirm your email first', '<p>We sent you a fresh confirmation link. Click it to finish setting up.</p>'),
+  loginTimedOut: (ctx) => notice(ctx, 'Log in again', '<p>That login took too long. <a href="/login">Log in again.</a></p>'),
+  resetSent: (ctx) => notice(ctx, 'Check your email', '<p>If that address has a site here, a reset link is on its way.</p>'),
+  resetLinkExpired: (ctx) => notice(ctx, 'Link expired', '<p>That reset link is no longer valid. <a href="/forgot">Request a new one.</a></p>'),
+  passwordSaved: (ctx) => notice(ctx, 'Password saved', '<p>Your new password is saved. <a href="/login">Log in</a> with it and a code from your authenticator app.</p>'),
+  badPath: (ctx) => notice(ctx, 'Cannot save', '<p>That file path is not allowed. <a href="/dashboard">Back to my site.</a></p>'),
+  emailLinkExpired: (ctx) => notice(ctx, 'Link expired', '<p>That confirmation link is no longer valid. Ask for a new one from your profile page.</p>'),
+  emailTaken: (ctx) => notice(ctx, 'Email taken', '<p>Another site signed up with that address in the meantime. Nothing was changed.</p>'),
+  emailChanged: (ctx, email) => notice(ctx, 'Email changed', `<p>Your email is now <b>${esc(email)}</b>.</p>`),
+  loggedOutEverywhere: (ctx) => notice(ctx, 'Logged out everywhere', '<p>Every browser and device that was logged in to your site is logged out now. <a href="/login">Log in again.</a></p>'),
+  accountDeleted: (ctx) => notice({ ...ctx, user: null }, 'Account deleted', '<p>Your site and files are gone. Thanks for stopping by.</p>'),
+  reportSent: (ctx) => notice(ctx, 'Report sent', '<p>Thanks. A moderator will look at it.</p>'),
+};
 
 // Drag-and-drop and many-file uploads: sends the files 20 at a time with a progress bar, then reloads the folder with the totals.
 // Without JavaScript the form above still posts normally (20 files at most).
@@ -892,6 +853,14 @@ button{font:700 14px "Comic Sans MS",cursive;background:#ffe14d;color:#14264f;bo
 .e{border:2px dashed #2f8fd0;background:#fff;padding:6px 8px;margin-bottom:8px;overflow-wrap:anywhere}.e small{color:#0b4f9e}.hp{position:absolute;left:-9999px}.err{color:#b00000}</style></head><body>${body}</body></html>`;
 
 const sitePage = (cfg, title, html) => bare(title, `<h1>${esc(title)}</h1>${html}<p><a href="${esc(cfg.BASE_URL)}">${esc(cfg.SITE_NAME)}</a></p>`);
+const reportLink = (cfg, name) => `<p><small><a href="${cfg.BASE_URL}/report?site=${encodeURIComponent(name)}">Report this site</a></small></p>`;
+// what a member subdomain shows when there is no page to serve
+const sitePages = {
+  empty: (cfg, name) => sitePage(cfg, 'This pad is empty', `<p>The name <b>${esc(name)}</b> is not a site on ${esc(cfg.SITE_NAME)}. <a href="${cfg.BASE_URL}/signup">Roll out a pad of your own.</a></p>`),
+  banned: (cfg, name) => sitePage(cfg, 'This pad got rolled up', `<p>A moderator removed this site for breaking the house rules.</p>${reportLink(cfg, name)}`),
+  resting: (cfg) => sitePage(cfg, 'This pad is resting', '<p>This site used up its bandwidth for today. It comes back at midnight UTC.</p>'),
+  missing: (cfg, name) => sitePage(cfg, '404 - Page not found', `<p>That page does not exist on this site. <a href="/">Go to the front page.</a></p>${reportLink(cfg, name)}`),
+};
 
 // theme is one of W.GB_THEMES; its CSS goes after the base look
 const guestbook = ({ rows, page, pages }, err, theme = 'classic') => bare('Guestbook', `${W.GB_THEMES[theme].css ? `<style>${W.GB_THEMES[theme].css}</style>` : ''}<h1>Sign the guestbook</h1>${err ? `<p class="err" role="alert">${esc(err)}</p>` : ''}
@@ -916,4 +885,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };
