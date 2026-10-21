@@ -74,7 +74,7 @@ const home = (ctx, { sotw, picks, recent, newest, total, supporters = 0 }) => la
 <div class="cta"><a class="btn big" href="/signup">Claim your pad</a><a href="/random">or fetch a random pad first</a></div>
 <ul class="stamps"><li class="stamp">${ctx.cfg.QUOTA_MB} MB free</li><li class="stamp">Live preview editor</li><li class="stamp">Hit counter</li><li class="stamp">Guestbook</li><li class="stamp">No algorithm</li></ul>
 <p class="note">${total} pad${total === 1 ? '' : 's'} in use so far${supporters ? `, kept running by ${supporters} supporter${supporters === 1 ? '' : 's'} (<a href="/dashboard/support">chip in</a>)` : ''}</p></div>
-<img src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"></section>
+<img class="wave" src="/img/pup-hero.webp" alt="Cartoon puppy waving from a puppy pad" width="180" height="143"></section>
 ${sotw ? `<section class="box"><h2>Site of the week</h2><div class="sotw">${shotImg(ctx, sotw, ctx.cfg.siteUrl(sotw.username))}<div>
 <h3><a href="${esc(ctx.cfg.siteUrl(sotw.username))}">${nameTag(ctx, sotw.username)}</a> <a href="/site/${esc(sotw.username)}" class="t">[profile]</a></h3>
 ${sotw.tagline ? `<p>${esc(sotw.tagline)}</p>` : ''}${sotw.tags ? `<p class="t">${tagLinks(sotw.tags)}</p>` : ''}

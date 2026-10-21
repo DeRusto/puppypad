@@ -102,5 +102,5 @@ summary{cursor:pointer;font:700 15px var(--display);color:var(--blue)}details>:n
 .chip{font:700 12px var(--display);background:var(--pee);border:2px solid #e0b800;border-radius:6px;padding:1px 8px}
 .chip[hidden]{display:none}
 .edform{display:flex;flex-direction:column;gap:8px}
-@media (max-width:760px){.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.edbar .acts{margin-left:0}}
+@media (max-width:760px){.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split>img.wave{display:block;max-width:160px;margin:0 auto}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.edbar .acts{margin-left:0}}
 .qr{width:200px;max-width:100%;margin:8px 0}
