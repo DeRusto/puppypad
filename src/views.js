@@ -177,6 +177,7 @@ ${mine ? `<section class="box"><h2>Change password</h2>
     path: `/site/${p.username}`,
     ogImage: p.shot ? `${ctx.cfg.BASE_URL}/shots/${p.username}.jpg` : undefined,
     head: ATOM_LINK(`${p.username} on ${ctx.cfg.SITE_NAME}`, `/site/${p.username}/feed.xml`),
+    wide: true,
   });
 };
 
@@ -466,7 +467,7 @@ const stats = (ctx, { days, pages, referrers }) => {
 <h3>Views per day</h3>${statTable('Day (UTC)', days, (r) => esc(r.day))}
 <h3>Top pages</h3>${statTable('Page', pages, (r) => `<a href="${esc(url)}${esc(r.path)}" target="_blank">${esc(r.path)}</a>`)}
 <h3>Where visitors came from</h3>${statTable('Website', referrers, (r) => esc(r.host))}
-<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true, wide: true });
 };
 
 // CodeMirror comes from the codemirror npm package, served by us (see server.js); the version in the path lets browsers cache it for good
@@ -812,7 +813,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <h3>Deleting it</h3>
 <p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
-<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy' });
+<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy', wide: true });
 
 // polls /admin in the background and navigates only once it shows the run finished, so the app restarting
 // mid-upgrade never strands the page on a browser error; data-follow marks a page that is still busy
