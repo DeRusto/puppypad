@@ -34,7 +34,7 @@ function layout(ctx, title, body, opts = {}) {
     // the tab for the section you are in wears the yellow: Home only on /, the others on their path and below it
     .replace(/<a href="(\/[^"]*)">/g, (a, h) => (h === '/' ? ctx.path === '/' : ctx.path === h || ctx.path?.startsWith(`${h}/`)) ? `<a href="${h}" aria-current="page">` : a);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(fullTitle)}</title>${meta}<link rel="stylesheet" href="${CSS_URL}">${opts.head || ''}</head><body><div class="site${opts.wide ? ' wide' : ''}">
+<title>${esc(fullTitle)}</title>${meta}<link rel="stylesheet" href="${CSS_URL}">${opts.head || ''}</head><body><div class="site">
 <header class="box"><h1><a href="/">${esc(cfg.SITE_NAME)}</a></h1>${opts.tight ? '' : `<p class="tagline">${esc(cfg.TAGLINE)}</p>`}<nav aria-label="Main">${nav}</nav></header>
 ${body}
 <footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/privacy">Privacy</a> | <a href="/report">Report a site</a> | Abuse contact: ${esc(cfg.ABUSE_EMAIL)}</footer>
@@ -84,7 +84,6 @@ ${picks.length ? `<section class="box split"><div><h2>Staff picks</h2>${cards(ct
 <img src="/img/pup-accident.webp" alt="Cartoon puppy looking sheepish next to a puddle on its pad" width="180" height="116" loading="lazy"></section>
 <section class="box split"><div><h2>New puppies <small>(just joined)</small></h2>${siteList(ctx, newest)}</div>
 <img src="/img/pup-guestbook.webp" alt="Cartoon puppy with a pencil next to an open guestbook" width="180" height="114" loading="lazy"></section>`, {
-  wide: true,
   fullTitle: `${ctx.cfg.SITE_NAME} \u2014 Free Homepages | Make Your Own Website, Old-Web Style`,
   description: `${ctx.cfg.SITE_NAME} is a free homepage host. Get yourname.${ctx.cfg.BASE_HOST}, ${ctx.cfg.QUOTA_MB} MB, a built-in editor, guestbook and hit counter. No templates, no algorithm \u2014 write your own HTML. Accidents welcome.`,
   path: '/',
@@ -102,7 +101,7 @@ const browse = (ctx, { rows, page, pages, sort, q }) => {
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}${qs}">${l}</a>`)).join(' ')}</p>
 ${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows)}
 <p class="mt">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
-<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { wide: true, noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
+<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
 };
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
@@ -177,7 +176,6 @@ ${mine ? `<section class="box"><h2>Change password</h2>
     path: `/site/${p.username}`,
     ogImage: p.shot ? `${ctx.cfg.BASE_URL}/shots/${p.username}.jpg` : undefined,
     head: ATOM_LINK(`${p.username} on ${ctx.cfg.SITE_NAME}`, `/site/${p.username}/feed.xml`),
-    wide: true,
   });
 };
 
@@ -185,7 +183,7 @@ const feed = (ctx, { events, count }) => layout(ctx, 'Feed', `
 <section class="box"><h2>Your feed</h2>
 ${events.length ? `<ul class="feed">${events.map((e) => `<li${isSup(ctx, e.username) ? ' class="supporter"' : ''}>${shotImg(ctx, e, ctx.cfg.siteUrl(e.username))}<div><a href="${esc(ctx.cfg.siteUrl(e.username))}"><b>${nameTag(ctx, e.username)}</b></a> ${fileLinks(e, ctx.cfg.siteUrl(e.username))} <a href="${esc(updateUrl(e.username, e))}" class="note">${ago(e.created_at)}</a>${e.tagline ? `<div class="note">${esc(e.tagline)}</div>` : ''}${social(ctx, e, e.username, '/feed')}</div></li>`).join('')}</ul>`
     : count ? '<p>The sites you follow have been quiet. Updates show up here.</p>'
-      : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`, { wide: true });
+      : '<p>You are not following anyone yet. <a href="/browse">Visit the dog park</a> and press Follow on the ones you like.</p>'}</section>`);
 
 const NOTE_LINE = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
 // one update with its likes and every comment, newest first, a page at a time
@@ -212,7 +210,7 @@ ${pager((n) => `/notifications?page=${n}&since=${seenAt}`, page, pages)}</sectio
 <form class="stack" method="post" action="/notifications/settings">${csrfField(ctx)}<p class="note">Sent to ${esc(ctx.login.email)}.</p>
 ${box('follow', 'when someone follows my site')}${box('comment', 'when someone comments on my site or my updates')}${box('like', 'when someone likes one of my updates')}
 <label><input type="checkbox" name="digest" value="1"${u.digest ? ' checked' : ''}> a weekly digest of updates from the sites I follow</label>
-<button>Save</button></form></section>`, { wide: true });
+<button>Save</button></form></section>`);
 };
 
 // the pitch beside the signup and login forms: what a pad comes with, and a way across to the other form
@@ -239,7 +237,7 @@ ${starters.LIST.map((s) => `<label><input type="radio" name="starter" value="${s
 <label class="check"><input type="checkbox" name="agree" value="1" required> I am 13 or older and have read the <a href="/rules" target="_blank">rules</a> and <a href="/privacy" target="_blank">privacy notice</a></label>
 ${ctx.cfg.TURNSTILE_SITE_KEY ? `<div class="cf-turnstile" data-sitekey="${esc(ctx.cfg.TURNSTILE_SITE_KEY)}"></div>` : ''}
 <button class="big">Roll out my pad</button></form></section>
-${pitch(ctx, 'What you get', '<p class="note">Already have a pad? <a href="/login">Log in</a>.</p>')}</div>`, { noindex: true, wide: true, description: `Claim a free ${ctx.cfg.SITE_NAME} homepage: your own subdomain, ${ctx.cfg.QUOTA_MB} MB, a code editor with live preview, a guestbook and a hit counter.`, path: '/signup', ...(ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {}) });
+${pitch(ctx, 'What you get', '<p class="note">Already have a pad? <a href="/login">Log in</a>.</p>')}</div>`, { noindex: true, description: `Claim a free ${ctx.cfg.SITE_NAME} homepage: your own subdomain, ${ctx.cfg.QUOTA_MB} MB, a code editor with live preview, a guestbook and a hit counter.`, path: '/signup', ...(ctx.cfg.TURNSTILE_SITE_KEY ? { head: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' } : {}) });
 
 const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `<div class="cols">
 <section class="box"><h2>Log in</h2>${msg(m)}
@@ -247,16 +245,21 @@ const login = (ctx, m, v = {}) => layout(ctx, 'Log in', `<div class="cols">
 <label for="username">Site name or email</label><input type="text" id="username" name="username" value="${esc(v.username)}" required autocapitalize="none" autocomplete="username">
 <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
 <button>Log in</button></form><p class="mt"><a href="/forgot">Forgot your password?</a></p></section>
-${pitch(ctx, 'New here?', '<p><a class="btn big" href="/signup">Get a free pad</a></p>')}</div>`, { wide: true });
+${pitch(ctx, 'New here?', '<p><a class="btn big" href="/signup">Get a free pad</a></p>')}</div>`);
 
-const login2fa = (ctx, m, token) => layout(ctx, 'Log in', `
+// a page's main box beside a side box with help: forms on the left, the why and what-next on the right
+const two = (main, side) => `<div class="cols"><div>${main}</div><div class="side">${side}</div></div>`;
+const aside = (title, html) => `<aside class="box"><h2>${title}</h2>${html}</aside>`;
+
+const login2fa = (ctx, m, token) => layout(ctx, 'Log in', two(`
 <section class="box"><h2>Two-factor login</h2>${msg(m)}
 <form class="stack" method="post" action="/login/2fa"><input type="hidden" name="token" value="${esc(token)}">
 <label for="code">The 6-digit code from your authenticator app</label><input type="text" id="code" name="code" required autofocus inputmode="numeric" autocomplete="one-time-code">
-<button>Log in</button></form><p class="note">Lost your phone? Enter one of your recovery codes instead.</p></section>`, { noindex: true });
+<button>Log in</button></form></section>`, aside('Lost your phone?', `<p>Enter one of your recovery codes instead of a code from the app. Each one works once.</p>
+<p class="note">No phone and no recovery codes? Write to ${esc(ctx.cfg.ABUSE_EMAIL)} from the email you signed up with.</p>`)), { noindex: true });
 
 // qr is the SVG the qrcode package drew for uri: paths only, nothing a member typed
-const twoFactor = (ctx, m, secret, uri, qr) => layout(ctx, 'Two-factor login', `
+const twoFactor = (ctx, m, secret, uri, qr) => layout(ctx, 'Two-factor login', two(`
 <section class="box"><h2>Turn on two-factor login</h2>${msg(m)}
 <ol><li>Open an authenticator app on your phone (Google Authenticator, Authy, 1Password, Bitwarden and others all work).</li>
 <li>Add an account by scanning this QR code with the app:<div role="img" aria-label="QR code for your two-factor key" class="qr">${qr}</div>
@@ -265,26 +268,37 @@ const twoFactor = (ctx, m, secret, uri, qr) => layout(ctx, 'Two-factor login', `
 <form class="stack" method="post" action="/account/2fa/on">${csrfField(ctx)}<input type="hidden" name="secret" value="${esc(secret)}">
 <label for="code">Code from the app</label><input type="text" id="code" name="code" required inputmode="numeric" autocomplete="one-time-code">
 <label for="pw">Your password</label><input type="password" id="pw" name="password" required autocomplete="current-password">
-<button>Turn on</button></form><p><a href="/site/${esc(ctx.user.username)}#security">Cancel</a></p></section>`, { noindex: true });
+<button>Turn on</button></form><p class="mt"><a href="/site/${esc(ctx.user.username)}#security">Cancel</a></p></section>`,
+aside('Why turn it on', `<p>With it on, logging in takes your password and a code from your phone, so a leaked password alone can't get anyone into your site.</p>
+<p class="note">After you turn it on we show recovery codes once. Keep them somewhere safe: they get you in if you lose your phone.</p>`)), { noindex: true });
 
-const recoveryCodes = (ctx, codes) => layout(ctx, 'Recovery codes', `
+const recoveryCodes = (ctx, codes) => layout(ctx, 'Recovery codes', two(`
 <section class="box"><h2>Two-factor login is on</h2>
-<p>Save these recovery codes somewhere safe, like a password manager or on paper. If you lose your phone, each one logs you in once in place of a code from the app. This is the only time we show them.</p>
+<p>Save these recovery codes now. This is the only time we show them.</p>
 <pre>${codes.join('\n')}</pre>
-<p><a href="/site/${esc(ctx.user.username)}#security">I saved them</a></p></section>`, { noindex: true });
+<p><a class="btn" href="/site/${esc(ctx.user.username)}#security">I saved them</a></p></section>`,
+aside('Where to keep them', `<p>A password manager, or on paper somewhere safe. If you lose your phone, each code logs you in once in place of a code from the app.</p>`)), { noindex: true });
 
-const forgot = (ctx, m) => layout(ctx, 'Reset password', `
+const forgot = (ctx, m) => layout(ctx, 'Reset password', two(`
 <section class="box"><h2>Reset your password</h2>${msg(m)}
 <form class="stack" method="post" action="/forgot"><label for="email">The email you signed up with</label>
-<input type="email" id="email" name="email" required><button>Email me a reset link</button></form></section>`);
+<input type="email" id="email" name="email" required autocomplete="email"><button>Email me a reset link</button></form>
+<p class="mt"><a href="/login">Back to log in</a></p></section>`,
+aside("Can't get in?", `<p>We email you a link to choose a new password. It works for one hour.</p>
+<p class="note">Nothing arrived? Check your spam folder. Still stuck? Write to ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>`)));
 
-const reset = (ctx, m, token) => layout(ctx, 'Choose a new password', `
+const reset = (ctx, m, token) => layout(ctx, 'Choose a new password', two(`
 <section class="box"><h2>Choose a new password</h2>${msg(m)}
 <form class="stack" method="post" action="/reset"><input type="hidden" name="token" value="${esc(token)}">
-<label for="password">New password (10 characters or more)</label>
-<input type="password" id="password" name="password" minlength="10" required autocomplete="new-password"><button>Save password</button></form></section>`);
+<label for="password">New password</label>
+<input type="password" id="password" name="password" minlength="10" required autocomplete="new-password" aria-describedby="password-hint">
+<p class="note" id="password-hint">10 characters or more.</p><button>Save password</button></form></section>`,
+aside('A good password', `<p>Long beats clever: a few unrelated words make a strong one. A password manager can make and remember it for you.</p>
+<p class="note">Saving it logs out your other browsers and switches off your API key, if you have one.</p>`)));
 
-const notice = (ctx, title, html) => layout(ctx, title, `<section class="box"><h2>${esc(title)}</h2>${html}</section>`, { noindex: true });
+// a one-paragraph page; the sheepish puppy keeps it company on wide screens
+const notice = (ctx, title, html) => layout(ctx, title, `<section class="box split"><div><h2>${esc(title)}</h2>${html}</div>
+<img src="/img/pup-accident.webp" alt="" width="180" height="116"></section>`, { noindex: true });
 // the one-paragraph pages the server answers with; the status code is the route's choice
 const notices = {
   busy: (ctx, msg) => notice(ctx, 'Try again soon', `<p>${esc(msg)}</p>`),
@@ -457,27 +471,28 @@ ${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
 <details><summary>${user.login_id ? 'Delete this site' : 'Delete my account'}</summary>${user.login_id ? '<p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<p>This removes your site, files and guestbook for good.</p>'}
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></details></section>
-</div></div>`, { wide: true });
+</div></div>`);
 }
 
-const links = (ctx, broken) => layout(ctx, 'Broken links', `
-<section class="box"><h2>Broken links</h2>
+const crumbs = (here) => `<p class="crumbs"><a href="/dashboard">My pad</a> &gt; ${here}</p>`;
+const links = (ctx, broken) => layout(ctx, 'Broken links', two(`
+<section class="box">${crumbs('Broken links')}<h2>Broken links ${broken.length ? `<small>(${broken.length})</small>` : ''}</h2>
 ${broken.length ? `<p>These links and images in your pages point at files your site doesn't have. Fix the path, or upload the missing file.</p>
 <div class="scroll"><table><tr><th>Page</th><th>Points at</th></tr>${broken.slice(0, 500).map((b) => `<tr><td><a href="/dashboard/edit?path=${encodeURIComponent(b.file)}">${esc(b.file)}</a></td><td><code>${esc(b.link)}</code></td></tr>`).join('')}</table></div>
-${broken.length > 500 ? `<p class="note">...and ${broken.length - 500} more.</p>` : ''}` : '<p class="ok" role="status">No broken links. Every link and image in your pages points at a file you have.</p>'}
-<p class="note">Links to other websites aren't checked.</p>
-<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true });
+${broken.length > 500 ? `<p class="note">...and ${broken.length - 500} more.</p>` : ''}` : '<p class="ok" role="status">No broken links. Every link and image in your pages points at a file you have.</p>'}</section>`,
+aside('About this check', `<p>Each HTML page on your site is read, and its link, image and stylesheet paths are checked against your files.</p>
+<p class="note">Paths inside CSS files and links to other websites aren't checked. Click a page name to open it in the editor.</p>`)), { noindex: true });
 
 const statTable = (head, rows, cell) => (rows.length ? `<div class="scroll"><table><tr><th>${head}</th><th>Views</th></tr>${rows.map((r) => `<tr><td>${cell(r)}</td><td class="num">${r.views}</td></tr>`).join('')}</table></div>` : '<p class="note">Nothing yet.</p>');
 const stats = (ctx, { days, pages, referrers }) => {
   const url = ctx.cfg.siteUrl(ctx.user.username);
   return layout(ctx, 'Visitor stats', `
-<section class="box"><h2>Visitor stats</h2>
+<section class="box">${crumbs('Visitor stats')}<h2>Visitor stats</h2>
 <p>Page views on your site over the last 30 days. We count them without cookies and without keeping anyone's address, and leave out search engine robots.</p>
-<h3>Views per day</h3>${statTable('Day (UTC)', days, (r) => esc(r.day))}
-<h3>Top pages</h3>${statTable('Page', pages, (r) => `<a href="${esc(url)}${esc(r.path)}" target="_blank">${esc(r.path)}</a>`)}
-<h3>Where visitors came from</h3>${statTable('Website', referrers, (r) => esc(r.host))}
-<p><a href="/dashboard">Back to my site</a></p></section>`, { noindex: true, wide: true });
+</section>
+${two(`<section class="box"><h2>Views per day <small>(${days.reduce((n, r) => n + r.views, 0)} in all)</small></h2>${statTable('Day (UTC)', days, (r) => esc(r.day))}</section>`,
+`<section class="box"><h2>Top pages</h2>${statTable('Page', pages, (r) => `<a href="${esc(url)}${esc(r.path)}" target="_blank">${esc(r.path)}</a>`)}</section>
+<section class="box"><h2>Where visitors came from</h2>${statTable('Website', referrers, (r) => esc(r.host))}</section>`)}`, { noindex: true });
 };
 
 // CodeMirror comes from the codemirror npm package, served by us (see server.js); the version in the path lets browsers cache it for good
@@ -535,7 +550,7 @@ var ins=document.getElementById('insert'),snip=${JSON.stringify(insert ? insert.
 if(ins)ins.addEventListener('click',function(){
   if(cm){cm.replaceRange(snip,cm.getCursor());cm.focus()}else{ta.setRangeText(snip,ta.selectionStart,ta.selectionEnd,'end');ta.focus()}draw();
 });
-})();</script>`, { wide: true, tight: true, head });
+})();</script>`, { tight: true, head });
 };
 
 const styleEditor = (ctx, m, { s, page, tail, offerLink, images }) => {
@@ -572,7 +587,7 @@ function draw(){var s={};for(var i=0;i<form.elements.length;i++){var e=form.elem
   if(s.bg==='own')s.bg=s.ownbg||'';
   frame.srcdoc=page+'<style>'+(block(s,fonts,bgs)+tail).replace(/<\\/(style)/gi,'<\\\\/$1')+'</style>'}
 form.addEventListener('input',draw);draw();
-})();</script>`, { wide: true });
+})();</script>`);
 };
 
 // every widget with its snippet; "Add to a page" opens the editor, where the member inserts it at the cursor
@@ -588,13 +603,13 @@ const widgets = (ctx, m, { groups, pages }) => {
 <p>${user.webring ? 'Your site is in the webring. Visitors clicking Prev, Next or Random on other sites can land on yours.' : 'Your site is not in the webring. Join it and visitors of other sites can land on yours; you can leave any time.'}</p>
 <button>${user.webring ? 'Leave the webring' : 'Join the webring'}</button></form>`,
   };
-  const item = (g, i) => `<div class="cmt"><b>${esc(i.name)}</b>${i.early ? ' <small>(supporters\' first look)</small>' : ''}
+  const item = (g, i) => `<div class="wcard"><b>${esc(i.name)}</b>${i.early ? ' <small>(supporters\' first look)</small>' : ''}
 ${i.preview ? `<p><img src="${esc(i.preview)}" alt=""${i.w ? ` width="${i.w}" height="${i.h}"` : ''}></p>` : ''}${i.see ? `<p><a href="${esc(i.see)}" target="_blank">See it</a></p>` : ''}
 <pre>${esc(i.snippet)}</pre>${g.id === 'effects' ? copy(i.id) : ''}${add(i.id)}</div>`;
   return layout(ctx, 'Widgets', `
-<section class="box"><h2>Widgets</h2>${msg(m)}<p>Each widget is a snippet of HTML. Copy it into a page yourself, or press "Add to a page": the editor opens and puts it where you click. Nothing changes on your pages until you save. <a href="/dashboard">Back to my pad</a></p>
+<section class="box">${crumbs('Widgets')}<h2>Widgets</h2>${msg(m)}<p>Each widget is a snippet of HTML. Copy it into a page yourself, or press "Add to a page": the editor opens and puts it where you click. Nothing changes on your pages until you save.</p>
 <datalist id="pages">${pages.map((p) => `<option value="${esc(p)}">`).join('')}</datalist></section>
-${groups.map((g) => `<section class="box"><h2>${esc(g.title)}</h2><p>${g.about}</p>${extra[g.id] || ''}${g.items.map((i) => item(g, i)).join('\n')}</section>`).join('\n')}
+${groups.map((g) => `<section class="box"><h2>${esc(g.title)}</h2><p>${g.about}</p>${extra[g.id] || ''}<div class="wgrid">${g.items.map((i) => item(g, i)).join('\n')}</div></section>`).join('\n')}
 <section class="box"><h2>Backgrounds</h2><p>Pick a tiling background in the <a href="/dashboard/style">style editor</a>.</p></section>`);
 };
 
@@ -613,30 +628,31 @@ const support = (ctx, m, { until, customer, limits }) => {
   const buy = (plan, label) => `<form method="post" action="/dashboard/support">${csrfField(ctx)}<input type="hidden" name="plan" value="${plan}"><button>${label}</button></form>`;
   const offers = [c.PRICE_ID ? buy('monthly', c.PRICE_ID_ANNUAL ? 'Become a supporter — monthly' : 'Become a supporter') : '',
     c.PRICE_ID_ANNUAL ? buy('annual', c.PRICE_ID ? 'Become a supporter — yearly' : 'Become a supporter') : ''].filter(Boolean).join('\n');
-  return layout(ctx, 'Support', `
-<section class="box"><h2>Support ${esc(c.SITE_NAME)}</h2>${msg(m)}
+  return layout(ctx, 'Support', two(`
+<section class="box">${crumbs('Support')}<h2>Support ${esc(c.SITE_NAME)}</h2>${msg(m)}
 <p>${esc(c.SITE_NAME)} is free and stays free. Supporters chip in for the server and get a few extras that cost us something to give.</p>
 ${perks(c)}
-${live ? `<p class="ok" role="status">You are a supporter until ${date(until)}. Thank you!</p>${customer ? `<p>${manage}</p>` : ''}`
-    : `${until ? `<p class="note">Your support ended ${date(until)}. Nothing was deleted: files over the free ${c.QUOTA_MB} MB stay online, and uploads wait until your site is back under it.</p>` : ''}
-${c.SUPPORT_ON ? `${offers}
-<p class="note">Payment is handled by Stripe; your card never touches our server. See the <a href="/rules#supporter-terms">supporter terms</a>.</p>${manage ? `<p>${manage}</p>` : ''}` : ''}`}
-<p>Your limits now: ${limits.quotaMB} MB of space, files up to ${limits.fileMB} MB${limits.anyType ? ', any file type' : ''}. <a href="/dashboard">Back to my pad</a></p></section>`);
+${live ? '' : c.SUPPORT_ON ? `<div class="acts">${offers}</div>
+<p class="note mt">Payment is handled by Stripe; your card never touches our server. See the <a href="/rules#supporter-terms">supporter terms</a>.</p>` : ''}</section>`,
+aside('Your pad now', `${live ? `<p class="ok" role="status">You are a supporter until ${date(until)}. Thank you!</p>`
+    : until ? `<p class="note">Your support ended ${date(until)}. Nothing was deleted: files over the free ${c.QUOTA_MB} MB stay online, and uploads wait until your site is back under it.</p>` : ''}
+<div class="meter"><div class="k">Space</div><div class="v">${limits.quotaMB} MB</div></div>
+<div class="meter mt"><div class="k">Biggest file</div><div class="v">${limits.fileMB} MB <small>${limits.anyType ? 'any file type' : 'usual web files'}</small></div></div>
+${manage ? `<p class="mt">${manage}</p>` : ''}`)));
 };
 
 // the member's API key: made with their password, shown once, revoked any time
 const apiPage = (ctx, m, { hasKey, key }) => {
   const base = ctx.cfg.BASE_URL;
-  return layout(ctx, 'API key', `
-<section class="box"><h2>API key</h2>${msg(m)}
+  return layout(ctx, 'API key', two(`
+<section class="box">${crumbs('API key')}<h2>API key</h2>${msg(m)}
 <p>An API key lets a program change your site for you: a deploy script, a command-line tool, a GitHub Action. It can upload, delete and list files, and read your site's details, through the same checks as this dashboard. Keep it secret, like a password. Changing or resetting your password switches the key off.</p>
 ${key ? `<p class="ok" role="status">Your new key. Copy it now: we only keep a fingerprint of it, so it is never shown again.</p><pre>${esc(key)}</pre>` : ''}
 <p>${hasKey ? 'You have an API key.' : 'You have no API key.'}</p>
 ${ctx.user.banned ? '' : `<form class="stack" method="post" action="/dashboard/api">${csrfField(ctx)}<input type="hidden" name="action" value="new">
 <label for="apipw">Confirm with your password</label><input type="password" id="apipw" name="password" required autocomplete="current-password">
 <button>${hasKey ? 'Make a new key (the old one stops working)' : 'Make an API key'}</button></form>`}
-${hasKey ? `<form class="stack" method="post" action="/dashboard/api">${csrfField(ctx)}<input type="hidden" name="action" value="revoke"><button class="danger">Switch off my key</button></form>` : ''}
-<p><a href="/dashboard">Back to my pad</a></p></section>
+${hasKey ? `<form class="stack mt" method="post" action="/dashboard/api">${csrfField(ctx)}<input type="hidden" name="action" value="revoke"><button class="danger">Switch off my key</button></form>` : ''}</section>
 <section class="box"><h2>How to use it</h2><p>Send the key in an <code>Authorization: Bearer</code> header. Every answer is JSON.</p>
 <pre># your site's details: address, space used and left, file count
 curl -H "Authorization: Bearer $KEY" ${esc(base)}/api/site
@@ -649,8 +665,8 @@ curl -H "Authorization: Bearer $KEY" -F "files=@index.html" -F "files=@cat.png;f
 
 # delete one file
 curl -H "Authorization: Bearer $KEY" -d "path=pics/cat.png" ${esc(base)}/api/delete</pre>
-<p>Uploads follow the dashboard's rules: allowed file types only (any type for supporters), your file size limit (${ctx.cfg.MAX_FILE_MB} MB, more for supporters), your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>
-<section class="box"><h2>Edit on your computer</h2><p>The <code>puppypad</code> command-line tool uploads a folder for you, sending only the files that changed. It needs <a href="https://nodejs.org/">Node.js</a>.</p>
+<p>Uploads follow the dashboard's rules: allowed file types only (any type for supporters), your file size limit (${ctx.cfg.MAX_FILE_MB} MB, more for supporters), your space limit, and files with the same name are replaced. At most 120 requests a minute.</p></section>`,
+`<section class="box"><h2>Edit on your computer</h2><p>The <code>puppypad</code> command-line tool uploads a folder for you, sending only the files that changed. It needs <a href="https://nodejs.org/">Node.js</a>.</p>
 <pre>npx @puppypad/cli login --url ${esc(base)}   # paste your key
 npx @puppypad/cli push           # upload new and changed files from this folder
 npx @puppypad/cli push --delete  # also delete files your folder doesn't have
@@ -666,18 +682,18 @@ jobs:
         with:
           api_key: \${{ secrets.PUPPYPAD_API_KEY }}
           url: ${esc(base)}</pre>
-<p><a href="https://github.com/DeRusto/puppypad/tree/main/cli#readme">More about the tool and the Action</a></p></section>`);
+<p><a href="https://github.com/DeRusto/puppypad/tree/main/cli#readme">More about the tool and the Action</a></p></section>`));
 };
 
 const move = (ctx, m, { from, to, dir }) => {
   const back = from.split('/').slice(0, -1).join('/');
-  return layout(ctx, `Move ${from}`, `
-<section class="box"><h2>Rename or move ${dir ? 'folder' : 'file'}: ${esc(from)}</h2>${msg(m)}
+  return layout(ctx, `Move ${from}`, two(`
+<section class="box">${crumbs(`<a href="/dashboard?dir=${encodeURIComponent(back)}">Files</a> &gt; Move`)}<h2>Rename or move ${dir ? 'folder' : 'file'}: <code>${esc(from)}</code></h2>${msg(m)}
 <form class="stack" method="post" action="/dashboard/move">${csrfField(ctx)}<input type="hidden" name="from" value="${esc(from)}">
 <label for="to">New path, for example <code>${dir ? 'old/pics' : 'pages/about.html'}</code>. Missing folders are created for you.${dir ? ' Everything inside moves too.' : ''}</label>
-<input type="text" id="to" name="to" value="${esc(to)}" required autocapitalize="none"><button>Move</button></form>
-<p class="note">Links to the old address stop working, so update any pages that point here.</p>
-<p><a href="/dashboard?dir=${encodeURIComponent(back)}">Back to files</a></p></section>`);
+<input type="text" id="to" name="to" value="${esc(to)}" required autocapitalize="none"><button>Move</button></form></section>`,
+aside('Before you move it', `<p>Links to the old address stop working, so update any pages that point here.</p>
+<p class="note">The <a href="/dashboard/links">broken links check</a> finds any you missed.</p>`)));
 };
 
 // file history: what is kept, every version of one file, and deleted files to bring back
@@ -687,35 +703,36 @@ const restoreForm = (ctx, rel, sha, label) => `<form class="inline" method="post
 const viewLink = (rel, sha) => `<a href="/dashboard/history/view?path=${encodeURIComponent(rel)}&amp;v=${esc(sha)}" target="_blank">view</a>`;
 const history = (ctx, m, { rel, rows, page, pages, exists, days }) => {
   const dir = rel.split('/').slice(0, -1).join('/');
-  return layout(ctx, `History of ${rel}`, `
-<section class="box"><h2>History: ${esc(rel)}</h2>${msg(m)}${keptNote(days)}
+  return layout(ctx, `History of ${rel}`, two(`
+<section class="box">${crumbs(`<a href="/dashboard?dir=${encodeURIComponent(dir)}">Files</a> &gt; History`)}<h2>History: <code>${esc(rel)}</code></h2>${msg(m)}
 <div class="scroll"><table><tr><th>Saved</th><th></th></tr>
 ${rows.map((r, i) => `<tr><td>${date(r.t)} <small>(${ago(r.t)})</small></td><td>${viewLink(rel, r.sha)}${exists && page === 1 && i === 0 ? ' | current version' : ctx.user.banned ? '' : ` | ${restoreForm(ctx, rel, r.sha, 'put this version back')}`}</td></tr>`).join('') || '<tr><td colspan="2">No versions kept yet.</td></tr>'}
-</table></div>${pager((n) => `/dashboard/history/file?path=${encodeURIComponent(rel)}&page=${n}`, page, pages)}
-<p>${exists ? `<a href="/dashboard/edit?path=${encodeURIComponent(rel)}">Edit ${esc(rel)}</a> | ` : ''}<a href="/dashboard?dir=${encodeURIComponent(dir)}">Back to files</a> | <a href="/dashboard/history">Deleted files</a></p></section>`);
+</table></div>${pager((n) => `/dashboard/history/file?path=${encodeURIComponent(rel)}&page=${n}`, page, pages)}</section>`,
+aside('About history', `${keptNote(days)}<ul class="menu">${exists ? `<li><a href="/dashboard/edit?path=${encodeURIComponent(rel)}">Edit ${esc(rel)}</a></li>` : ''}<li><a href="/dashboard/history">Deleted files</a><span>Bring back files you deleted</span></li></ul>`)));
 };
-const historyDeleted = (ctx, m, { rows, page, pages, days }) => layout(ctx, 'Deleted files', `
-<section class="box"><h2>Deleted files</h2>${msg(m)}${keptNote(days)}
+const historyDeleted = (ctx, m, { rows, page, pages, days }) => layout(ctx, 'Deleted files', two(`
+<section class="box">${crumbs('Deleted files')}<h2>Deleted files</h2>${msg(m)}
 <div class="scroll"><table><tr><th>File</th><th>Deleted</th><th></th></tr>
 ${rows.map((r) => `<tr><td>${esc(r.rel)}</td><td>${date(r.t)} <small>(${ago(r.t)})</small></td><td>${viewLink(r.rel, r.sha)} | <a href="/dashboard/history/file?path=${encodeURIComponent(r.rel)}">history</a>${ctx.user.banned ? '' : ` | ${restoreForm(ctx, r.rel, r.sha, 'bring back')}`}</td></tr>`).join('') || '<tr><td colspan="3">Nothing deleted lately.</td></tr>'}
-</table></div>${pager((n) => `/dashboard/history?page=${n}`, page, pages)}
-<p><a href="/dashboard">Back to my site</a></p></section>`);
+</table></div>${pager((n) => `/dashboard/history?page=${n}`, page, pages)}</section>`,
+aside('About history', `${keptNote(days)}<p class="note">"Bring back" puts the file back at its old path.</p>`)));
 
-const guestbookAdmin = (ctx, m, { rows, page, pages }, blocked = []) => layout(ctx, 'Guestbook entries', `
-<section class="box"><h2>Guestbook entries</h2>${msg(m)}<p><a href="/dashboard">Back to my site</a></p>
+const guestbookAdmin = (ctx, m, { rows, page, pages }, blocked = []) => layout(ctx, 'Guestbook entries', two(`
+<section class="box">${crumbs('Guestbook entries')}<h2>Guestbook entries</h2>${msg(m)}
 <div class="scroll"><table><tr><th>When</th><th>Name</th><th>Message</th><th></th></tr>
 ${rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td>${esc(r.name)}</td><td>${esc(r.message)}</td><td>${r.approved ? '' : `<form class="inline" method="post" action="/dashboard/guestbook/approve">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="page" value="${page}"><button class="link">approve (held: has a link)</button></form> `}<form class="inline" method="post" action="/dashboard/guestbook/delete">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="page" value="${page}"><button class="link">delete</button></form>${r.ip && !blocked.includes(r.ip) ? ` <form class="inline" method="post" action="/dashboard/guestbook/block-ip">${csrfField(ctx)}<input type="hidden" name="id" value="${r.id}"><input type="hidden" name="page" value="${page}"><button class="link">block IP</button></form>` : ''}</td></tr>`).join('') || '<tr><td colspan="4">Nobody has signed yet.</td></tr>'}
-</table></div>${pager((n) => `/dashboard/guestbook?page=${n}`, page, pages)}
-<h3>Email me about new entries</h3>
+</table></div>${pager((n) => `/dashboard/guestbook?page=${n}`, page, pages)}</section>`,
+`<section class="box"><h2>Email me about new entries</h2>
 <form class="stack" method="post" action="/dashboard/guestbook/notify">${csrfField(ctx)}<label for="gn">Sent to ${esc(ctx.login.email)}. Entries waiting for your approval are marked.</label>
 <select id="gn" name="notify">${[['instant', 'Right away, one email per entry'], ['daily', 'Once a day, a digest'], ['off', 'Never']].map(([v, l]) => `<option value="${v}"${ctx.user.gb_notify === v ? ' selected' : ''}>${l}</option>`).join('')}</select><button>Save</button></form>
-<h3>Moderation</h3><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused (one per line). Posts from a blocked IP are silently dropped; visitor IPs are only kept for 90 days.</p>
+</section>
+<section class="box"><h2>Moderation</h2><p class="note">Entries with links wait here until you approve them. Entries with a blocked word are refused (one per line). Posts from a blocked IP are silently dropped; visitor IPs are only kept for 90 days.</p>
 <p>Blocked IPs: ${blocked.map((ip) => `${esc(ip)} <form class="inline" method="post" action="/dashboard/guestbook/unblock-ip">${csrfField(ctx)}<input type="hidden" name="ip" value="${esc(ip)}"><button class="link">unblock</button></form>`).join(', ') || 'none'}</p>
 <form class="stack" method="post" action="/dashboard/guestbook/settings">${csrfField(ctx)}
 <label for="gw">Blocked words</label><textarea id="gw" name="words" rows="4">${esc(ctx.user.gb_words)}</textarea>
-<button>Save</button></form></section>`);
+<button>Save</button></form></section>`));
 
-const report = (ctx, m, v = {}) => layout(ctx, 'Report a site', `
+const report = (ctx, m, v = {}) => layout(ctx, 'Report a site', two(`
 <section class="box"><h2>Report a site</h2>${msg(m)}
 <form class="stack" method="post" action="/report">
 <label for="site">Site name (the part before .${esc(ctx.cfg.BASE_HOST)})</label><input type="text" id="site" name="site" value="${esc(v.site)}" required>
@@ -723,7 +740,9 @@ const report = (ctx, m, v = {}) => layout(ctx, 'Report a site', `
 <label for="details">What is wrong, and where on the site?</label><textarea id="details" name="details" rows="5" maxlength="2000" required></textarea>
 <label for="remail">Your email (optional, if you want a reply)</label><input type="email" id="remail" name="email">
 <div class="hp" aria-hidden="true"><input type="text" name="website" tabindex="-1" autocomplete="off"></div>
-<button>Send report</button></form></section>`);
+<button>Send report</button></form></section>`,
+aside('What happens next', `<p>A moderator reads every report. Sites that break the <a href="/rules">house rules</a> are taken down.</p>
+<p class="note">Copyright complaints need a few more details: see "Copyright complaints" in the <a href="/rules">rules</a>. You can also write to ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>`)));
 
 const rules = (ctx) => {
   const c = ctx.cfg, name = esc(c.SITE_NAME), mail = esc(c.ABUSE_EMAIL);
@@ -804,7 +823,7 @@ ${c.GOVERNING_LAW ? `
 you accept it.</p>
 
 <h3>Contact</h3>
-<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`, { description: `The rules and terms for ${ctx.cfg.SITE_NAME}, a free homepage host: what you can publish, what we remove, and how copyright complaints work.`, path: '/rules', wide: true });
+<p>Questions about these terms or the <a href="/privacy">privacy notice</a>: ${mail}.</p></section>`, { description: `The rules and terms for ${ctx.cfg.SITE_NAME}, a free homepage host: what you can publish, what we remove, and how copyright complaints work.`, path: '/rules' });
 };
 
 const privacy = (ctx) => layout(ctx, 'Privacy', `
@@ -823,7 +842,7 @@ const privacy = (ctx) => layout(ctx, 'Privacy', `
 <h3>Deleting it</h3>
 <p>Delete your account from your dashboard and your files, guestbook and account details are removed right away. Backups roll over within 14 days. Your site name stays reserved for 90 days so nobody else can pretend to be you.</p>
 <p>Questions: ${esc(ctx.cfg.ABUSE_EMAIL)}.</p>
-<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy', wide: true });
+<p class="note">Review this page before you launch and make it match what you actually run. It is a starting point, not legal advice.</p></section>`, { description: `What ${ctx.cfg.SITE_NAME} stores about you, who else sees it, and how to delete it. One login cookie, no tracking or advertising cookies.`, path: '/privacy' });
 
 // polls /admin in the background and navigates only once it shows the run finished, so the app restarting
 // mid-upgrade never strands the page on a browser error; data-follow marks a page that is still busy
@@ -890,7 +909,7 @@ The home page shows them while they are listed (not hidden, and past the new-sit
 <section class="box"><h2>Signups per day</h2><div class="scroll"><table><tr><th>Day (UTC)</th><th>Signups</th></tr>
 ${signups.map((d) => `<tr><td>${d.day}</td><td class="num">${d.n}</td></tr>`).join('') || '<tr><td colspan="2">None in the last 14 days.</td></tr>'}</table></div></section>
 ${upgrade ? `<section class="box">${upgradeBox(ctx, upgrade)}</section>` : ''}
-</div></div>`, { wide: true });
+</div></div>`);
 };
 
 // ---- pages served on member subdomains ----
