@@ -1,0 +1,178 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dog park - PuppyPad</title><meta name="description" content="Browse homepages hosted on PuppyPad — the dog park. Fresh, hand-written websites. No feeds, no algorithm."><link rel="canonical" href="https://puppypad.test/browse?sort=updated&amp;page=2"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><meta property="og:type" content="website"><meta property="og:site_name" content="PuppyPad"><meta property="og:title" content="Dog park - PuppyPad"><meta property="og:description" content="Browse homepages hosted on PuppyPad — the dog park. Fresh, hand-written websites. No feeds, no algorithm."><meta property="og:url" content="https://puppypad.test/browse?sort=updated&amp;page=2"><meta property="og:image" content="https://puppypad.test/og.png"><meta name="twitter:card" content="summary_large_image"><style>/* look: a puppy pad. blue plastic backing with paw prints, white quilted boxes, and one yellow accent for the accidents */
+:root{color-scheme:light;--back:#4aa9e6;--pad:#fdfeff;--ink:#14264f;--blue:#0b4f9e;--edge:#2f8fd0;--pee:#ffe14d;--soft:#4a5d85;--link:#0a3fc4;--visited:#7a2ea0;--quilt:#d6eafa;
+--display:"Comic Sans MS","Comic Neue","Chalkboard SE",cursive;--body:Verdana,Geneva,"DejaVu Sans",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--back) url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='120'%20height='120'%3E%3Cg%20fill='%23fff'%20fill-opacity='.2'%3E%3Cellipse%20cx='30'%20cy='40'%20rx='11'%20ry='9'/%3E%3Ccircle%20cx='14'%20cy='26'%20r='5'/%3E%3Ccircle%20cx='24'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='36'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='46'%20cy='26'%20r='5'/%3E%3Cg%20transform='translate%2860%2062%29%20rotate%2820%2030%2030%29'%3E%3Cellipse%20cx='30'%20cy='40'%20rx='11'%20ry='9'/%3E%3Ccircle%20cx='14'%20cy='26'%20r='5'/%3E%3Ccircle%20cx='24'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='36'%20cy='17'%20r='5'/%3E%3Ccircle%20cx='46'%20cy='26'%20r='5'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");color:var(--ink);font:15px/1.6 var(--body)}
+a{color:var(--link)}a:visited{color:var(--visited)}a:hover{background:var(--pee);color:var(--ink)}
+a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px dashed var(--blue);outline-offset:2px}
+.site{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.box{background-color:var(--pad);background-image:repeating-linear-gradient(45deg,transparent 0 21px,var(--quilt) 21px 22px),repeating-linear-gradient(-45deg,transparent 0 21px,var(--quilt) 21px 22px);border:4px ridge var(--edge);border-radius:16px;padding:16px 18px;min-width:0;overflow-wrap:anywhere}
+header.box{text-align:center}
+h1{font:700 clamp(32px,9vw,56px)/1.05 var(--display);margin:0;color:var(--blue);text-align:center;
+background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20640%20110'%20preserveAspectRatio='none'%3E%3Cpath%20fill='%23ffe14d'%20d='M30%2058C26%2038%2052%2026%2088%2028C104%2014%20142%2012%20168%2020C196%208%20246%2010%20268%2020C298%208%20344%2012%20364%2024C398%2014%20436%2020%20452%2034C492%2030%20522%2044%20518%2064C524%2084%20496%2096%20462%2094C434%20106%20376%20106%20350%2096C318%20108%20254%20108%20228%2097C192%20107%20128%20105%20104%2094C68%20100%2038%2090%2034%2074C26%2068%2027%2064%2030%2058Z'/%3E%3Cellipse%20fill='%23ffffff'%20opacity='.35'%20cx='180'%20cy='40'%20rx='90'%20ry='9'%20transform='rotate(-3%20180%2040)'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='540'%20cy='82'%20rx='12'%20ry='5'/%3E%3Cellipse%20fill='%23ffe14d'%20cx='14'%20cy='80'%20rx='8'%20ry='4'/%3E%3C/svg%3E") no-repeat center 58%/58% 118%}
+h1 a,h1 a:visited,h1 a:hover{color:inherit;text-decoration:none;background:none}
+.tagline{font-style:italic;color:var(--soft);margin:4px 0 12px}
+h2{font:700 24px/1.2 var(--display);color:var(--blue);margin:0 0 12px;padding-bottom:6px;border-bottom:2px dashed var(--quilt);text-wrap:balance}
+h2 small{font:400 13px var(--body);color:var(--soft)}
+h3{margin:16px 0 6px;color:var(--blue);font:700 18px var(--display)}
+p{margin:0 0 12px}
+nav{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:center}
+nav a{font:700 13px var(--display);text-decoration:none;color:var(--blue);padding:4px 12px;border:2px solid transparent;border-radius:8px}
+nav a:visited{color:var(--blue)}nav a:hover{border-color:var(--edge);background:#fff}
+nav a[aria-current=page]{background:var(--pee);border:2px outset #fff3a8;color:var(--ink)}
+nav button.link{font-size:13px;padding:0 8px}
+form.inline{display:inline}
+form.stack{display:flex;flex-direction:column;gap:6px;max-width:460px}
+label{font-size:13px;color:var(--blue)}
+input[type=text],input[type=search],input[type=email],input[type=password],input[type=file],textarea,select{font:15px "Courier New",monospace;background:#fff;color:#000;border:2px inset var(--edge);padding:6px 8px;width:100%;max-width:100%}
+textarea.code{min-height:60vh;white-space:pre;tab-size:2}
+button,.btn{font:700 15px var(--display);background:var(--pee);color:var(--ink);border:3px outset #fff3a8;padding:5px 16px;min-height:36px;cursor:pointer;align-self:flex-start;text-decoration:none;display:inline-block}
+a.btn:visited{color:var(--ink)}.btn.big,button.big{font-size:18px;padding:8px 22px}
+button:active,.btn:active{border-style:inset}
+button.link{background:none;border:0;color:var(--link);text-decoration:underline;padding:0;min-height:0;font-weight:400;font-size:inherit;font-family:var(--body)}
+button.danger{background:#c0392b;color:#fff;border-color:#e9a59d}
+.err{background:#ffdcdc;color:#7a0000;border:2px solid #c00;padding:6px 10px}
+.ok{background:#dff7df;color:#0b4d0b;border:2px solid #1a8f1a;padding:6px 10px}
+.hp{position:absolute;left:-9999px}
+fieldset.starters{border:2px inset var(--edge);border-radius:8px;display:flex;flex-direction:column;gap:6px;padding:8px 10px}fieldset.starters legend{font-size:13px;color:var(--blue)}
+/* the signup form: starters as a grid of cards, the picked one wears the yellow */
+form.stack.wide{max-width:none}form.stack.wide input:not([type=radio]):not([type=checkbox]){max-width:460px}
+form.stack.wide fieldset.starters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:6px 0}
+form.stack.wide fieldset.starters>label{display:flex;gap:8px;align-items:flex-start;background:#fff;border:2px solid var(--quilt);border-radius:8px;padding:8px 10px;color:var(--ink);cursor:pointer}
+form.stack.wide fieldset.starters>label:has(:checked){border-color:#e0b800;background:#fffbd6}
+label.check{color:var(--ink)}
+.perks{text-align:center}.perks img{width:160px;height:auto}.perks .stamps{justify-content:center}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;background:var(--pad);overflow-wrap:break-word}
+th,td{border-bottom:2px solid var(--quilt);padding:6px 8px;text-align:left;vertical-align:top}
+th{color:var(--soft);font-weight:400;font-size:12px;text-transform:uppercase;letter-spacing:.06em;border-bottom-color:var(--edge)}
+tr:hover td{background:#fff}
+td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.sites{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.sites small,.note{color:var(--soft);font-size:13px}
+code,pre{font:14px "Courier New",monospace;color:var(--pee);background:var(--ink)}
+code{padding:0 3px}
+pre{padding:8px;overflow-x:auto;border:2px inset var(--edge);margin:0 0 10px}
+.b88{display:inline-flex;width:88px;height:31px;align-items:center;justify-content:center;text-align:center;font:700 10px/1.05 Verdana,sans-serif;border:2px outset var(--edge);background:var(--ink);color:var(--pee);text-transform:uppercase;text-decoration:none}
+footer{text-align:center;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;list-style:none;margin:0;padding:0}
+.card{display:flex;flex-direction:column;gap:4px;min-width:0}
+.card .t,.t{font-size:13px;color:var(--soft)}
+.sotw{display:grid;grid-template-columns:minmax(0,320px) 1fr;gap:20px;align-items:start}.sotw h3{margin-top:0}
+.shot{display:block;aspect-ratio:4/3;width:100%;height:auto;max-width:100%;border:3px outset #9fd0f0;background:#eaf5fd;object-fit:cover;object-position:top}
+.shot.none{display:flex;align-items:center;justify-content:center;color:var(--blue);font:14px "Courier New",monospace;text-align:center;padding:6px;text-decoration:none}
+.sorts{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 10px}
+.prof{display:flex;flex-wrap:wrap;gap:14px}.prof>.pic{flex:1 1 260px;max-width:420px}.prof>.info{flex:2 1 260px;min-width:0}
+.names{display:flex;flex-wrap:wrap;gap:4px 12px}
+.badge{width:14px;height:14px;vertical-align:-2px;margin-left:3px}
+.supporter .shot{border:4px solid transparent;background:linear-gradient(#eaf5fd,#eaf5fd) padding-box,linear-gradient(90deg,#ff5f6d,#ffc371,#ffe14d,#47e891,#4fb3ff,#b07bff,#ff5f6d) 0 0/200% 100% border-box;animation:rainbow 6s linear infinite}
+@keyframes rainbow{to{background-position:0 0,200% 0}}
+@media (prefers-reduced-motion:reduce){.supporter .shot{animation:none}}
+.feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.feed li{display:flex;gap:10px;align-items:flex-start}
+.cmt{border-left:3px solid var(--edge);padding:2px 8px;margin:6px 0;background:#fff}.social{font-size:14px;margin-top:4px}.new{background:var(--pee)}.feed .shot{width:96px;flex:none;border-width:2px}
+.edwrap{display:flex;gap:10px;flex-wrap:wrap}.edwrap>div{flex:1 1 420px;min-width:0}
+.edwrap .CodeMirror{height:65vh;border:2px inset var(--edge);font:14px/1.4 "Courier New",monospace}
+.drop{display:flex;flex-direction:column;gap:6px;border:3px dashed var(--edge);padding:12px;background:#fff}.drop.over{background:var(--pee)}
+progress{width:100%;max-width:460px}
+iframe.preview{width:100%;height:65vh;border:2px inset var(--edge);background:#fff}
+/* page furniture shared by the redesigned pages */
+.mt{margin-top:10px}
+.split{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:20px;align-items:center}.split>img{width:100%;height:auto}
+.split .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.lead{font-size:18px;line-height:1.55}
+.cta{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:4px 0 14px}
+.stamps{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0 0 12px;padding:0}
+.stamp{font:700 13px var(--display);background:#fff;border:2px dashed var(--edge);border-radius:6px;padding:3px 10px;color:var(--blue)}
+.pups{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0;padding:0}
+.pups a{display:inline-block;background:#fff;border:2px solid var(--quilt);border-radius:6px;padding:2px 10px;font-size:13px}
+.status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:0 0 12px}
+.status.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.meter{background:#fff;border:2px inset var(--edge);border-radius:8px;padding:10px 12px}
+.meter .k{font-size:12px;color:var(--soft);text-transform:uppercase;letter-spacing:.06em}
+.meter .v{font:700 18px var(--display);font-variant-numeric:tabular-nums}.meter .v small{font:400 13px var(--body);color:var(--soft)}
+.bar{height:12px;background:var(--quilt);border:1px solid var(--edge);margin-top:6px}.bar i{display:block;height:100%;max-width:100%;background:var(--pee);border-right:2px solid #e0b800}
+.links{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px}
+.addr{font:15px "Courier New",monospace;background:#fff;border:2px dashed var(--edge);border-radius:6px;padding:4px 10px;display:inline-block;margin-bottom:12px}
+.cols{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px;align-items:start}
+.cols>div{display:flex;flex-direction:column;gap:14px;min-width:0}
+.cols .side h2{font-size:18px}
+.row{display:flex;gap:8px}.row input{flex:1;min-width:0}
+.acts{display:flex;flex-wrap:wrap;gap:2px 10px}
+.drop{text-align:center;align-items:center}
+details{border-top:2px dashed var(--quilt);padding:8px 0}details:last-child{border-bottom:2px dashed var(--quilt)}
+summary{cursor:pointer;font:700 15px var(--display);color:var(--blue)}details>:not(summary){margin-top:10px}
+.menu{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:10px}.menu a{font-weight:700}.menu span{display:block;font-size:13px;color:var(--soft)}
+.careful h2{color:#c0392b}
+.edbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin-bottom:12px}.edbar h2{border:0;padding:0;margin:0;font-size:20px}
+.edbar .acts{margin-left:auto;align-items:center;font-size:13px}
+.crumbs{font-size:13px;color:var(--soft);margin:0 0 6px}
+.wgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:12px;margin-top:12px}
+.wcard{display:flex;flex-direction:column;gap:8px;min-width:0;background:#fff;border:2px solid var(--quilt);border-radius:8px;padding:10px 12px}.wcard p,.wcard pre{margin:0}.wcard img{max-width:100%;height:auto}
+.side .meter{margin:0}
+.chip{font:700 12px var(--display);background:var(--pee);border:2px solid #e0b800;border-radius:6px;padding:1px 8px}
+.chip[hidden]{display:none}
+.edform{display:flex;flex-direction:column;gap:8px}
+@media (max-width:760px){form.stack.wide fieldset.starters{grid-template-columns:1fr}.perks img{width:120px}.split,.cols,.sotw{grid-template-columns:1fr}.split>img{display:none}.split>img.wave{display:block;max-width:160px;margin:0 auto}.split .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:1fr}.status.four{grid-template-columns:repeat(2,minmax(0,1fr))}.edbar .acts{margin-left:0}}
+.qr{width:200px;max-width:100%;margin:8px 0}
+</style><link rel="alternate" type="application/atom+xml" title="PuppyPad: recently updated" href="/feed.xml"></head><body><div class="site">
+<header class="box"><h1><a href="/">PuppyPad</a></h1><p class="tagline">prototype</p><nav aria-label="Main"><a href="/">Home</a> <a href="/browse" aria-current="page">Dog park</a> <a href="/random">Fetch a random pad</a> <a href="/rules">Rules</a> <a href="/signup">Get a free pad</a> <a href="/login">Log in</a></nav></header>
+
+<section class="box"><h2>The dog park <small>(page 2 of 3)</small></h2>
+<form class="stack" method="get" action="/browse" role="search"><input type="hidden" name="sort" value="updated"><label for="q">Find a site by name or tag</label>
+<input type="search" id="q" name="q" maxlength="50" value=""><button>Search</button></form>
+<p class="sorts">Sort: <b>Recently updated</b> <a href="/browse?sort=newest">Newest</a> <a href="/browse?sort=followed">Most followed</a> <a href="/browse?sort=hits">Most visited</a></p>
+<ul class="grid"><li class="card" data-card="rex"><a class="shot none" href="https://rex.puppypad.test/">rex<br>no screenshot yet</a>
+<div><a href="https://rex.puppypad.test/"><b>rex</b></a> <a href="/site/rex" class="t">[profile]</a></div>
+<div class="t">rex&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 1 second ago | 0 followers | 0 hits</div></li><li class="card" data-card="biscuit"><a class="shot none" href="https://biscuit.puppypad.test/">biscuit<br>no screenshot yet</a>
+<div><a href="https://biscuit.puppypad.test/"><b>biscuit</b></a> <a href="/site/biscuit" class="t">[profile]</a></div>
+<div class="t">biscuit&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 1 hour ago | 1 follower | 100 hits</div></li><li class="card" data-card="nekocat"><a class="shot none" href="https://nekocat.puppypad.test/">nekocat<br>no screenshot yet</a>
+<div><a href="https://nekocat.puppypad.test/"><b>nekocat</b></a> <a href="/site/nekocat" class="t">[profile]</a></div>
+<div class="t">nekocat&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 2 hours ago | 2 followers | 200 hits</div></li><li class="card" data-card="mallory"><a class="shot none" href="https://mallory.puppypad.test/">mallory<br>no screenshot yet</a>
+<div><a href="https://mallory.puppypad.test/"><b>mallory</b></a> <a href="/site/mallory" class="t">[profile]</a></div>
+<div class="t">mallory&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 3 hours ago | 3 followers | 300 hits</div></li><li class="card" data-card="patches"><a class="shot none" href="https://patches.puppypad.test/">patches<br>no screenshot yet</a>
+<div><a href="https://patches.puppypad.test/"><b>patches</b></a> <a href="/site/patches" class="t">[profile]</a></div>
+<div class="t">patches&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 4 hours ago | 4 followers | 400 hits</div></li><li class="card" data-card="ziggy"><a class="shot none" href="https://ziggy.puppypad.test/">ziggy<br>no screenshot yet</a>
+<div><a href="https://ziggy.puppypad.test/"><b>ziggy</b></a> <a href="/site/ziggy" class="t">[profile]</a></div>
+<div class="t">ziggy&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 5 hours ago | 5 followers | 500 hits</div></li><li class="card" data-card="pip"><a class="shot none" href="https://pip.puppypad.test/">pip<br>no screenshot yet</a>
+<div><a href="https://pip.puppypad.test/"><b>pip</b></a> <a href="/site/pip" class="t">[profile]</a></div>
+<div class="t">pip&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 6 hours ago | 6 followers | 600 hits</div></li><li class="card" data-card="mochi"><a class="shot none" href="https://mochi.puppypad.test/">mochi<br>no screenshot yet</a>
+<div><a href="https://mochi.puppypad.test/"><b>mochi</b></a> <a href="/site/mochi" class="t">[profile]</a></div>
+<div class="t">mochi&#39;s homepage</div><div class="t"><a href="/browse?q=dogs">#dogs</a> <a href="/browse?q=html">#html</a></div>
+<div class="t">updated 7 hours ago | 7 followers | 700 hits</div></li></ul>
+<p class="mt pager"><a href="/browse?sort=updated&amp;page=1">&lt;&lt; Prev</a> <a href="/browse?sort=updated&amp;page=3">Next &gt;&gt;</a></p>
+<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>
+<footer class="box">Free homepages for good dogs and bad HTML. <a href="/rules">Rules</a> | <a href="/privacy">Privacy</a> | <a href="/report">Report a site</a> | Abuse contact: abuse@puppypad.test</footer>
+</div><div id="proto" style="position:fixed;z-index:2147483647;left:8px;right:8px;bottom:8px;background:#222;color:#eee;font:12px/1.4 monospace;padding:8px;border-radius:8px;isolation:isolate;max-height:45vh;overflow:auto">
+<b>PROTOTYPE</b> guard: <select id="g"><option value="0">0: none (stock site.css)</option><option value="1">1: as written, plain CSS before member CSS</option><option value="2">2: same rules in @layer guard</option><option value="3">3: layer + clip-path bleed 24px</option><option value="4">4: layer + contain:paint (no bleed)</option></select>
+attacks on mallory: <label><input type="checkbox" value="overlay">overlay</label> <label><input type="checkbox" value="bump">bump</label> <label><input type="checkbox" value="link">link</label> <label><input type="checkbox" value="move">move</label> <label><input type="checkbox" value="wide">wide</label> <label><input type="checkbox" value="fixed">fixed</label>
+<pre id="out" style="margin:4px 0 0;border:0;padding:0;background:none;color:#eee"></pre></div>
+<style id="guard"></style><style id="member"></style>
+<script>
+const GUARDS=[["0: none (stock site.css)",""],["1: as written, plain CSS before member CSS",".card{position:relative!important;isolation:isolate!important}\n.card::before,.card::after{pointer-events:none!important}\nnav,.pager{position:relative!important;z-index:2147483647!important}"],["2: same rules in @layer guard","@layer guard{.card{position:relative!important;isolation:isolate!important}\n.card::before,.card::after{pointer-events:none!important}\nnav,.pager{position:relative!important;z-index:2147483647!important}}"],["3: layer + clip-path bleed 24px","@layer guard{.card{position:relative!important;isolation:isolate!important}\n.card::before,.card::after{pointer-events:none!important}\nnav,.pager{position:relative!important;z-index:2147483647!important}.card{clip-path:inset(-24px)!important}}"],["4: layer + contain:paint (no bleed)","@layer guard{.card{position:relative!important;isolation:isolate!important}\n.card::before,.card::after{pointer-events:none!important}\nnav,.pager{position:relative!important;z-index:2147483647!important}.card{contain:paint!important}}"]],ATTACKS={"overlay":"[data-card=\"mallory\"]::before{content:\"\";position:absolute;inset:-3000px;z-index:2147483647;background:rgba(255,0,0,.25);pointer-events:auto!important}","bump":"[data-card=\"mallory\"][data-card=\"mallory\"][data-card=\"mallory\"]::before{pointer-events:auto!important}","link":"[data-card=\"mallory\"]>a:first-child{position:absolute;inset:-300px -400px;width:auto;height:auto;aspect-ratio:auto;max-width:none;z-index:2147483647;background:rgba(0,0,255,.15)}","move":"[data-card=\"mallory\"]{transform:translate(-105%,-30px);z-index:2147483647}","wide":"[data-card=\"mallory\"]::after{content:\"MALLORY WAS HERE\";position:absolute;left:100%;top:30px;font:900 56px Impact,sans-serif;color:#c00;white-space:nowrap;background:#ff0}","fixed":"[data-card=\"mallory\"]>div:nth-of-type(1){position:fixed;inset:0;z-index:2147483647;background:rgba(0,160,0,.3)}"},BENIGN="[data-card=\"nekocat\"]{transition:transform .2s}[data-card=\"nekocat\"]:hover{transform:rotate(-3deg) scale(1.05)}\n[data-card=\"nekocat\"]::before{content:\"\";position:absolute;inset:-6px;border:3px dashed hotpink;border-radius:8px}\n[data-card=\"nekocat\"]::after{content:\"\\1F43E\\1F431\";position:absolute;top:-18px;right:-14px;font-size:34px}";
+const q=new URLSearchParams(location.search),g=document.getElementById('g'),boxes=[...document.querySelectorAll('#proto input')];
+g.value=q.get('guard')||'2';const on=(q.has('attack')?q.get('attack'):'overlay,bump,link,wide').split(',');boxes.forEach(b=>b.checked=on.includes(b.value));
+// targets that must stay clickable: [label, element]; the hit at the element's centre must land inside it
+const T=()=>[['nav: Rules','nav a[href="/rules"]'],['search box','#q'],['sort: Newest','.sorts a'],['pager: Next','.pager a:last-child'],['left neighbour nekocat','[data-card=nekocat] b'],['right neighbour patches','[data-card=patches] b'],['row below: pip','[data-card=pip] b'],['mallory own name','[data-card=mallory] b']];
+function apply(){
+  const gi=+g.value,atk=boxes.filter(b=>b.checked).map(b=>b.value);
+  // level 1 emits the guardrails before member CSS in one sheet; the rest emit a layer, order then does not matter
+  document.getElementById('guard').textContent=GUARDS[gi][1];
+  document.getElementById('member').textContent=BENIGN+atk.map(a=>ATTACKS[a]).join('\n');
+  history.replaceState(null,'','?guard='+gi+'&attack='+atk.join(','));
+  requestAnimationFrame(()=>{const r=T().map(([l,s])=>{const e=document.querySelector(s);if(!e)return l+': missing';const b=e.getBoundingClientRect();
+    e.scrollIntoView({block:'center'});const c=e.getBoundingClientRect(),hit=document.elementFromPoint(c.left+c.width/2,c.top+c.height/2);
+    const ok=hit&&(e.contains(hit)||hit.contains(e)||hit.closest('a,input')===e.closest('a,input'));
+    return (ok?'OK   ':'FAIL ')+l+' -> '+(hit?hit.tagName.toLowerCase()+(hit.closest('[data-card]')?' in card '+hit.closest('[data-card]').dataset.card:''):'nothing');});
+    window.scrollTo(0,0);document.getElementById('out').textContent=r.join('\n');window.RESULT=r;});
+}
+g.onchange=apply;boxes.forEach(b=>b.onchange=apply);apply();
+</script></body></html>
