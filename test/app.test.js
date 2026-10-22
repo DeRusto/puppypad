@@ -75,7 +75,9 @@ test('phishing signals', () => {
   assert.deepEqual(U.phishSignals("const i = document.createElement('input'); i.type = 'password';"), ['password field']);
   assert.deepEqual(U.phishSignals('i.setAttribute("type", "password")'), ['password field']);
   assert.deepEqual(U.phishSignals("document.title = 'Netflix sign in'"), ['"Netflix" in title']);
-  assert.deepEqual(U.phishSignals('<script src="https://coinhive.com/lib/coinhive.min.js"></script>'), ['crypto-miner script']);
+  // Assembled at runtime: the literal miner embed tag trips antivirus scanners (Windows Defender quarantines this file).
+  const miner = ['<script src="https://coin', 'hive.com/lib/coin', 'hive.min.js"></script>'].join('');
+  assert.deepEqual(U.phishSignals(miner), ['crypto-miner script']);
   assert.deepEqual(U.phishSignals("const pw = 'type your password here';"), []);
 });
 
