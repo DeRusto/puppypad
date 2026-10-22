@@ -23,3 +23,7 @@ _Avoid_: storage, uploads
 **Card style**:
 A site's own CSS that decorates only that site's card in the browse grid. Each site has its own; it never reaches the site itself, other cards or the rest of the page.
 _Avoid_: explore CSS, pad CSS, card CSS
+
+**Card art**:
+The images from a site's own files that its card style shows on its card. A card can only show images from its own site.
+_Avoid_: card images, card assets
