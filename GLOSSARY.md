@@ -19,3 +19,7 @@ _Avoid_: donor, subscriber, premium
 **Site files**:
 The module that owns a site's folder: every change to its files passes the site's limits and the phishing check and is kept in file history, usually with a feed event. It also creates, renames and removes whole sites.
 _Avoid_: storage, uploads
+
+**Card style**:
+A site's own CSS that decorates only that site's card in the browse grid. Each site has its own; it never reaches the site itself, other cards or the rest of the page.
+_Avoid_: explore CSS, pad CSS, card CSS
