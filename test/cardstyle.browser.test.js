@@ -16,6 +16,7 @@ delete process.env.TURNSTILE_SECRET_KEY;
 const app = require('../src/server');
 const { db, SHOTS_DIR } = require('../src/db');
 const { sanitize, VERSION } = require('../src/cardstyle');
+const { siteDir } = require('../src/sitefiles');
 let server;
 let browser;
 let skip = false;
@@ -111,6 +112,32 @@ test('cards: a benign 18px sticker draped over the edge survives the clip', asyn
   const page = await show({ a: '$ [data-part=stats] { position: absolute; top: -18px; left: -18px; width: 36px; height: 36px; background: gold }' });
   const r = await box(page, '.card');
   assert.equal(await hit(page, r.x - 12, r.y - 12), 'a');
+  await page.close();
+});
+
+test('cards: real card art drapes 18px over the edge and loads; transformed art stays inside the clip', async (t) => {
+  if (skip) return t.skip(skip);
+  // a 1x1 gold PNG in carda's own Site files, saved through the sanitizer like a member would
+  fs.mkdirSync(siteDir('carda'), { recursive: true });
+  fs.writeFileSync(path.join(siteDir('carda'), 'sticker.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==', 'base64'));
+  const put = async (source) => {
+    db.prepare('DELETE FROM card_styles').run();
+    const r = sanitize(source, Number(ids.carda));
+    db.prepare('INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?, ?, ?, ?, ?, 0)').run(ids.carda, source, r.css, JSON.stringify(r.art), VERSION);
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    const art = page.waitForResponse((res) => res.url().includes('/card-art/carda/sticker.png'));
+    await page.goto(`http://localhost:${PORT}/browse`);
+    assert.equal((await art).status(), 200);
+    return page;
+  };
+  let page = await put('[data-part=stats] { position: absolute; top: -18px; left: -18px; width: 36px; height: 36px; background: url(sticker.png) 0 0 / cover }');
+  const r = await box(page, '.card');
+  assert.equal(await hit(page, r.x - 12, r.y - 12), 'a');
+  assert.match(await page.evaluate(() => getComputedStyle(document.querySelector('.card [data-part=stats]')).backgroundImage), /\/card-art\/carda\/sticker\.png\?v=/);
+  await page.close();
+  page = await put('[data-part=card] { transform: translateY(-300px) scale(2) } [data-part=shot] { position: absolute; inset: -400px; background: url(sticker.png) }');
+  const c = await box(page, '.card');
+  for (const [x, y] of [[c.x - 30, c.y + 10], [c.x + c.width / 2, c.y + c.height + 30], [500, 880]]) assert.notEqual(await hit(page, x, y), 'a', `(${x}, ${y})`);
   await page.close();
 });
 
