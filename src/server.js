@@ -12,6 +12,7 @@ const V = require('./views');
 const { readZip, writeZip } = require('./zip');
 const starters = require('./starters');
 const style = require('./style');
+const cardstyle = require('./cardstyle');
 const upgrade = require('./upgrade');
 const W = require('./widgets');
 const H = require('./history');
@@ -492,6 +493,13 @@ main.get('/', (req, res) => res.send(V.home(req.ctx, {
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
 const WITH_FOLLOWERS = `SELECT u.*, (SELECT COUNT(*) FROM follows f WHERE f.followed_id = u.id) AS followers FROM users u`;
 const hasShot = (r) => ({ ...r, shot: fs.existsSync(shotPath(r.username)) });
+// the stored card style output of every card on the page that has a current one, in card order; '' when none
+const cardCssFor = (rows) => {
+  if (!rows.length) return '';
+  const css = new Map(db.prepare(`SELECT user_id, css FROM card_styles WHERE version = ? AND css IS NOT NULL AND user_id IN (${rows.map(() => '?').join(',')})`)
+    .all(cardstyle.VERSION, ...rows.map((r) => r.id)).map((s) => [s.user_id, s.css]));
+  return rows.map((r) => css.get(r.id)).filter(Boolean).join('\n');
+};
 main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
   const search = String(req.query.q || '').trim().toLowerCase().slice(0, 50);
@@ -501,7 +509,8 @@ main.get('/browse', (req, res) => {
   const pages = Math.max(1, Math.ceil(total / 24));
   const page = Math.min(pages, Math.max(1, parseInt(req.query.page, 10) || 1));
   const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${where} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET @offset`).all({ offset: (page - 1) * 24, search }).map(hasShot);
-  res.send(V.browse(req.ctx, { rows, page, pages, sort, q: search }));
+  // member CSS changes whenever a card style is saved, so the page itself is never cached
+  res.set('Cache-Control', 'no-store').send(V.browse(req.ctx, { rows, page, pages, sort, q: search, cardCss: cardCssFor(rows) }));
 });
 function showProfile(req, res, name, m, status = 200) {
   const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
@@ -978,6 +987,24 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
   const err = files.write(user, 'puppypad.css', style.merge(readText(full), s, cfg.BASE_URL));
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
+});
+// card style: a little CSS for the current Site's card on /browse, kept as typed plus the sanitized copy /browse emits
+const cardSource = (id) => db.prepare('SELECT source FROM card_styles WHERE user_id = ?').get(id)?.source ?? '';
+main.get('/dashboard/card', auth, canEdit, (req, res) => res.send(V.cardStyle(req.ctx, msgOf(req), cardSource(req.ctx.user.id))));
+main.post('/dashboard/card', auth, canEdit, (req, res) => {
+  const user = req.ctx.user;
+  const source = String(req.body.css ?? '');
+  if (!source.trim()) {
+    db.prepare('DELETE FROM card_styles WHERE user_id = ?').run(user.id);
+    return res.redirect(`/dashboard/card?ok=${encodeURIComponent('Card style removed. Your card is the stock card again.')}`);
+  }
+  const r = cardstyle.sanitize(source, user.id);
+  // rejected: the page again, not a redirect, so the typed text stays; the saved style stays live
+  if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source));
+  db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
+    .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
+  res.redirect(`/dashboard/card?ok=${encodeURIComponent('Saved your card style.')}`);
 });
 main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
   const user = req.ctx.user;

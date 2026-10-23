@@ -1,6 +1,7 @@
 const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
+const { PARTS: CARD_PARTS, MAX_BYTES: CARD_MAX_BYTES } = require('./cardstyle');
 const W = require('./widgets');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -64,7 +65,7 @@ const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${enco
 const cards = (ctx, rows, parts = false) => {
   const p = (name) => (parts ? ` data-part="${name}"` : '');
   return rows.length
-    ? `<ul class="grid">${rows.map((r) => `<li class="card${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? `<div data-part="card" class="cs-${r.id}">` : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
+    ? `<ul class="grid">${rows.map((r) => `<li class="card${parts ? ` cs-${r.id}` : ''}${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? '<div data-part="card">' : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
 <div><a${p('name')} href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
 ${r.tagline || parts ? `<div${p('tagline')} class="t">${esc(r.tagline || '')}</div>` : ''}${r.tags || parts ? `<div${p('tags')} class="t">${r.tags ? tagLinks(r.tags) : ''}</div>` : ''}
 <div${p('stats')} class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div>${parts ? '</div>' : ''}</li>`).join('')}</ul>`
@@ -96,7 +97,7 @@ ${picks.length ? `<section class="box split"><div><h2>Staff picks</h2>${cards(ct
 });
 
 const SORT_LABELS = { updated: 'Recently updated', newest: 'Newest', followed: 'Most followed', hits: 'Most visited' };
-const browse = (ctx, { rows, page, pages, sort, q }) => {
+const browse = (ctx, { rows, page, pages, sort, q, cardCss = '' }) => {
   const qs = q ? `&amp;q=${esc(encodeURIComponent(q))}` : '';
   return layout(ctx, 'Dog park', `
 <section class="box"><h2>The dog park <small>(page ${page} of ${pages})</small></h2>
@@ -104,8 +105,8 @@ const browse = (ctx, { rows, page, pages, sort, q }) => {
 <input type="search" id="q" name="q" maxlength="50" value="${esc(q)}"><button>Search</button></form>${q ? `<p><a href="/browse?sort=${sort}">Show every site</a></p>` : ''}
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}${qs}">${l}</a>`)).join(' ')}</p>
 ${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows, true)}
-<p class="mt">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
-<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
+<p class="mt pages">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
+<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') + (cardCss ? `<style>${cardCss}</style>` : '') });
 };
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
@@ -454,7 +455,8 @@ ${UPLOADER(ctx)}
 <div class="row"><input type="text" id="tags" name="tags" maxlength="130" value="${esc(user.tags)}"><button>Save</button></div></form>
 <form class="stack mt" method="post" action="/dashboard/hidden">${csrfField(ctx)}<input type="hidden" name="hidden" value="${user.hidden ? '0' : '1'}">
 <p class="note">${user.hidden ? 'Your site is hidden: it stays off the dog park, the home page, feeds and the webring, and asks search engines not to index it. Its address and profile still work.' : 'Want a quiet corner? Hide your site from browsing, feeds, the webring and search engines. Its address and profile keep working.'}</p>
-<button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form></section>
+<button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form>
+${user.banned ? '' : '<p class="mt"><a href="/dashboard/card">Card style</a>: dress up your card in the dog park with a little CSS.</p>'}</section>
 
 <section class="box"><h2>Make it yours</h2><ul class="menu">
 ${user.banned ? '' : '<li><a href="/dashboard/style">Style editor</a><span>Colours, fonts and a background picture without writing CSS. It writes <code>puppypad.css</code> for you.</span></li>'}
@@ -556,6 +558,15 @@ if(ins)ins.addEventListener('click',function(){
 });
 })();</script>`, { tight: true, head });
 };
+
+// card style: the source as typed; a rejected save comes back here with its text and the error
+const cardStyle = (ctx, m, source) => layout(ctx, 'Card style', `
+<section class="box"><h2>Card style</h2>${msg(m)}
+<p>A little CSS that dresses up your card in the <a href="/browse">dog park</a>. Save it empty to go back to the stock card.</p>
+<form class="stack" method="post" action="/dashboard/card">${csrfField(ctx)}<label for="css">Your card's CSS</label>
+<textarea id="css" name="css" rows="14" spellcheck="false">${esc(source)}</textarea><button>Save</button></form>
+<p class="note">Style only the Card parts: ${CARD_PARTS.map((p) => `<code>[data-part="${p}"]</code>`).join(' ')}. Up to ${CARD_MAX_BYTES / 1024} KB; no <code>position: fixed</code> or <code>sticky</code>; <code>@media</code> and <code>@keyframes</code> are fine.</p>
+<p><a href="/dashboard">Back to my pad</a></p></section>`);
 
 const styleEditor = (ctx, m, { s, page, tail, offerLink, images }) => {
   const opts = (list, cur) => list.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
@@ -956,4 +967,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, cardStyle, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };
