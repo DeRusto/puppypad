@@ -151,13 +151,13 @@ test('cards: a Supporter keeps the rainbow frame on the shot', async (t) => {
 
 test('cards: the name and the [profile] link can\'t be hidden', async (t) => {
   if (skip) return t.skip(skip);
-  const hide = 'display: none !important; visibility: hidden !important; opacity: 0 !important';
+  const hide = 'display: none !important; visibility: hidden !important; opacity: 0 !important; clip-path: inset(100%) !important; mask: linear-gradient(transparent, transparent) !important';
   const page = await show({ a: `$ [data-part=name] { ${hide} } $ [data-part=card] a[href^="/site/"] { ${hide} } $ [data-part=card] > div:not([data-part]) { ${hide} } $ [data-part=card] { visibility: hidden }` });
   assert.ok(await clickable(page, '.card [data-part=name]'));
   assert.ok(await clickable(page, '.card a[href^="/site/"]'));
   await page.close();
   // nor by hiding the card root itself; a transform on it stays the member's
-  for (const rule of ['display: none', 'visibility: hidden', 'opacity: 0']) {
+  for (const rule of ['display: none', 'visibility: hidden', 'opacity: 0', 'clip-path: inset(100%)', 'mask: linear-gradient(transparent, transparent)', 'content-visibility: hidden']) {
     const p = await show({ a: `$ [data-part=card] { ${rule} !important; transform: rotate(3deg) }` });
     assert.ok(await clickable(p, '.card [data-part=name]'), rule);
     assert.ok(await clickable(p, '.card a[href^="/site/"]'), rule);

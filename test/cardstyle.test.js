@@ -113,6 +113,8 @@ test('card style: @keyframes names and every reference get the Site prefix; stop
   assert.notEqual(out(css, 7), out(css, 8)); // two Sites using the same name don't collide
   assert.match(out(css, 8), /@keyframes cs8-wiggle\{.*animation:1s cs8-wiggle infinite/);
   assert.equal(out(`@media screen{@keyframes w\\69ggle{to{color:red}}}${N}{animation-name:wiggle}`), `@media screen{@keyframes cs7-wiggle{to{color:red}}}.cs-7 ${N}{animation-name:cs7-wiggle}`);
+  // a name handed over in a custom property gets the prefix too, so var() still finds the keyframes
+  assert.equal(out(`@keyframes wiggle{to{rotate:5deg}}${N}{--motion:wiggle;animation:var(--motion) 1s infinite}`), `@keyframes cs7-wiggle{to{rotate:5deg}}.cs-7 ${N}{--motion:cs7-wiggle;animation:var(--motion) 1s infinite}`);
   bad(`@keyframes w{${N}{color:red}}`, /Keyframes stop/);
   bad('@keyframes "w"{to{color:red}}', /plain name/);
 });

@@ -8,7 +8,7 @@ const { extOf } = require('./util');
 
 // bump on any change to the rules below or to the Card parts (PARTS, or their markup on /browse): any Card part change
 // is a breaking change. Startup rebuilds stored copies with an older version from source (src/server.js)
-const VERSION = 3;
+const VERSION = 4;
 const MAX_BYTES = 4096;
 const MAX_DEPTH = 16; // brackets of any kind; real card styles stay far below this
 const PARTS = ['card', 'shot', 'name', 'tagline', 'tags', 'stats'];
@@ -165,7 +165,8 @@ function check(ast, id, marker) {
     if (DENIED.has(prop)) no(`Property ${prop} is not allowed.`);
     const v = n.value.children;
     if (prop === 'position' && !(v.size === 1 && v.first.type === 'Identifier' && POSITIONS.has(name(v.first.name)))) no('Position can only be static, relative or absolute.');
-    if (prop === 'animation' || prop === 'animation-name') {
+    // a custom property may hand the name on to animation through var(), so it gets the prefix too
+    if (prop === 'animation' || prop === 'animation-name' || prop.startsWith('--')) {
       for (const x of v) if (x.type === 'Identifier' && frames.has(csstree.ident.decode(x.name))) x.name = csstree.ident.encode(prefix + csstree.ident.decode(x.name));
     }
   });
