@@ -1,6 +1,7 @@
 const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
+const { PARTS: CARD_PARTS, MAX_BYTES: CARD_MAX_BYTES, MAX_ART: CARD_MAX_ART, MAX_ART_BYTES: CARD_MAX_ART_BYTES } = require('./cardstyle');
 const W = require('./widgets');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -56,16 +57,21 @@ const siteList = (ctx, rows) => rows.length
   ? `<ul class="pups">${rows.map((r) => `<li><a href="${esc(ctx.cfg.siteUrl(r.username))}"${r.tagline ? ` title="${esc(r.tagline)}"` : ''}>${nameTag(ctx, r.username)}</a></li>`).join('')}</ul>`
   : `<p>The pad is clean. Make the first mess.</p>`;
 
-const shotImg = (ctx, r, link) => (r.shot
-  ? `<a href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
-  : `<a class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
+const shotImg = (ctx, r, link, part = '') => (r.shot
+  ? `<a${part} href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
+  : `<a${part} class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
 const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
-const cards = (ctx, rows) => (rows.length
-  ? `<ul class="grid">${rows.map((r) => `<li class="card${isSup(ctx, r.username) ? ' supporter' : ''}">${shotImg(ctx, r, ctx.cfg.siteUrl(r.username))}
-<div><a href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
-${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div class="t">${tagLinks(r.tags)}</div>` : ''}
-<div class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div></li>`).join('')}</ul>`
-  : `<p>The pad is clean. Make the first mess.</p>`);
+// parts: /browse only; adds the member root and the Card part hooks that card style targets (all six, even when empty).
+// A row with no id gets no scope class, so no card style reaches it: the Stock card on /dashboard/card
+const cards = (ctx, rows, parts = false) => {
+  const p = (name) => (parts ? ` data-part="${name}"` : '');
+  return rows.length
+    ? `<ul class="grid">${rows.map((r) => `<li class="card${parts && r.id ? ` cs-${r.id}` : ''}${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? '<div data-part="card">' : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
+<div><a${p('name')} href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
+${r.tagline || parts ? `<div${p('tagline')} class="t">${esc(r.tagline || '')}</div>` : ''}${r.tags || parts ? `<div${p('tags')} class="t">${r.tags ? tagLinks(r.tags) : ''}</div>` : ''}
+<div${p('stats')} class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div>${parts ? '</div>' : ''}</li>`).join('')}</ul>`
+    : `<p>The pad is clean. Make the first mess.</p>`;
+};
 
 const ATOM_LINK = (title, href) => `<link rel="alternate" type="application/atom+xml" title="${esc(title)}" href="${esc(href)}">`;
 const home = (ctx, { sotw, picks, recent, newest, total, supporters = 0 }) => layout(ctx, 'Home', `
@@ -92,16 +98,16 @@ ${picks.length ? `<section class="box split"><div><h2>Staff picks</h2>${cards(ct
 });
 
 const SORT_LABELS = { updated: 'Recently updated', newest: 'Newest', followed: 'Most followed', hits: 'Most visited' };
-const browse = (ctx, { rows, page, pages, sort, q }) => {
+const browse = (ctx, { rows, page, pages, sort, q, cardCss = '' }) => {
   const qs = q ? `&amp;q=${esc(encodeURIComponent(q))}` : '';
   return layout(ctx, 'Dog park', `
 <section class="box"><h2>The dog park <small>(page ${page} of ${pages})</small></h2>
 <form class="stack" method="get" action="/browse" role="search"><input type="hidden" name="sort" value="${esc(sort)}"><label for="q">Find a site by name or tag</label>
 <input type="search" id="q" name="q" maxlength="50" value="${esc(q)}"><button>Search</button></form>${q ? `<p><a href="/browse?sort=${sort}">Show every site</a></p>` : ''}
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}${qs}">${l}</a>`)).join(' ')}</p>
-${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows)}
-<p class="mt">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
-<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
+${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows, true)}
+<p class="mt pages">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
+<p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') + (cardCss ? `<style>${cardCss}</style>` : '') });
 };
 
 const EVENT_TEXT = { update: 'left a fresh update on their pad', join: 'joined' };
@@ -414,6 +420,8 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 <section class="box"><h2>My pad: ${esc(user.username)}</h2>${msg(m)}
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
+${d.cardCleared ? '<p class="err">An admin removed your card style. <a href="/dashboard/card">See why</a></p>' : ''}
+${d.cardError ? `<p class="err">${CARD_FAILS}. <a href="/dashboard/card">Fix it.</a></p>` : ''}
 <a class="addr" href="${esc(url)}" target="_blank">${esc(url)}</a>
 <div class="status">${meter('Space used', fmtBytes(d.used.total), `of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'}`, d.used.total / (d.quota * 1048576))}
 ${meter('Bandwidth today', fmtBytes(d.bandwidth), `of ${cfg.BANDWIDTH_MB} MB`, d.bandwidth / (cfg.BANDWIDTH_MB * 1048576))}
@@ -450,7 +458,8 @@ ${UPLOADER(ctx)}
 <div class="row"><input type="text" id="tags" name="tags" maxlength="130" value="${esc(user.tags)}"><button>Save</button></div></form>
 <form class="stack mt" method="post" action="/dashboard/hidden">${csrfField(ctx)}<input type="hidden" name="hidden" value="${user.hidden ? '0' : '1'}">
 <p class="note">${user.hidden ? 'Your site is hidden: it stays off the dog park, the home page, feeds and the webring, and asks search engines not to index it. Its address and profile still work.' : 'Want a quiet corner? Hide your site from browsing, feeds, the webring and search engines. Its address and profile keep working.'}</p>
-<button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form></section>
+<button>${user.hidden ? 'Show my site again' : 'Hide my site from browsing'}</button></form>
+${user.banned ? '' : '<p class="mt"><a href="/dashboard/card">Card style</a>: dress up your card in the dog park with a little CSS.</p>'}</section>
 
 <section class="box"><h2>Make it yours</h2><ul class="menu">
 ${user.banned ? '' : '<li><a href="/dashboard/style">Style editor</a><span>Colours, fonts and a background picture without writing CSS. It writes <code>puppypad.css</code> for you.</span></li>'}
@@ -552,6 +561,24 @@ if(ins)ins.addEventListener('click',function(){
 });
 })();</script>`, { tight: true, head });
 };
+
+// card style: the source as typed; a rejected save comes back here with its text and the error.
+// check: the saved card as /browse shows it (row, css), next to the Stock card, and why it is the Stock card when it is
+// the dashboard's line, and the start of /dashboard/card's, for a saved style the current sanitizer rejects
+const CARD_FAILS = 'Your card style no longer passes our checks, so your card shows the stock card';
+const cardStyle = (ctx, m, source, note, check) => layout(ctx, 'Card style', `
+<section class="box"><h2>Card style</h2>${note ? `<p class="err">An admin removed your card style: ${esc(note.reason)}</p>` : ''}${msg(m)}
+<p>A little CSS that dresses up your card in the <a href="/browse">dog park</a>. Save it empty to go back to the stock card.</p>
+${check.listed ? '' : '<p class="note">Your site isn\'t in the dog park right now, so nobody sees this card yet.</p>'}
+<p><b>${check.why ? `Your card shows the stock card because: ${esc(check.why)}.` : 'Your card shows your style.'}</b></p>
+${check.failing.length ? `<ul>${check.failing.map((f) => `<li><code>${esc(f.path)}</code>: ${esc(f.reason)}</li>`).join('')}</ul>` : ''}
+<p class="note">Your saved card, then the stock card, as the dog park shows them.</p>
+${cards(ctx, [check.row, { ...check.row, id: null }], true)}
+<form class="stack mt" method="post" action="/dashboard/card">${csrfField(ctx)}<label for="css">Your card's CSS</label>
+<textarea id="css" name="css" rows="14" spellcheck="false">${esc(source)}</textarea><button>Save</button></form>
+<p class="note">Style only the Card parts: ${CARD_PARTS.map((p) => `<code>[data-part="${p}"]</code>`).join(' ')}. Every selector names a part; <code>:has()</code> and <code>:not()</code> only qualify one, and parts combine only with a space (descendant) or <code>&gt;</code> (child).</p>
+<p class="note">Rules: up to ${CARD_MAX_BYTES / 1024} KB; at most ${CARD_MAX_ART} art files, each up to ${CARD_MAX_ART_BYTES / 1024} KB and only relative paths to your own PNG, JPEG, GIF, WebP or AVIF files (like <code>url(img/bone.png)</code>); no <code>position: fixed</code> or <code>sticky</code>; no <code>&lt;</code> outside strings (use <code>max-width</code> in <code>@media</code>); <code>@media</code> and <code>@keyframes</code> are fine.</p>
+<p><a href="/dashboard">Back to my pad</a></p></section>`, { head: check.css ? `<style>${check.css}</style>` : '' });
 
 const styleEditor = (ctx, m, { s, page, tail, offerLink, images }) => {
   const opts = (list, cur) => list.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
@@ -900,6 +927,9 @@ ${site ? `<p>Acting on <b>${esc(site)}</b>: <a href="${esc(ctx.cfg.siteUrl(site)
 <details class="mt"><summary>Supporter</summary>
 <form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}${siteField('ssite')}
 <label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365" required><button>Set supporter</button></form></details>
+<details><summary>Card style</summary>
+<form class="stack" method="post" action="/admin/card-clear">${csrfField(ctx)}${siteField('csite')}
+<label for="creason">Reason shown to the member</label><input type="text" id="creason" name="reason" maxlength="200" required><button>Clear card style</button></form></details>
 <details><summary>Staff picks and site of the week</summary>
 <p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
 The home page shows them while they are listed (not hidden, and past the new-site wait).</p>
@@ -952,4 +982,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, cardStyle, CARD_FAILS, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };

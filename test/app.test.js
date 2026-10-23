@@ -1383,6 +1383,322 @@ test('members tag their site, and the dog park finds sites by name or tag', asyn
   assert.doesNotMatch(await search('pixel'), /\/site\/tagdog/);
 });
 
+test('every /browse card carries the six Card parts, with or without a screenshot', async () => {
+  for (const name of ['partshot', 'partnone']) {
+    const m = await member(name);
+    await upload(m, 'index.html', '<h1>parts</h1>');
+    db.prepare("UPDATE users SET created_at = ?, tagline = 'hi', tags = 'parts' WHERE username = ?").run(Date.now() - 25 * 3600000, name);
+  }
+  db.prepare('UPDATE users SET shot_dirty = 1 WHERE username = ?').run('partshot');
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7)]);
+  assert.equal((await req('post', '/internal/shots/partshot').set('x-shot-token', 'test-shot-token').set('Content-Type', 'application/octet-stream').send(jpg)).status, 204);
+  // a bare site with no tagline and no tags still gets every hook
+  const bare = await member('partbare');
+  await upload(bare, 'index.html', '<h1>bare</h1>');
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'partbare');
+  const page = (await req('get', '/browse?q=part')).text;
+  assert.match(page, /<div data-part="tagline" class="t"><\/div><div data-part="tags" class="t"><\/div>/);
+  for (const name of ['partshot', 'partnone', 'partbare']) {
+    const { id } = db.prepare('SELECT id FROM users WHERE username = ?').get(name);
+    // the scope class sits on the outer card, so the scoped selector `.cs-<id> [data-part=card]` reaches the inner root
+    const card = page.match(new RegExp(`<li class="card cs-${id}[^"]*"><div data-part="card">[^]*?/site/${name}[^]*?</li>`));
+    assert.ok(card, `${name} has an outer card keyed by its id around the inner card root`);
+    for (const part of ['shot', 'name', 'tagline', 'tags', 'stats']) assert.match(card[0], new RegExp(`data-part="${part}"`), `${name} has ${part}`);
+    assert.match(card[0], new RegExp(`<a data-part="name" href="[^"]*${name}[^"]*"><b>`));
+  }
+  assert.match(page, /<a data-part="shot" href="[^"]*"><img class="shot"/);
+  assert.match(page, /<a data-part="shot" class="shot none"/);
+  // other card surfaces keep the stock markup
+  assert.doesNotMatch((await req('get', '/')).text, /data-part/);
+});
+
+// a member whose site is old and edited, so its card shows on /browse
+async function listedMember(name) {
+  const m = await member(name);
+  await upload(m, 'index.html', '<h1>card</h1>');
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, name);
+  m.id = db.prepare('SELECT id FROM users WHERE username = ?').get(name).id;
+  return m;
+}
+const saveCard = (m, css) => req('post', '/dashboard/card').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, css });
+// the member <style> on /browse, or null when the page sends none
+const memberCss = async (q) => (await req('get', `/browse?q=${q}`)).text.match(/<head>[^]*<\/head>/)[0].match(/<style>([^]*?)<\/style>/)?.[1] ?? null;
+
+test('a card style saved on /dashboard/card shows on /browse, scoped to that card', async () => {
+  const m = await listedMember('cardsave');
+  assert.equal(await memberCss('cardsave'), null);
+  const dash = (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+  assert.match(dash, /href="\/dashboard\/card"/);
+
+  const css = '[data-part=card] { transform: rotate(2deg) }';
+  const res = await saveCard(m, css);
+  assert.equal(res.status, 302);
+  assert.match(res.headers.location, /^\/dashboard\/card\?ok=/);
+  assert.equal(await memberCss('cardsave'), `.cs-${m.id} [data-part=card]{transform:rotate(2deg)}`);
+  // the page shows the source exactly as typed
+  assert.match((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text, /<textarea[^>]*>\[data-part=card\] \{ transform: rotate\(2deg\) \}<\/textarea>/);
+  // the inline style comes after site.css, and /browse is never cached
+  const page = await req('get', '/browse?q=cardsave');
+  assert.match(page.text, /<link rel="stylesheet" href="\/site\.css[^"]*">[^]*<style>/);
+  assert.doesNotMatch(page.headers['cache-control'] || '', /public|max-age=[1-9]/);
+  assert.match(page.headers['cache-control'], /no-store/);
+});
+
+test('a rejected card style save keeps the typed text and the old style; an empty save is the stock card again', async () => {
+  const m = await listedMember('cardreject');
+  const stock = (await req('get', '/browse?q=cardreject')).text;
+  await saveCard(m, '[data-part=name] { color: red }');
+  const live = await memberCss('cardreject');
+
+  const bad = await saveCard(m, '.foo { color: <b>blue</b> }');
+  assert.equal(bad.status, 400); // the page again, no redirect
+  assert.match(bad.text, /<p class="err" role="alert">Not saved: [^<]*<\/p>[^]*<textarea[^>]*>\.foo \{ color: &lt;b&gt;blue&lt;\/b&gt; \}<\/textarea>/);
+  const big = await saveCard(m, `[data-part=name] { color: red } /*${'x'.repeat(4096)}*/`);
+  assert.match(big.text, /Not saved: Card style is over 4096 bytes\./);
+  assert.equal(await memberCss('cardreject'), live);
+
+  assert.match((await saveCard(m, '  \n')).headers.location, /^\/dashboard\/card\?ok=/);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM card_styles WHERE user_id = ?').get(m.id).n, 0);
+  assert.equal(await memberCss('cardreject'), null);
+  assert.match((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text, /<textarea[^>]*><\/textarea>/);
+  assert.equal((await req('get', '/browse?q=cardreject')).text.replace(/_csrf" value="[^"]*"/g, ''), stock.replace(/_csrf" value="[^"]*"/g, ''));
+});
+
+test('a sanitizer version bump rebuilds stale card styles; one it rejects shows the stock card and says so until fixed', async () => {
+  const { VERSION } = require('../src/cardstyle');
+  const ok = await listedMember('cardstale');
+  const bad = await listedMember('cardnowbad');
+  await saveCard(ok, '[data-part=card] { color: red }');
+  await saveCard(bad, '[data-part=card] { color: blue }');
+  // as if both were saved under an older sanitizer: stale copies, and a source the current one rejects
+  db.prepare("UPDATE card_styles SET version = ?, css = '.stale{}' WHERE user_id IN (?, ?)").run(VERSION - 1, ok.id, bad.id);
+  const rejected = '[data-part=card] { position: fixed }';
+  db.prepare('UPDATE card_styles SET source = ? WHERE user_id = ?').run(rejected, bad.id);
+  // a stale copy is never served, even before the rebuild
+  assert.equal(await memberCss('cardstale'), null);
+
+  app.rebuildCardStyles();
+  assert.equal(await memberCss('cardstale'), `.cs-${ok.id} [data-part=card]{color:red}`);
+  assert.equal(await memberCss('cardnowbad'), null);
+  const page = (await req('get', '/dashboard/card').set('Cookie', bad.cookie)).text;
+  assert.match(page, /<p class="err" role="alert">[^<]*stock card: Position[^<]*<\/p>[^]*<textarea[^>]*>\[data-part=card\] \{ position: fixed \}<\/textarea>/);
+  const line = /<p class="err">Your card style no longer passes our checks, so your card shows the stock card\. <a href="\/dashboard\/card">Fix it\.<\/a><\/p>/g;
+  assert.equal((await req('get', '/dashboard').set('Cookie', bad.cookie)).text.match(line)?.length, 1);
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', ok.cookie)).text, line);
+  assert.doesNotMatch((await req('get', '/dashboard/card').set('Cookie', ok.cookie)).text, /class="err"/);
+
+  await saveCard(bad, '[data-part=card] { color: green }');
+  assert.doesNotMatch((await req('get', '/dashboard/card').set('Cookie', bad.cookie)).text, /class="err"/);
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', bad.cookie)).text, line);
+  assert.equal(await memberCss('cardnowbad'), `.cs-${bad.id} [data-part=card]{color:green}`);
+});
+
+test('card style goes with its Site or Login, and only the current Site\'s owner can save it', async () => {
+  const a = await listedMember('cardowner');
+  const b = await listedMember('cardother');
+  // the form saves for the current Site only; nothing in it names another
+  await req('post', '/dashboard/card').set('Cookie', b.cookie).type('form').send({ _csrf: b.csrf, css: '[data-part=card] { color: red }', site: 'cardowner', user_id: a.id });
+  assert.equal(await memberCss('cardowner'), null);
+  assert.match(await memberCss('cardother'), new RegExp(`^\\.cs-${b.id} `));
+  // someone else's session token can't save it
+  assert.equal((await req('post', '/dashboard/card').set('Cookie', a.cookie).type('form').send({ _csrf: b.csrf, css: '[data-part=card] { color: blue }' })).status, 403);
+  assert.equal((await req('post', '/dashboard/card').type('form').send({ css: '[data-part=card] { color: blue }' })).headers.location, '/login');
+
+  // a banned Site can't open or post the page, and its link is hidden
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(b.id);
+  assert.equal((await req('get', '/dashboard/card').set('Cookie', b.cookie)).headers.location, '/dashboard');
+  assert.equal((await saveCard(b, '[data-part=card] { color: blue }')).headers.location, '/dashboard');
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', b.cookie)).text, /\/dashboard\/card/);
+
+  // deleting the Site (here, its Login) deletes the row
+  await saveCard(a, '[data-part=card] { color: red }');
+  const count = (id) => db.prepare('SELECT COUNT(*) n FROM card_styles WHERE user_id = ?').get(id).n;
+  assert.equal(count(a.id), 1);
+  await req('post', '/dashboard/delete-account').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, password: 'longpassword1' });
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE id = ?').get(a.id).n, 0);
+  assert.equal(count(a.id), 0);
+  db.prepare('DELETE FROM users WHERE id = ?').run(b.id);
+  assert.equal(count(b.id), 0);
+});
+
+// card art goes straight onto disk, as any route that writes Site files would leave it
+const { siteDir } = require('../src/sitefiles');
+const PNG = (n = 100) => Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(n - 8, 1)]);
+const GIF = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(40, 2)]);
+const artFile = (site, rel, data) => {
+  const full = path.join(siteDir(site), rel);
+  fs.rmSync(full, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  if (data === 'folder') fs.mkdirSync(full); else if (data) fs.writeFileSync(full, data);
+  return full;
+};
+const vOf = (full) => { const s = fs.statSync(full); return `${Math.floor(s.mtimeMs)}-${s.size}`; };
+
+test('card art: own-Site images on cards, and the stock card when any art file fails', async () => {
+  const m = await listedMember('artpad');
+  const res = await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") } [data-part=name]::after { content: ""; background: image-set("b.gif" 1x) }');
+  // a style with missing art still saves; the page lists each failing file with its reason
+  assert.equal(res.status, 302);
+  assert.match(decodeURIComponent(res.headers.location), /^\/dashboard\/card\?ok=Saved your card style\./);
+  const artList = async () => (await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.replace(/&#39;/g, "'");
+  const ok = await artList();
+  assert.match(ok, /art\/it's here\.png<\/code>: missing/);
+  assert.match(ok, /b\.gif<\/code>: missing/);
+  assert.equal(await memberCss('artpad'), null); // the stock card, with no CSS
+  assert.equal((await req('get', '/card-art/artpad/b.gif')).status, 404);
+
+  const png = artFile('artpad', "art/it's here.png", PNG());
+  const gif = artFile('artpad', 'b.gif', GIF);
+  // a path with a space and a quote comes out quoted and percent-encoded
+  const url = `/card-art/artpad/art/it's%20here.png?v=${vOf(png)}`;
+  assert.equal(await memberCss('artpad'), `.cs-${m.id} [data-part=card]{background:url("${url}")}.cs-${m.id} [data-part=name]::after{content:"";background:image-set("/card-art/artpad/b.gif?v=${vOf(gif)}"1x)}`);
+
+  const bw = () => db.prepare('SELECT bw_bytes FROM users WHERE id = ?').get(m.id).bw_bytes;
+  const before = bw();
+  const art = await req('get', url).buffer(true);
+  assert.equal(art.status, 200);
+  assert.deepEqual(art.body, PNG());
+  assert.equal(art.headers['content-type'], 'image/png');
+  assert.equal(art.headers['content-security-policy'], 'sandbox');
+  assert.equal(art.headers['x-content-type-options'], 'nosniff');
+  assert.equal(art.headers['cache-control'], 'public, max-age=86400');
+  assert.equal((await req('get', '/card-art/artpad/b.gif')).headers['content-type'], 'image/gif');
+  assert.equal(bw(), before); // card art doesn't count toward bandwidth
+  // hotlinked or not, the hotlink limiter doesn't apply
+  for (let i = 0; i < 70; i++) assert.equal((await req('get', url).set('Referer', 'https://elsewhere.example/')).status, 200);
+
+  // replacing a file changes its v; an old v still gets the current file
+  artFile('artpad', "art/it's here.png", PNG(200));
+  assert.match(await memberCss('artpad'), new RegExp(`v=${vOf(png)}"`));
+  assert.equal((await req('get', url).buffer(true)).body.length, 200);
+
+  // /browse and /card-art agree: 512 KB passes, one byte over doesn't; nor does a fake PNG, a folder or a deleted file
+  artFile('artpad', "art/it's here.png", PNG(512 * 1024));
+  assert.notEqual(await memberCss('artpad'), null);
+  assert.equal((await req('get', url)).status, 200);
+  for (const data of [PNG(512 * 1024 + 1), Buffer.from('not a png at all, really'), 'folder', null]) {
+    artFile('artpad', "art/it's here.png", data);
+    assert.equal(await memberCss('artpad'), null, String(data).slice(0, 20));
+    const r = await req('get', url);
+    assert.equal(r.status, 404);
+    assert.equal(r.headers['content-security-policy'], 'sandbox');
+    assert.equal(r.headers['x-content-type-options'], 'nosniff');
+  }
+  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png"), url(b.gif) }');
+  const saved = await artList();
+  assert.match(saved, /art\/it's here\.png<\/code>: missing/);
+  assert.doesNotMatch(saved, /b\.gif<\/code>:/); // only failing files are listed
+  artFile('artpad', "art/it's here.png", Buffer.from('not a png at all, really'));
+  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") }');
+  assert.match(await artList(), /not a real PNG/);
+  artFile('artpad', "art/it's here.png", PNG());
+
+  // 404 for a file the style doesn't use, an svg, traversal, and Sites /browse leaves out
+  artFile('artpad', 'other.png', PNG());
+  artFile('artpad', 'x.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  for (const p of ['other.png', 'x.svg', '%2e%2e/artpad/b.gif', 'art/%2e%2e/b.gif', 'art/..%2fb.gif']) assert.equal((await req('get', `/card-art/artpad/${p}`)).status, 404, p);
+  assert.equal((await req('get', url)).status, 200);
+  for (const [col, val] of [['hidden', 1], ['banned', 1], ['verified', 0], ['updates', 0]]) {
+    db.prepare(`UPDATE users SET ${col} = ? WHERE id = ?`).run(val, m.id);
+    assert.equal((await req('get', url)).status, 404, col);
+    db.prepare(`UPDATE users SET ${col} = ? WHERE id = ?`).run(val ? 0 : 1, m.id);
+  }
+  assert.equal((await req('get', url)).status, 200);
+});
+
+// one side of a page: the card with this scope class and the member <style> in the head, or null for each
+const cardSide = (html, id) => ({ li: html.match(new RegExp(`<li class="card cs-${id}[ "][^]*?</li>`))?.[0] ?? null, css: html.match(/<head>[^]*<\/head>/)[0].match(/<style>([^]*?)<\/style>/)?.[1] ?? null });
+
+test('/dashboard/card shows the saved card as /browse does, next to the stock card, and says why', async () => {
+  const m = await listedMember('cardcheck');
+  const page = async () => (await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.replace(/&#39;/g, "'");
+  const browse = async () => cardSide((await req('get', '/browse?q=cardcheck')).text, m.id);
+  let p = await page();
+  assert.match(p, /Your card shows the stock card because: you haven't saved a card style\./);
+  // the reference: all six parts and the rules
+  for (const part of ['card', 'shot', 'name', 'tagline', 'tags', 'stats']) assert.ok(p.includes(`<code>[data-part="${part}"]</code>`), part);
+  for (const rule of ['4 KB', 'at most 8 art files', 'PNG, JPEG, GIF, WebP or AVIF', '<code>position: fixed</code>', '<code>sticky</code>', '<code>@keyframes</code>']) assert.ok(p.includes(rule), rule);
+  assert.doesNotMatch(p, /isn't in the dog park/);
+
+  await saveCard(m, '[data-part=card] { transform: rotate(2deg) }');
+  p = await page();
+  assert.match(p, /Your card shows your style\./);
+  assert.doesNotMatch(p, /because:/);
+  assert.ok(cardSide(p, m.id).css);
+  assert.deepEqual(cardSide(p, m.id), await browse());
+  // beside it, the stock card: the same card without the scope class, so no member CSS reaches it
+  const all = p.match(/<li class="card[ "][^]*?<\/li>/g);
+  assert.equal(all.length, 2);
+  assert.doesNotMatch(all[1], /cs-\d/);
+  assert.equal(all[1].replace(/<li class="[^"]*">/, ''), all[0].replace(/<li class="[^"]*">/, ''));
+
+  // failing art saves; the result and the page list only the failing files, with reasons
+  artFile('cardcheck', 'ok.png', PNG());
+  const res = await saveCard(m, '[data-part=card] { background: url(ok.png), url(gone.gif) }');
+  assert.equal(decodeURIComponent(res.headers.location), '/dashboard/card?ok=Saved your card style.');
+  p = await page();
+  assert.match(p, /Your card shows the stock card because: some of its art files don't work\./);
+  assert.match(p, /<li><code>gone\.gif<\/code>: missing<\/li>/);
+  assert.doesNotMatch(p, /<code>ok\.png<\/code>:/);
+  assert.equal(cardSide(p, m.id).css, null);
+  assert.deepEqual(cardSide(p, m.id), await browse());
+
+  // a style the sanitizer now rejects
+  db.prepare("UPDATE card_styles SET css = NULL, error = 'Position fixed is not allowed.' WHERE user_id = ?").run(m.id);
+  p = await page();
+  assert.match(p, /Your card shows the stock card because: Position fixed is not allowed\./);
+  assert.doesNotMatch(p, /gone\.gif<\/code>:/);
+  assert.deepEqual(cardSide(p, m.id), await browse());
+
+  // a hidden Site sees the note and can still save
+  await req('post', '/dashboard/hidden').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, hidden: '1' });
+  assert.match((await saveCard(m, '[data-part=name] { color: red }')).headers.location, /^\/dashboard\/card\?ok=/);
+  p = await page();
+  assert.match(p, /Your site isn't in the dog park right now, so nobody sees this card yet\./);
+  assert.match(p, /Your card shows your style\./);
+  assert.match(cardSide(p, m.id).css, /color:red/);
+});
+
+test('card art: a hidden or new Site sees its own art in the /dashboard/card preview; nobody else does', async () => {
+  const m = await listedMember('arthide');
+  const other = await member('artpeek');
+  const png = artFile('arthide', 'pup.png', PNG());
+  await saveCard(m, '[data-part=card] { background: url(pup.png) }');
+  const url = `/card-art/arthide/pup.png?v=${vOf(png)}`;
+  await req('post', '/dashboard/hidden').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, hidden: '1' });
+  for (const setup of [() => {}, () => db.prepare('UPDATE users SET hidden = 0, created_at = ? WHERE id = ?').run(Date.now(), m.id)]) {
+    setup();
+    assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(url.replace(/'/g, '&#39;')));
+    assert.equal((await req('get', url)).status, 404);
+    assert.equal((await req('get', url).set('Cookie', other.cookie)).status, 404);
+    const own = await req('get', url).set('Cookie', m.cookie).buffer(true);
+    assert.equal(own.status, 200);
+    assert.deepEqual(own.body, PNG());
+    assert.equal(own.headers['cache-control'], 'private, no-store'); // never cached for others while the Site is unlisted
+    assert.equal(own.headers['content-security-policy'], 'sandbox');
+  }
+  // every other check still applies
+  artFile('arthide', 'pup.png', Buffer.from('not a png at all, really'));
+  assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
+  artFile('arthide', 'other.png', PNG());
+  assert.equal((await req('get', '/card-art/arthide/other.png').set('Cookie', m.cookie)).status, 404);
+  artFile('arthide', 'pup.png', PNG());
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(m.id);
+  assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
+});
+
+test('card art: after a Site rename, art points at the new name with no re-save; the old name is a 404', async () => {
+  const m = await listedMember('artold');
+  artFile('artold', 'pup.png', PNG());
+  await saveCard(m, '[data-part=card] { background: url(pup.png) }');
+  assert.match(await memberCss('artold'), /url\("\/card-art\/artold\/pup\.png\?v=/);
+  const r = await req('post', '/dashboard/rename').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username: 'artnew', password: 'longpassword1' });
+  assert.equal(r.status, 302);
+  assert.match(await memberCss('artnew'), new RegExp(`^\\.cs-${m.id} \\[data-part=card\\]\\{background:url\\("/card-art/artnew/pup\\.png\\?v=`));
+  assert.equal((await req('get', '/card-art/artnew/pup.png')).status, 200);
+  assert.equal((await req('get', '/card-art/artold/pup.png')).status, 404);
+});
+
 test('feed updates name the files they changed, folded into one event per hour', async () => {
   const a = await member('filedog');
   const f = await member('filefan');
@@ -1589,7 +1905,7 @@ const eventOf = (name) => db.prepare('SELECT e.id FROM events e JOIN users u ON 
 test('"act" on /admin fills every site box with that name, escaped', async () => {
   const boss = await bossLogin();
   const page = (await req('get', '/admin?site=picked').set('Cookie', boss.cookie)).text;
-  for (const id of ['bsite', 'ssite', 'fsite']) assert.match(page, new RegExp(`id="${id}" name="site" value="picked"`), id);
+  for (const id of ['bsite', 'ssite', 'fsite', 'csite']) assert.match(page, new RegExp(`id="${id}" name="site" value="picked"`), id);
   assert.match(page, /Acting on <b>picked<\/b>/);
   const evil = (await req('get', `/admin?site=${encodeURIComponent('"><script>x</script>')}`).set('Cookie', boss.cookie)).text;
   assert.ok(!evil.includes('<script>x'));
@@ -1627,6 +1943,72 @@ test('staff picks and the site of the week are set from /admin and shown on the 
   assert.deepEqual(db.prepare("SELECT action FROM admin_log WHERE action IN ('staff pick', 'site of the week', 'remove staff pick') AND site = 'picked' ORDER BY id").all().map((r) => r.action), ['staff pick', 'site of the week', 'remove staff pick']);
   // members can't do it
   assert.equal((await post(m, '/admin/feature', { site: 'picked', action: 'pick' })).status, 404);
+});
+
+// one admin login for the card clearing tests, so they don't use up the login rate limit later tests need
+let cardBossLogin;
+const cardBoss = () => (cardBossLogin ??= bossLogin());
+
+test('an admin clears a card style from /admin: the stock card again, one log row with the reason', async () => {
+  const boss = await cardBoss();
+  const m = await listedMember('cardclear');
+  await saveCard(m, '[data-part=card] { transform: rotate(9deg) }');
+  assert.ok(await memberCss('cardclear'));
+  assert.match((await req('get', '/admin?site=cardclear').set('Cookie', boss.cookie)).text, /<summary>Card style<\/summary>[^]*action="\/admin\/card-clear"[^]*id="csite" name="site" value="cardclear"[^]*<button>Clear card style<\/button>/);
+
+  const res = await post(boss, '/admin/card-clear', { site: 'cardclear', reason: `  ${'r'.repeat(250)}` });
+  assert.match(res.text, /<p class="ok" role="status">Cleared the card style of cardclear\.<\/p>/);
+  assert.equal(await memberCss('cardclear'), null);
+  assert.equal((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.match(/<textarea[^>]*>([^<]*)</)[1], '');
+  const rows = db.prepare("SELECT admin, action, detail FROM admin_log WHERE site = 'cardclear'").all();
+  assert.deepEqual(rows, [{ admin: 'boss', action: 'clear card style', detail: 'r'.repeat(200) }]);
+});
+
+test('the member sees why their card style was cleared until their next passing save', async () => {
+  const boss = await cardBoss();
+  const m = await listedMember('cardnoted');
+  await saveCard(m, '[data-part=card] { color: red }');
+  await post(boss, '/admin/card-clear', { site: 'cardnoted', reason: 'rude <words>' });
+  const notice = 'An admin removed your card style: rude &lt;words&gt;';
+  assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
+  const errLines = (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/<p class="err"[^]*?<\/p>/g) || [];
+  assert.equal(errLines.filter((l) => l.includes('href="/dashboard/card"')).length, 1);
+  // a rejected save keeps the note; a passing one, even empty, removes it
+  await saveCard(m, '.foo { color: <b>blue</b> }');
+  assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
+  await saveCard(m, '');
+  assert.ok(!(await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes('An admin removed'));
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /<p class="err"[^<]*<a href="\/dashboard\/card"/);
+  // the member may save again at once
+  await saveCard(m, '[data-part=card] { color: blue }');
+  assert.ok(await memberCss('cardnoted'));
+});
+
+test('clearing a card style: nothing to clear writes nothing, takedown leaves it alone, members are refused', async () => {
+  const boss = await cardBoss();
+  const m = await listedMember('cardkept');
+  const logRows = () => db.prepare("SELECT COUNT(*) n FROM admin_log WHERE action = 'clear card style'").get().n;
+  const before = logRows();
+  assert.match((await post(boss, '/admin/card-clear', { site: 'nosuchcardsite', reason: 'x' })).text, /No site with that name\./);
+  assert.match((await post(boss, '/admin/card-clear', { site: 'cardkept', reason: 'x' })).text, /No card style on that site\./);
+  assert.equal(logRows(), before);
+  assert.ok(!(await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes('An admin removed'));
+
+  await saveCard(m, '[data-part=card] { color: red }');
+  // a member can't clear one
+  assert.equal((await post(m, '/admin/card-clear', { site: 'cardkept', reason: 'x' })).status, 404);
+  assert.ok(await memberCss('cardkept'));
+
+  const live = db.prepare('SELECT source, css FROM card_styles WHERE user_id = ?').get(m.id);
+  await post(boss, '/admin/ban', { site: 'cardkept', action: 'ban', reason: 'spam' });
+  assert.deepEqual(db.prepare('SELECT source, css FROM card_styles WHERE user_id = ?').get(m.id), live);
+  await post(boss, '/admin/ban', { site: 'cardkept', action: 'unban' });
+  assert.deepEqual(db.prepare('SELECT source, css FROM card_styles WHERE user_id = ?').get(m.id), live);
+
+  // a taken-down Site can still be cleared
+  await post(boss, '/admin/ban', { site: 'cardkept', action: 'ban', reason: 'spam' });
+  assert.match((await post(boss, '/admin/card-clear', { site: 'cardkept', reason: 'x' })).text, /Cleared the card style of cardkept\./);
+  assert.equal(logRows(), before + 1);
 });
 
 test('profile comments: members comment, bots and floods are stopped, and only the owner deletes', async () => {

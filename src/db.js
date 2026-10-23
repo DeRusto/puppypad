@@ -116,6 +116,24 @@ CREATE TABLE IF NOT EXISTS blocks (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (blocker_id, blocked_id)
 );
+-- a Site's card style on /browse. source is the truth, exactly as typed; css, art (JSON list of Site file paths the
+-- css placeholders index into) and version are derived by src/cardstyle.js. css is NULL when the sanitizer at
+-- version rejects source, and error says why; startup rebuilds every row whose version is older than the sanitizer's
+CREATE TABLE IF NOT EXISTS card_styles (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  css TEXT,
+  error TEXT,
+  art TEXT NOT NULL DEFAULT '[]',
+  version INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- why an admin cleared a Site's card style, shown to the member until their next passing save
+CREATE TABLE IF NOT EXISTS card_notes (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_event ON comments(event_id);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);

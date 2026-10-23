@@ -56,7 +56,7 @@ pre{padding:8px;overflow-x:auto;border:2px inset var(--edge);margin:0 0 10px}
 .b88{display:inline-flex;width:88px;height:31px;align-items:center;justify-content:center;text-align:center;font:700 10px/1.05 Verdana,sans-serif;border:2px outset var(--edge);background:var(--ink);color:var(--pee);text-transform:uppercase;text-decoration:none}
 footer{text-align:center;font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;list-style:none;margin:0;padding:0}
-.card{display:flex;flex-direction:column;gap:4px;min-width:0}
+.card,.card>[data-part=card]{display:flex;flex-direction:column;gap:4px;min-width:0}.card [data-part]:empty{display:none}
 .card .t,.t{font-size:13px;color:var(--soft)}
 .sotw{display:grid;grid-template-columns:minmax(0,320px) 1fr;gap:20px;align-items:start}.sotw h3{margin-top:0}
 .shot{display:block;aspect-ratio:4/3;width:100%;height:auto;max-width:100%;border:3px outset #9fd0f0;background:#eaf5fd;object-fit:cover;object-position:top}
@@ -68,6 +68,19 @@ footer{text-align:center;font-size:13px}
 .supporter .shot{border:4px solid transparent;background:linear-gradient(#eaf5fd,#eaf5fd) padding-box,linear-gradient(90deg,#ff5f6d,#ffc371,#ffe14d,#47e891,#4fb3ff,#b07bff,#ff5f6d) 0 0/200% 100% border-box;animation:rainbow 6s linear infinite}
 @keyframes rainbow{to{background-position:0 0,200% 0}}
 @media (prefers-reduced-motion:reduce){.supporter .shot{animation:none}}
+/* Card style guardrails: member card CSS on /browse is never in a layer, so these layered !important rules beat it at any weight.
+   The outer card clips member art to 24px past its edge; nothing in it takes clicks from pseudo-elements; the page controls sit above it;
+   the Supporter frame and the name and [profile] link can't be undone. Member CSS can't open @layer (src/cardstyle.js). */
+@layer guard{
+.card{position:relative!important;isolation:isolate!important;clip-path:inset(-24px)!important}
+.card::before,.card::after,.card *::before,.card *::after{pointer-events:none!important}
+header nav,form[role=search],.sorts,.pages{position:relative!important;z-index:2147483647!important}
+.supporter img.shot{border:4px solid transparent!important;background:linear-gradient(#eaf5fd,#eaf5fd) padding-box,linear-gradient(90deg,#ff5f6d,#ffc371,#ffe14d,#47e891,#4fb3ff,#b07bff,#ff5f6d) 0 0/200% 100% border-box!important;animation:rainbow 6s linear infinite!important}
+@media (prefers-reduced-motion:reduce){.supporter img.shot{animation:none!important}}
+.card [data-part=name],.card [data-part=name]+a{display:inline!important;visibility:visible!important;opacity:1!important;clip-path:none!important;mask:none!important}
+.card [data-part=card]>div:has(>[data-part=name]){display:block!important;visibility:visible!important;opacity:1!important;clip-path:none!important;mask:none!important;content-visibility:visible!important}
+.card>[data-part=card]{display:flex!important;visibility:visible!important;opacity:1!important;clip-path:none!important;mask:none!important;content-visibility:visible!important}
+}
 .feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .feed li{display:flex;gap:10px;align-items:flex-start}
 .cmt{border-left:3px solid var(--edge);padding:2px 8px;margin:6px 0;background:#fff}.social{font-size:14px;margin-top:4px}.new{background:var(--pee)}.feed .shot{width:96px;flex:none;border-width:2px}
