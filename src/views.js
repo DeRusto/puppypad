@@ -56,16 +56,20 @@ const siteList = (ctx, rows) => rows.length
   ? `<ul class="pups">${rows.map((r) => `<li><a href="${esc(ctx.cfg.siteUrl(r.username))}"${r.tagline ? ` title="${esc(r.tagline)}"` : ''}>${nameTag(ctx, r.username)}</a></li>`).join('')}</ul>`
   : `<p>The pad is clean. Make the first mess.</p>`;
 
-const shotImg = (ctx, r, link) => (r.shot
-  ? `<a href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
-  : `<a class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
+const shotImg = (ctx, r, link, part = '') => (r.shot
+  ? `<a${part} href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
+  : `<a${part} class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
 const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
-const cards = (ctx, rows) => (rows.length
-  ? `<ul class="grid">${rows.map((r) => `<li class="card${isSup(ctx, r.username) ? ' supporter' : ''}">${shotImg(ctx, r, ctx.cfg.siteUrl(r.username))}
-<div><a href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
-${r.tagline ? `<div class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div class="t">${tagLinks(r.tags)}</div>` : ''}
-<div class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div></li>`).join('')}</ul>`
-  : `<p>The pad is clean. Make the first mess.</p>`);
+// parts: /browse only; adds the member root and the Card part hooks that card style targets (all six, even when empty)
+const cards = (ctx, rows, parts = false) => {
+  const p = (name) => (parts ? ` data-part="${name}"` : '');
+  return rows.length
+    ? `<ul class="grid">${rows.map((r) => `<li class="card${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? `<div data-part="card" class="cs-${r.id}">` : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
+<div><a${p('name')} href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
+${r.tagline || parts ? `<div${p('tagline')} class="t">${esc(r.tagline || '')}</div>` : ''}${r.tags || parts ? `<div${p('tags')} class="t">${r.tags ? tagLinks(r.tags) : ''}</div>` : ''}
+<div${p('stats')} class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div>${parts ? '</div>' : ''}</li>`).join('')}</ul>`
+    : `<p>The pad is clean. Make the first mess.</p>`;
+};
 
 const ATOM_LINK = (title, href) => `<link rel="alternate" type="application/atom+xml" title="${esc(title)}" href="${esc(href)}">`;
 const home = (ctx, { sotw, picks, recent, newest, total, supporters = 0 }) => layout(ctx, 'Home', `
@@ -99,7 +103,7 @@ const browse = (ctx, { rows, page, pages, sort, q }) => {
 <form class="stack" method="get" action="/browse" role="search"><input type="hidden" name="sort" value="${esc(sort)}"><label for="q">Find a site by name or tag</label>
 <input type="search" id="q" name="q" maxlength="50" value="${esc(q)}"><button>Search</button></form>${q ? `<p><a href="/browse?sort=${sort}">Show every site</a></p>` : ''}
 <p class="sorts">Sort: ${Object.entries(SORT_LABELS).map(([k, l]) => (k === sort ? `<b>${l}</b>` : `<a href="/browse?sort=${k}${qs}">${l}</a>`)).join(' ')}</p>
-${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows)}
+${q && !rows.length ? '<p>No sites match that search.</p>' : cards(ctx, rows, true)}
 <p class="mt">${page > 1 ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page - 1}">&lt;&lt; Prev</a>` : ''} ${page < pages ? `<a href="/browse?sort=${sort}${qs}&amp;page=${page + 1}">Next &gt;&gt;</a>` : ''}</p>
 <p class="note"><a href="/feed.xml">Follow recently updated sites in a feed reader</a> (Atom).</p></section>`, { noindex: !!q, description: 'Browse homepages hosted on PuppyPad \u2014 the dog park. Fresh, hand-written websites. No feeds, no algorithm.', path: page === 1 && sort === 'updated' ? '/browse' : `/browse?sort=${sort}&page=${page}`, head: ATOM_LINK(`${ctx.cfg.SITE_NAME}: recently updated`, '/feed.xml') });
 };
