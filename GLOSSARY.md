@@ -31,3 +31,7 @@ _Avoid_: card element, card hook
 **Card art**:
 The images from a site's own files that its card style shows on its card. A card can only show images from its own site.
 _Avoid_: card images, card assets
+
+**Stock card**:
+A site's card in the browse grid as it looks with no card style. A site with a card style shows the stock card instead whenever that style is rejected or any of its card art fails to load.
+_Avoid_: default card, plain card, fallback card
