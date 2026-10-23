@@ -493,13 +493,36 @@ main.get('/', (req, res) => res.send(V.home(req.ctx, {
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
 const WITH_FOLLOWERS = `SELECT u.*, (SELECT COUNT(*) FROM follows f WHERE f.followed_id = u.id) AS followers FROM users u`;
 const hasShot = (r) => ({ ...r, shot: fs.existsSync(shotPath(r.username)) });
-// the stored card style output of every card on the page that has a current one, in card order; '' when none
+// a Site's card art, through the art check: [{ path, reason, v }], reason null for a file that passes
+const artOf = (username, art) => cardstyle.checkArt(siteDir(username), art);
+const artUrl = (username, f) => `/card-art/${username}/${f.path.split('/').map(encodeURIComponent).join('/')}?v=${f.v}`;
+// the card style CSS of every card on the page that has a current one, in card order, art filled in; '' when none.
+// A card with any failing art file adds nothing, so it shows as the Stock card. Checked every request, like hasShot.
 const cardCssFor = (rows) => {
   if (!rows.length) return '';
-  const css = new Map(db.prepare(`SELECT user_id, css FROM card_styles WHERE version = ? AND css IS NOT NULL AND user_id IN (${rows.map(() => '?').join(',')})`)
-    .all(cardstyle.VERSION, ...rows.map((r) => r.id)).map((s) => [s.user_id, s.css]));
-  return rows.map((r) => css.get(r.id)).filter(Boolean).join('\n');
+  const styles = new Map(db.prepare(`SELECT user_id, css, art FROM card_styles WHERE version = ? AND css IS NOT NULL AND user_id IN (${rows.map(() => '?').join(',')})`)
+    .all(cardstyle.VERSION, ...rows.map((r) => r.id)).map((s) => [s.user_id, s]));
+  return rows.map((r) => {
+    const s = styles.get(r.id);
+    if (!s) return '';
+    const art = artOf(r.username, JSON.parse(s.art));
+    return art.some((f) => f.reason) ? '' : cardstyle.fill(s.css, art.map((f) => artUrl(r.username, f)));
+  }).filter(Boolean).join('\n');
 };
+// Card art: a file of a style's art list, straight from the Site folder, for Sites /browse shows. Never counts toward bandwidth
+// (that is counted on member hosts only). sandbox and nosniff keep it an image even if a browser opens it as a page.
+const ART_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif' };
+main.get('/card-art/:name/*path', (req, res) => {
+  res.set('Content-Security-Policy', 'sandbox').set('X-Content-Type-Options', 'nosniff');
+  const rel = req.params.path.join('/');
+  const s = db.prepare(`SELECT u.username, c.art FROM users u JOIN card_styles c ON c.user_id = u.id WHERE u.username = ? AND ${listed()} AND c.version = ? AND c.css IS NOT NULL`)
+    .get(req.params.name, cardstyle.VERSION);
+  if (!s || !JSON.parse(s.art).includes(rel) || artOf(s.username, [rel])[0].reason) return res.status(404).type('text').send('Not found');
+  fs.readFile(path.join(siteDir(s.username), ...rel.split('/')), (err, buf) => {
+    if (err) return res.status(404).type('text').send('Not found');
+    res.set('Cache-Control', 'public, max-age=86400').type(ART_TYPES[path.extname(rel).slice(1).toLowerCase()]).send(buf);
+  });
+});
 main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
   const search = String(req.query.q || '').trim().toLowerCase().slice(0, 50);
@@ -1004,7 +1027,9 @@ main.post('/dashboard/card', auth, canEdit, (req, res) => {
   db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
     ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
     .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
-  res.redirect(`/dashboard/card?ok=${encodeURIComponent('Saved your card style.')}`);
+  // bad art still saves; the card shows as the Stock card until it's fixed
+  const failing = artOf(user.username, r.art).filter((f) => f.reason).map((f) => `${f.path}: ${f.reason}`);
+  res.redirect(`/dashboard/card?ok=${encodeURIComponent(`Saved your card style.${failing.length ? ` Your card shows the stock card until these art files work: ${failing.join('; ')}.` : ''}`)}`);
 });
 main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
