@@ -419,6 +419,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 <section class="box"><h2>My pad: ${esc(user.username)}</h2>${msg(m)}
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
+${d.cardError ? '<p class="err">Your card style no longer passes our checks, so your card shows the stock card. <a href="/dashboard/card">Fix it.</a></p>' : ''}
 <a class="addr" href="${esc(url)}" target="_blank">${esc(url)}</a>
 <div class="status">${meter('Space used', fmtBytes(d.used.total), `of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'}`, d.used.total / (d.quota * 1048576))}
 ${meter('Bandwidth today', fmtBytes(d.bandwidth), `of ${cfg.BANDWIDTH_MB} MB`, d.bandwidth / (cfg.BANDWIDTH_MB * 1048576))}

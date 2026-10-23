@@ -500,6 +500,17 @@ const cardCssFor = (rows) => {
     .all(cardstyle.VERSION, ...rows.map((r) => r.id)).map((s) => [s.user_id, s.css]));
   return rows.map((r) => css.get(r.id)).filter(Boolean).join('\n');
 };
+// startup, in one pass: re-derive every copy made by an older sanitizer; a source it now rejects is kept, with css NULL and the reason
+const rebuildCardStyles = db.transaction(() => {
+  const set = db.prepare('UPDATE card_styles SET css = ?, error = ?, art = ?, version = ? WHERE user_id = ?');
+  for (const s of db.prepare('SELECT user_id, source FROM card_styles WHERE version <> ?').all(cardstyle.VERSION)) {
+    const r = cardstyle.sanitize(s.source, s.user_id);
+    set.run(r.css ?? null, r.error ?? null, JSON.stringify(r.art ?? []), cardstyle.VERSION, s.user_id);
+  }
+});
+rebuildCardStyles();
+// the reason the current sanitizer rejects this Site's saved card style, or undefined
+const cardError = (id) => db.prepare('SELECT error FROM card_styles WHERE user_id = ?').get(id)?.error ?? undefined;
 main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
   const search = String(req.query.q || '').trim().toLowerCase().slice(0, 50);
@@ -859,7 +870,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cardError(user.id), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -990,7 +1001,10 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
 });
 // card style: a little CSS for the current Site's card on /browse, kept as typed plus the sanitized copy /browse emits
 const cardSource = (id) => db.prepare('SELECT source FROM card_styles WHERE user_id = ?').get(id)?.source ?? '';
-main.get('/dashboard/card', auth, canEdit, (req, res) => res.send(V.cardStyle(req.ctx, msgOf(req), cardSource(req.ctx.user.id))));
+main.get('/dashboard/card', auth, canEdit, (req, res) => {
+  const stored = cardError(req.ctx.user.id);
+  res.send(V.cardStyle(req.ctx, msgOf(req) || (stored && { err: `Your card style no longer passes our checks, so your card shows the stock card: ${stored}` }), cardSource(req.ctx.user.id)));
+});
 main.post('/dashboard/card', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   const source = String(req.body.css ?? '');
@@ -1002,7 +1016,7 @@ main.post('/dashboard/card', auth, canEdit, (req, res) => {
   // rejected: the page again, not a redirect, so the typed text stays; the saved style stays live
   if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source));
   db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
+    ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, error = NULL, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
     .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
   res.redirect(`/dashboard/card?ok=${encodeURIComponent('Saved your card style.')}`);
 });
@@ -1681,6 +1695,7 @@ setInterval(sweepHistory, DAY).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
+app.rebuildCardStyles = rebuildCardStyles; // tests stand in for a restart after a sanitizer version bump
 app.setStripe = (client) => { billing = makeBilling(client); }; // tests bring an in-memory Stripe (test/fake-stripe.js)
 app.forgetUsage = files.forgetUsage; // for tests that put files on disk behind the app's back
 app.refreshUsage = files.refreshUsage;

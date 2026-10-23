@@ -2,7 +2,8 @@
 // Fail-closed: anything it doesn't fully understand rejects the whole style; it never drops or repairs a rule.
 const csstree = require('css-tree');
 
-// bump on any change to the rules below or to PARTS; stored copies with an older version are rebuilt from source
+// bump on any change to the rules below or to the Card parts (PARTS, or their markup on /browse): any Card part change
+// is a breaking change. Startup rebuilds stored copies with an older version from source (src/server.js)
 const VERSION = 1;
 const MAX_BYTES = 4096;
 const MAX_DEPTH = 16; // brackets of any kind; real card styles stay far below this
