@@ -1400,8 +1400,9 @@ test('every /browse card carries the six Card parts, with or without a screensho
   assert.match(page, /<div data-part="tagline" class="t"><\/div><div data-part="tags" class="t"><\/div>/);
   for (const name of ['partshot', 'partnone', 'partbare']) {
     const { id } = db.prepare('SELECT id FROM users WHERE username = ?').get(name);
-    const card = page.match(new RegExp(`<li class="card[^"]*"><div data-part="card" class="cs-${id}">[^]*?/site/${name}[^]*?</li>`));
-    assert.ok(card, `${name} has an inner card root keyed by its id`);
+    // the scope class sits on the outer card, so the scoped selector `.cs-<id> [data-part=card]` reaches the inner root
+    const card = page.match(new RegExp(`<li class="card cs-${id}[^"]*"><div data-part="card">[^]*?/site/${name}[^]*?</li>`));
+    assert.ok(card, `${name} has an outer card keyed by its id around the inner card root`);
     for (const part of ['shot', 'name', 'tagline', 'tags', 'stats']) assert.match(card[0], new RegExp(`data-part="${part}"`), `${name} has ${part}`);
     assert.match(card[0], new RegExp(`<a data-part="name" href="[^"]*${name}[^"]*"><b>`));
   }
@@ -1409,6 +1410,86 @@ test('every /browse card carries the six Card parts, with or without a screensho
   assert.match(page, /<a data-part="shot" class="shot none"/);
   // other card surfaces keep the stock markup
   assert.doesNotMatch((await req('get', '/')).text, /data-part/);
+});
+
+// a member whose site is old and edited, so its card shows on /browse
+async function listedMember(name) {
+  const m = await member(name);
+  await upload(m, 'index.html', '<h1>card</h1>');
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, name);
+  m.id = db.prepare('SELECT id FROM users WHERE username = ?').get(name).id;
+  return m;
+}
+const saveCard = (m, css) => req('post', '/dashboard/card').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, css });
+// the member <style> on /browse, or null when the page sends none
+const memberCss = async (q) => (await req('get', `/browse?q=${q}`)).text.match(/<head>[^]*<\/head>/)[0].match(/<style>([^]*?)<\/style>/)?.[1] ?? null;
+
+test('a card style saved on /dashboard/card shows on /browse, scoped to that card', async () => {
+  const m = await listedMember('cardsave');
+  assert.equal(await memberCss('cardsave'), null);
+  const dash = (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+  assert.match(dash, /href="\/dashboard\/card"/);
+
+  const css = '[data-part=card] { transform: rotate(2deg) }';
+  const res = await saveCard(m, css);
+  assert.equal(res.status, 302);
+  assert.match(res.headers.location, /^\/dashboard\/card\?ok=/);
+  assert.equal(await memberCss('cardsave'), `.cs-${m.id} [data-part=card]{transform:rotate(2deg)}`);
+  // the page shows the source exactly as typed
+  assert.match((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text, /<textarea[^>]*>\[data-part=card\] \{ transform: rotate\(2deg\) \}<\/textarea>/);
+  // the inline style comes after site.css, and /browse is never cached
+  const page = await req('get', '/browse?q=cardsave');
+  assert.match(page.text, /<link rel="stylesheet" href="\/site\.css[^"]*">[^]*<style>/);
+  assert.doesNotMatch(page.headers['cache-control'] || '', /public|max-age=[1-9]/);
+  assert.match(page.headers['cache-control'], /no-store/);
+});
+
+test('a rejected card style save keeps the typed text and the old style; an empty save is the stock card again', async () => {
+  const m = await listedMember('cardreject');
+  const stock = (await req('get', '/browse?q=cardreject')).text;
+  await saveCard(m, '[data-part=name] { color: red }');
+  const live = await memberCss('cardreject');
+
+  const bad = await saveCard(m, '.foo { color: <b>blue</b> }');
+  assert.equal(bad.status, 400); // the page again, no redirect
+  assert.match(bad.text, /<p class="err" role="alert">Not saved: [^<]*<\/p>[^]*<textarea[^>]*>\.foo \{ color: &lt;b&gt;blue&lt;\/b&gt; \}<\/textarea>/);
+  const big = await saveCard(m, `[data-part=name] { color: red } /*${'x'.repeat(4096)}*/`);
+  assert.match(big.text, /Not saved: Card style is over 4096 bytes\./);
+  assert.equal(await memberCss('cardreject'), live);
+
+  assert.match((await saveCard(m, '  \n')).headers.location, /^\/dashboard\/card\?ok=/);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM card_styles WHERE user_id = ?').get(m.id).n, 0);
+  assert.equal(await memberCss('cardreject'), null);
+  assert.match((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text, /<textarea[^>]*><\/textarea>/);
+  assert.equal((await req('get', '/browse?q=cardreject')).text.replace(/_csrf" value="[^"]*"/g, ''), stock.replace(/_csrf" value="[^"]*"/g, ''));
+});
+
+test('card style goes with its Site or Login, and only the current Site\'s owner can save it', async () => {
+  const a = await listedMember('cardowner');
+  const b = await listedMember('cardother');
+  // the form saves for the current Site only; nothing in it names another
+  await req('post', '/dashboard/card').set('Cookie', b.cookie).type('form').send({ _csrf: b.csrf, css: '[data-part=card] { color: red }', site: 'cardowner', user_id: a.id });
+  assert.equal(await memberCss('cardowner'), null);
+  assert.match(await memberCss('cardother'), new RegExp(`^\\.cs-${b.id} `));
+  // someone else's session token can't save it
+  assert.equal((await req('post', '/dashboard/card').set('Cookie', a.cookie).type('form').send({ _csrf: b.csrf, css: '[data-part=card] { color: blue }' })).status, 403);
+  assert.equal((await req('post', '/dashboard/card').type('form').send({ css: '[data-part=card] { color: blue }' })).headers.location, '/login');
+
+  // a banned Site can't open or post the page, and its link is hidden
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(b.id);
+  assert.equal((await req('get', '/dashboard/card').set('Cookie', b.cookie)).headers.location, '/dashboard');
+  assert.equal((await saveCard(b, '[data-part=card] { color: blue }')).headers.location, '/dashboard');
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', b.cookie)).text, /\/dashboard\/card/);
+
+  // deleting the Site (here, its Login) deletes the row
+  await saveCard(a, '[data-part=card] { color: red }');
+  const count = (id) => db.prepare('SELECT COUNT(*) n FROM card_styles WHERE user_id = ?').get(id).n;
+  assert.equal(count(a.id), 1);
+  await req('post', '/dashboard/delete-account').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, password: 'longpassword1' });
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE id = ?').get(a.id).n, 0);
+  assert.equal(count(a.id), 0);
+  db.prepare('DELETE FROM users WHERE id = ?').run(b.id);
+  assert.equal(count(b.id), 0);
 });
 
 test('feed updates name the files they changed, folded into one event per hour', async () => {
