@@ -1392,8 +1392,13 @@ test('every /browse card carries the six Card parts, with or without a screensho
   db.prepare('UPDATE users SET shot_dirty = 1 WHERE username = ?').run('partshot');
   const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7)]);
   assert.equal((await req('post', '/internal/shots/partshot').set('x-shot-token', 'test-shot-token').set('Content-Type', 'application/octet-stream').send(jpg)).status, 204);
+  // a bare site with no tagline and no tags still gets every hook
+  const bare = await member('partbare');
+  await upload(bare, 'index.html', '<h1>bare</h1>');
+  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'partbare');
   const page = (await req('get', '/browse?q=part')).text;
-  for (const name of ['partshot', 'partnone']) {
+  assert.match(page, /<div data-part="tagline" class="t"><\/div><div data-part="tags" class="t"><\/div>/);
+  for (const name of ['partshot', 'partnone', 'partbare']) {
     const { id } = db.prepare('SELECT id FROM users WHERE username = ?').get(name);
     const card = page.match(new RegExp(`<li class="card[^"]*"><div data-part="card" class="cs-${id}">[^]*?/site/${name}[^]*?</li>`));
     assert.ok(card, `${name} has an inner card root keyed by its id`);

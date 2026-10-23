@@ -60,13 +60,13 @@ const shotImg = (ctx, r, link, part = '') => (r.shot
   ? `<a${part} href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
   : `<a${part} class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
 const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
-// parts: /browse only; adds the member root and the Card part hooks that card style targets
+// parts: /browse only; adds the member root and the Card part hooks that card style targets (all six, even when empty)
 const cards = (ctx, rows, parts = false) => {
   const p = (name) => (parts ? ` data-part="${name}"` : '');
   return rows.length
     ? `<ul class="grid">${rows.map((r) => `<li class="card${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? `<div data-part="card" class="cs-${r.id}">` : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
 <div><a${p('name')} href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
-${r.tagline ? `<div${p('tagline')} class="t">${esc(r.tagline)}</div>` : ''}${r.tags ? `<div${p('tags')} class="t">${tagLinks(r.tags)}</div>` : ''}
+${r.tagline || parts ? `<div${p('tagline')} class="t">${esc(r.tagline || '')}</div>` : ''}${r.tags || parts ? `<div${p('tags')} class="t">${r.tags ? tagLinks(r.tags) : ''}</div>` : ''}
 <div${p('stats')} class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div>${parts ? '</div>' : ''}</li>`).join('')}</ul>`
     : `<p>The pad is clean. Make the first mess.</p>`;
 };
