@@ -37,6 +37,15 @@ function event(stripe, type, object, { secret = SECRET, store = true } = {}) {
   return make(stripe).receive(Buffer.from(payload), signer.generateTestHeaderString({ payload, secret }));
 }
 
+// a thin event, as an event destination sends it: a v2.core.event whose type is prefixed with v1. and which only
+// points at the object; the object itself sits in Stripe's state, to be fetched by id
+function thinEvent(stripe, type, object, { secret = SECRET } = {}) {
+  if (type.startsWith('v1.customer.subscription.')) stripe.state.subs = stripe.state.subs.filter((o) => o.id !== object.id).concat(object);
+  if (type.startsWith('v1.checkout.session.')) stripe.state.sessions = stripe.state.sessions.filter((o) => o.id !== object.id).concat(object);
+  const payload = JSON.stringify({ id: `evt_${type}`, object: 'v2.core.event', type, related_object: { id: object.id, type: type.includes('checkout') ? 'checkout.session' : 'subscription', url: `/v1/${type.includes('checkout') ? 'checkout/sessions' : 'subscriptions'}/${object.id}` } });
+  return make(stripe).receive(Buffer.from(payload), signer.generateTestHeaderString({ payload, secret }));
+}
+
 test('checkout makes the login one Stripe customer, picks the plan price, and opens Checkout', async () => {
   const stripe = fakeStripe();
   const billing = make(stripe);
@@ -284,4 +293,39 @@ test('a checkout that throws reaches its caller and does not hold up the next on
   assert.equal(b.status, 'fulfilled');
   assert.ok(b.value.url);
   assert.equal(billing.pendingCheckouts(), 0);
+});
+
+test('receive: thin events from an event destination drive the same changes as snapshots', async () => {
+  const stripe = fakeStripe();
+  const login = add({ stripe_customer_id: 'cus_thin' });
+  const end = secs(Date.now() + 30 * DAY);
+  await thinEvent(stripe, 'v1.customer.subscription.created', { id: 'sub_thin', customer: 'cus_thin', status: 'active', metadata: {}, items: { data: [{ current_period_end: end }] } });
+  assert.equal(row(login).supporter_until, end * 1000 + 3 * DAY);
+  await thinEvent(stripe, 'v1.customer.subscription.deleted', { id: 'sub_thin', customer: 'cus_thin', status: 'canceled', metadata: {} });
+  assert.ok(row(login).supporter_until <= Date.now());
+
+  const other = add();
+  const site = add({ login_id: other.id });
+  await thinEvent(stripe, 'v1.checkout.session.completed', { id: 'cs_thin', customer: 'cus_linked', client_reference_id: String(site.id) });
+  assert.equal(row(site).stripe_customer_id, '');
+  await thinEvent(stripe, 'v1.checkout.session.completed', { id: 'cs_thin2', customer: 'cus_linked', client_reference_id: String(other.id) });
+  assert.equal(row(other).stripe_customer_id, 'cus_linked');
+});
+
+test('receive: a forged thin event changes nothing, and one Stripe fails to serve throws for a retry', async () => {
+  const stripe = fakeStripe();
+  const login = add();
+  await assert.rejects(thinEvent(stripe, 'v1.checkout.session.completed', { id: 'cs_f', customer: 'cus_forged', client_reference_id: String(login.id) }, { secret: 'whsec_wrong' }), BadSignature);
+  assert.equal(row(login).stripe_customer_id, '');
+  stripe.state.fail = true;
+  await assert.rejects(thinEvent(stripe, 'v1.customer.subscription.created', { id: 'sub_f', customer: 'cus_f', status: 'active', metadata: {} }), (e) => !(e instanceof BadSignature));
+});
+
+test('receive: a thin event of a kind the app ignores is a no-op, even with nothing to point at', async () => {
+  const stripe = fakeStripe();
+  const login = add({ stripe_customer_id: 'cus_i' });
+  await thinEvent(stripe, 'v1.invoice.paid', { id: 'in_1' });
+  const payload = JSON.stringify({ id: 'evt_bare', object: 'v2.core.event', type: 'v1.customer.subscription.created' });
+  await make(stripe).receive(Buffer.from(payload), signer.generateTestHeaderString({ payload, secret: SECRET }));
+  assert.equal(row(login).supporter_until, 0);
 });

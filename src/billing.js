@@ -88,16 +88,27 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
     return (await stripe.billingPortal.sessions.create({ customer: login.stripe_customer_id, return_url: `${cfg.BASE_URL}/dashboard/support` })).url;
   }
 
-  // A webhook call: throws BadSignature unless Stripe signed this raw body; any other throw means Stripe should retry
+  // A webhook call: throws BadSignature unless Stripe signed this raw body; any other throw means Stripe should retry.
+  // Events arrive in two shapes: a classic endpoint embeds the object in the event, while an event destination sends
+  // a thin event — no object inside, just its type (prefixed v1.) and a pointer at the object — which constructEvent
+  // refuses and the SDK verifies as an event notification instead. Either way the object is fetched by id below.
   async function receive(rawBody, signature) {
     let event;
-    try { event = stripe.webhooks.constructEvent(rawBody, signature || '', webhookSecret); } catch { throw new BadSignature('bad signature'); }
-    const o = event.data.object;
-    if (event.type === 'checkout.session.completed' && o.customer) {
-      db.prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ? AND login_id IS NULL').run(String(o.customer), Number(o.client_reference_id) || 0);
+    try { event = stripe.webhooks.constructEvent(rawBody, signature || '', webhookSecret); }
+    catch {
+      let note;
+      try { note = stripe.parseEventNotification(rawBody, signature || '', webhookSecret); } catch { throw new BadSignature('bad signature'); }
+      event = { thin: true, type: note.type.replace(/^v1\./, ''), id: note.related_object?.id };
+    }
+    if (event.type === 'checkout.session.completed') {
+      const o = event.thin ? (event.id ? await stripe.checkout.sessions.retrieve(event.id) : null) : event.data.object;
+      if (o?.customer) {
+        db.prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ? AND login_id IS NULL').run(String(o.customer), Number(o.client_reference_id) || 0);
+      }
     } else if (event.type.startsWith('customer.subscription.')) {
+      const id = event.thin ? event.id : event.data.object.id;
       // the payload may be stale (Stripe can deliver or retry events out of order), so apply the subscription as it is now
-      await apply(await stripe.subscriptions.retrieve(o.id));
+      if (id) await apply(await stripe.subscriptions.retrieve(id));
     }
   }
 
