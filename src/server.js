@@ -859,7 +859,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES, cardCleared: !!cardNote(user.id) }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -990,17 +990,20 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
 });
 // card style: a little CSS for the current Site's card on /browse, kept as typed plus the sanitized copy /browse emits
 const cardSource = (id) => db.prepare('SELECT source FROM card_styles WHERE user_id = ?').get(id)?.source ?? '';
-main.get('/dashboard/card', auth, canEdit, (req, res) => res.send(V.cardStyle(req.ctx, msgOf(req), cardSource(req.ctx.user.id))));
+const cardNote = (id) => db.prepare('SELECT reason, created_at FROM card_notes WHERE user_id = ?').get(id);
+main.get('/dashboard/card', auth, canEdit, (req, res) => res.send(V.cardStyle(req.ctx, msgOf(req), cardSource(req.ctx.user.id), cardNote(req.ctx.user.id))));
 main.post('/dashboard/card', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   const source = String(req.body.css ?? '');
   if (!source.trim()) {
     db.prepare('DELETE FROM card_styles WHERE user_id = ?').run(user.id);
+    db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
     return res.redirect(`/dashboard/card?ok=${encodeURIComponent('Card style removed. Your card is the stock card again.')}`);
   }
   const r = cardstyle.sanitize(source, user.id);
   // rejected: the page again, not a redirect, so the typed text stays; the saved style stays live
-  if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source));
+  if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source, cardNote(user.id)));
+  db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
   db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
     ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
     .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
@@ -1588,6 +1591,20 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
   db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
   showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
+});
+// clearing is an empty save done for the member; there's no lock, so a repeat offender gets a takedown instead
+main.post('/admin/card-clear', auth, adminOnly, (req, res) => {
+  const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
+  if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
+  const reason = String(req.body.reason || '').trim().slice(0, 200);
+  if (!reason) return showAdmin(req, res, { err: 'Give a reason; the member sees it.' });
+  const cleared = db.transaction(() => {
+    if (!db.prepare('DELETE FROM card_styles WHERE user_id = ?').run(target.id).changes) return false;
+    db.prepare('INSERT OR REPLACE INTO card_notes (user_id, reason, created_at) VALUES (?,?,?)').run(target.id, reason, now());
+    adminLog(req, 'clear card style', target.username, reason);
+    return true;
+  })();
+  showAdmin(req, res, cleared ? { ok: `Cleared the card style of ${target.username}.` } : { err: 'No card style on that site.' });
 });
 main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
