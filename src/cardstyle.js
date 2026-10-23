@@ -213,4 +213,4 @@ function checkArt(root, art) {
   });
 }
 
-module.exports = { sanitize, fill, checkArt, VERSION, MAX_BYTES, MAX_ART_BYTES, PARTS };
+module.exports = { sanitize, fill, checkArt, VERSION, MAX_BYTES, MAX_ART, MAX_ART_BYTES, PARTS };

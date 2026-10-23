@@ -1537,12 +1537,13 @@ const vOf = (full) => { const s = fs.statSync(full); return `${Math.floor(s.mtim
 test('card art: own-Site images on cards, and the stock card when any art file fails', async () => {
   const m = await listedMember('artpad');
   const res = await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") } [data-part=name]::after { content: ""; background: image-set("b.gif" 1x) }');
-  // a style with missing art still saves; the result lists each failing file with its reason
+  // a style with missing art still saves; the page lists each failing file with its reason
   assert.equal(res.status, 302);
-  const ok = decodeURIComponent(res.headers.location);
-  assert.match(ok, /^\/dashboard\/card\?ok=Saved your card style\./);
-  assert.match(ok, /art\/it's here\.png: missing/);
-  assert.match(ok, /b\.gif: missing/);
+  assert.match(decodeURIComponent(res.headers.location), /^\/dashboard\/card\?ok=Saved your card style\./);
+  const artList = async () => (await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.replace(/&#39;/g, "'");
+  const ok = await artList();
+  assert.match(ok, /art\/it's here\.png<\/code>: missing/);
+  assert.match(ok, /b\.gif<\/code>: missing/);
   assert.equal(await memberCss('artpad'), null); // the stock card, with no CSS
   assert.equal((await req('get', '/card-art/artpad/b.gif')).status, 404);
 
@@ -1583,11 +1584,13 @@ test('card art: own-Site images on cards, and the stock card when any art file f
     assert.equal(r.headers['content-security-policy'], 'sandbox');
     assert.equal(r.headers['x-content-type-options'], 'nosniff');
   }
-  const saved = decodeURIComponent((await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png"), url(b.gif) }')).headers.location);
-  assert.match(saved, /art\/it's here\.png: missing/);
-  assert.doesNotMatch(saved, /b\.gif/); // only failing files are listed
+  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png"), url(b.gif) }');
+  const saved = await artList();
+  assert.match(saved, /art\/it's here\.png<\/code>: missing/);
+  assert.doesNotMatch(saved, /b\.gif<\/code>:/); // only failing files are listed
   artFile('artpad', "art/it's here.png", Buffer.from('not a png at all, really'));
-  assert.match(decodeURIComponent((await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") }')).headers.location), /not a real PNG/);
+  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") }');
+  assert.match(await artList(), /not a real PNG/);
   artFile('artpad', "art/it's here.png", PNG());
 
   // 404 for a file the style doesn't use, an svg, traversal, and Sites /browse leaves out
@@ -1601,6 +1604,59 @@ test('card art: own-Site images on cards, and the stock card when any art file f
     db.prepare(`UPDATE users SET ${col} = ? WHERE id = ?`).run(val ? 0 : 1, m.id);
   }
   assert.equal((await req('get', url)).status, 200);
+});
+
+// one side of a page: the card with this scope class and the member <style> in the head, or null for each
+const cardSide = (html, id) => ({ li: html.match(new RegExp(`<li class="card cs-${id}[ "][^]*?</li>`))?.[0] ?? null, css: html.match(/<head>[^]*<\/head>/)[0].match(/<style>([^]*?)<\/style>/)?.[1] ?? null });
+
+test('/dashboard/card shows the saved card as /browse does, next to the stock card, and says why', async () => {
+  const m = await listedMember('cardcheck');
+  const page = async () => (await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.replace(/&#39;/g, "'");
+  const browse = async () => cardSide((await req('get', '/browse?q=cardcheck')).text, m.id);
+  let p = await page();
+  assert.match(p, /Your card shows the stock card because: you haven't saved a card style\./);
+  // the reference: all six parts and the rules
+  for (const part of ['card', 'shot', 'name', 'tagline', 'tags', 'stats']) assert.ok(p.includes(`<code>[data-part="${part}"]</code>`), part);
+  for (const rule of ['4 KB', 'at most 8 art files', 'PNG, JPEG, GIF, WebP or AVIF', '<code>position: fixed</code>', '<code>sticky</code>', '<code>@keyframes</code>']) assert.ok(p.includes(rule), rule);
+  assert.doesNotMatch(p, /isn't in the dog park/);
+
+  await saveCard(m, '[data-part=card] { transform: rotate(2deg) }');
+  p = await page();
+  assert.match(p, /Your card shows your style\./);
+  assert.doesNotMatch(p, /because:/);
+  assert.ok(cardSide(p, m.id).css);
+  assert.deepEqual(cardSide(p, m.id), await browse());
+  // beside it, the stock card: the same card without the scope class, so no member CSS reaches it
+  const all = p.match(/<li class="card[ "][^]*?<\/li>/g);
+  assert.equal(all.length, 2);
+  assert.doesNotMatch(all[1], /cs-\d/);
+  assert.equal(all[1].replace(/<li class="[^"]*">/, ''), all[0].replace(/<li class="[^"]*">/, ''));
+
+  // failing art saves; the result and the page list only the failing files, with reasons
+  artFile('cardcheck', 'ok.png', PNG());
+  const res = await saveCard(m, '[data-part=card] { background: url(ok.png), url(gone.gif) }');
+  assert.equal(decodeURIComponent(res.headers.location), '/dashboard/card?ok=Saved your card style.');
+  p = await page();
+  assert.match(p, /Your card shows the stock card because: some of its art files don't work\./);
+  assert.match(p, /<li><code>gone\.gif<\/code>: missing<\/li>/);
+  assert.doesNotMatch(p, /<code>ok\.png<\/code>:/);
+  assert.equal(cardSide(p, m.id).css, null);
+  assert.deepEqual(cardSide(p, m.id), await browse());
+
+  // a style the sanitizer now rejects
+  db.prepare("UPDATE card_styles SET css = NULL, error = 'Position fixed is not allowed.' WHERE user_id = ?").run(m.id);
+  p = await page();
+  assert.match(p, /Your card shows the stock card because: Position fixed is not allowed\./);
+  assert.doesNotMatch(p, /gone\.gif<\/code>:/);
+  assert.deepEqual(cardSide(p, m.id), await browse());
+
+  // a hidden Site sees the note and can still save
+  await req('post', '/dashboard/hidden').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, hidden: '1' });
+  assert.match((await saveCard(m, '[data-part=name] { color: red }')).headers.location, /^\/dashboard\/card\?ok=/);
+  p = await page();
+  assert.match(p, /Your site isn't in the dog park right now, so nobody sees this card yet\./);
+  assert.match(p, /Your card shows your style\./);
+  assert.match(cardSide(p, m.id).css, /color:red/);
 });
 
 test('card art: after a Site rename, art points at the new name with no re-save; the old name is a 404', async () => {

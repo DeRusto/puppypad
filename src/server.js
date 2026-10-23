@@ -1025,9 +1025,22 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
 // card style: a little CSS for the current Site's card on /browse, kept as typed plus the sanitized copy /browse emits
 const cardSource = (id) => db.prepare('SELECT source FROM card_styles WHERE user_id = ?').get(id)?.source ?? '';
 const cardNote = (id) => db.prepare('SELECT reason, created_at FROM card_notes WHERE user_id = ?').get(id);
+// save-and-check: the Site's card exactly as /browse renders it (same row, same cardCssFor), and why it is the Stock card when it is
+const cardCheck = (user) => {
+  const row = hasShot(db.prepare(`${WITH_FOLLOWERS} WHERE u.id = ?`).get(user.id));
+  const css = cardCssFor([row]);
+  const s = db.prepare('SELECT error, art FROM card_styles WHERE user_id = ?').get(user.id);
+  const failing = s && !s.error ? artOf(user.username, JSON.parse(s.art)).filter((f) => f.reason) : [];
+  const why = css ? null
+    : !s ? "you haven't saved a card style"
+      : s.error ? s.error.replace(/\.$/, '')
+        : failing.length ? "some of its art files don't work"
+          : 'it is waiting to be checked again'; // a copy from an older sanitizer, until the startup rebuild
+  return { row, css, why, failing, listed: isListed(user) };
+};
 main.get('/dashboard/card', auth, canEdit, (req, res) => {
   const stored = cardError(req.ctx.user.id);
-  res.send(V.cardStyle(req.ctx, msgOf(req) || (stored && { err: `Your card style no longer passes our checks, so your card shows the stock card: ${stored}` }), cardSource(req.ctx.user.id), cardNote(req.ctx.user.id)));
+  res.send(V.cardStyle(req.ctx, msgOf(req) || (stored && { err: `Your card style no longer passes our checks, so your card shows the stock card: ${stored}` }), cardSource(req.ctx.user.id), cardNote(req.ctx.user.id), cardCheck(req.ctx.user)));
 });
 main.post('/dashboard/card', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
@@ -1039,14 +1052,13 @@ main.post('/dashboard/card', auth, canEdit, (req, res) => {
   }
   const r = cardstyle.sanitize(source, user.id);
   // rejected: the page again, not a redirect, so the typed text stays; the saved style stays live
-  if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source, cardNote(user.id)));
+  if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source, cardNote(user.id), cardCheck(user)));
   db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
   db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
     ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, error = NULL, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
     .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
-  // bad art still saves; the card shows as the Stock card until it's fixed
-  const failing = artOf(user.username, r.art).filter((f) => f.reason).map((f) => `${f.path}: ${f.reason}`);
-  res.redirect(`/dashboard/card?ok=${encodeURIComponent(`Saved your card style.${failing.length ? ` Your card shows the stock card until these art files work: ${failing.join('; ')}.` : ''}`)}`);
+  // bad art still saves; the page's status line and art list say so, and the card shows as the Stock card until it's fixed
+  res.redirect(`/dashboard/card?ok=${encodeURIComponent('Saved your card style.')}`);
 });
 main.post('/dashboard/style/link', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
