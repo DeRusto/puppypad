@@ -1464,6 +1464,35 @@ test('a rejected card style save keeps the typed text and the old style; an empt
   assert.equal((await req('get', '/browse?q=cardreject')).text.replace(/_csrf" value="[^"]*"/g, ''), stock.replace(/_csrf" value="[^"]*"/g, ''));
 });
 
+test('a sanitizer version bump rebuilds stale card styles; one it rejects shows the stock card and says so until fixed', async () => {
+  const { VERSION } = require('../src/cardstyle');
+  const ok = await listedMember('cardstale');
+  const bad = await listedMember('cardnowbad');
+  await saveCard(ok, '[data-part=card] { color: red }');
+  await saveCard(bad, '[data-part=card] { color: blue }');
+  // as if both were saved under an older sanitizer: stale copies, and a source the current one rejects
+  db.prepare("UPDATE card_styles SET version = ?, css = '.stale{}' WHERE user_id IN (?, ?)").run(VERSION - 1, ok.id, bad.id);
+  const rejected = '[data-part=card] { position: fixed }';
+  db.prepare('UPDATE card_styles SET source = ? WHERE user_id = ?').run(rejected, bad.id);
+  // a stale copy is never served, even before the rebuild
+  assert.equal(await memberCss('cardstale'), null);
+
+  app.rebuildCardStyles();
+  assert.equal(await memberCss('cardstale'), `.cs-${ok.id} [data-part=card]{color:red}`);
+  assert.equal(await memberCss('cardnowbad'), null);
+  const page = (await req('get', '/dashboard/card').set('Cookie', bad.cookie)).text;
+  assert.match(page, /<p class="err" role="alert">[^<]*stock card: Position[^<]*<\/p>[^]*<textarea[^>]*>\[data-part=card\] \{ position: fixed \}<\/textarea>/);
+  const line = /<p class="err">Your card style no longer passes our checks, so your card shows the stock card\. <a href="\/dashboard\/card">Fix it\.<\/a><\/p>/g;
+  assert.equal((await req('get', '/dashboard').set('Cookie', bad.cookie)).text.match(line)?.length, 1);
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', ok.cookie)).text, line);
+  assert.doesNotMatch((await req('get', '/dashboard/card').set('Cookie', ok.cookie)).text, /class="err"/);
+
+  await saveCard(bad, '[data-part=card] { color: green }');
+  assert.doesNotMatch((await req('get', '/dashboard/card').set('Cookie', bad.cookie)).text, /class="err"/);
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', bad.cookie)).text, line);
+  assert.equal(await memberCss('cardnowbad'), `.cs-${bad.id} [data-part=card]{color:green}`);
+});
+
 test('card style goes with its Site or Login, and only the current Site\'s owner can save it', async () => {
   const a = await listedMember('cardowner');
   const b = await listedMember('cardother');

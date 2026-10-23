@@ -118,11 +118,12 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 -- a Site's card style on /browse. source is the truth, exactly as typed; css, art (JSON list of Site file paths the
 -- css placeholders index into) and version are derived by src/cardstyle.js. css is NULL when the sanitizer at
--- version rejects source; startup rebuilds every row whose version is older than the sanitizer's
+-- version rejects source, and error says why; startup rebuilds every row whose version is older than the sanitizer's
 CREATE TABLE IF NOT EXISTS card_styles (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   source TEXT NOT NULL,
   css TEXT,
+  error TEXT,
   art TEXT NOT NULL DEFAULT '[]',
   version INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
