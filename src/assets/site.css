@@ -79,6 +79,7 @@ header nav,form[role=search],.sorts,.pages{position:relative!important;z-index:2
 @media (prefers-reduced-motion:reduce){.supporter img.shot{animation:none!important}}
 .card [data-part=name],.card [data-part=name]+a{display:inline!important;visibility:visible!important;opacity:1!important}
 .card [data-part=card]>div:has(>[data-part=name]){display:block!important;visibility:visible!important;opacity:1!important}
+.card>[data-part=card]{display:flex!important;visibility:visible!important;opacity:1!important}
 }
 .feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .feed li{display:flex;gap:10px;align-items:flex-start}

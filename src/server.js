@@ -509,19 +509,18 @@ const cardCssFor = (rows) => {
     return art.some((f) => f.reason) ? '' : cardstyle.fill(s.css, art.map((f) => artUrl(r.username, f)));
   }).filter(Boolean).join('\n');
 };
-// Card art: a file of a style's art list, straight from the Site folder, for Sites /browse shows. Never counts toward bandwidth
+// Card art: a file of a style's art list, straight from the Site folder, for Sites /browse shows, and for the Site's own
+// session too, so the /dashboard/card preview of a hidden or new Site has its art. Never counts toward bandwidth
 // (that is counted on member hosts only). sandbox and nosniff keep it an image even if a browser opens it as a page.
-const ART_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif' };
 main.get('/card-art/:name/*path', (req, res) => {
   res.set('Content-Security-Policy', 'sandbox').set('X-Content-Type-Options', 'nosniff');
   const rel = req.params.path.join('/');
-  const s = db.prepare(`SELECT u.username, c.art FROM users u JOIN card_styles c ON c.user_id = u.id WHERE u.username = ? AND ${listed()} AND c.version = ? AND c.css IS NOT NULL`)
-    .get(req.params.name, cardstyle.VERSION);
-  if (!s || !JSON.parse(s.art).includes(rel) || artOf(s.username, [rel])[0].reason) return res.status(404).type('text').send('Not found');
-  fs.readFile(path.join(siteDir(s.username), ...rel.split('/')), (err, buf) => {
-    if (err) return res.status(404).type('text').send('Not found');
-    res.set('Cache-Control', 'public, max-age=86400').type(ART_TYPES[path.extname(rel).slice(1).toLowerCase()]).send(buf);
-  });
+  const s = db.prepare(`SELECT u.username, c.art, ${listed()} AS shown FROM users u JOIN card_styles c ON c.user_id = u.id
+    WHERE u.username = ? AND (${listed()} OR (${LIVE} AND u.id = ?)) AND c.version = ? AND c.css IS NOT NULL`)
+    .get(req.params.name, req.ctx.user?.id ?? 0, cardstyle.VERSION);
+  const f = s && JSON.parse(s.art).includes(rel) && cardstyle.checkArt(siteDir(s.username), [rel], true)[0];
+  if (!f || f.reason) return res.status(404).type('text').send('Not found');
+  res.set('Cache-Control', s.shown ? 'public, max-age=86400' : 'private, no-store').type(f.type).send(f.buf);
 });
 // startup, in one pass: re-derive every copy made by an older sanitizer; a source it now rejects is kept, with css NULL and the reason
 const rebuildCardStyles = db.transaction(() => {
@@ -1040,7 +1039,7 @@ const cardCheck = (user) => {
 };
 main.get('/dashboard/card', auth, canEdit, (req, res) => {
   const stored = cardError(req.ctx.user.id);
-  res.send(V.cardStyle(req.ctx, msgOf(req) || (stored && { err: `Your card style no longer passes our checks, so your card shows the stock card: ${stored}` }), cardSource(req.ctx.user.id), cardNote(req.ctx.user.id), cardCheck(req.ctx.user)));
+  res.send(V.cardStyle(req.ctx, msgOf(req) || (stored && { err: `${V.CARD_FAILS}: ${stored}` }), cardSource(req.ctx.user.id), cardNote(req.ctx.user.id), cardCheck(req.ctx.user)));
 });
 main.post('/dashboard/card', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
@@ -1053,10 +1052,12 @@ main.post('/dashboard/card', auth, canEdit, (req, res) => {
   const r = cardstyle.sanitize(source, user.id);
   // rejected: the page again, not a redirect, so the typed text stays; the saved style stays live
   if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source, cardNote(user.id), cardCheck(user)));
-  db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
-  db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, error = NULL, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
-    .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
+  db.transaction(() => {
+    db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
+    db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, error = NULL, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
+      .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
+  })();
   // bad art still saves; the page's status line and art list say so, and the card shows as the Stock card until it's fixed
   res.redirect(`/dashboard/card?ok=${encodeURIComponent('Saved your card style.')}`);
 });

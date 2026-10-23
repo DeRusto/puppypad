@@ -1659,6 +1659,34 @@ test('/dashboard/card shows the saved card as /browse does, next to the stock ca
   assert.match(cardSide(p, m.id).css, /color:red/);
 });
 
+test('card art: a hidden or new Site sees its own art in the /dashboard/card preview; nobody else does', async () => {
+  const m = await listedMember('arthide');
+  const other = await member('artpeek');
+  const png = artFile('arthide', 'pup.png', PNG());
+  await saveCard(m, '[data-part=card] { background: url(pup.png) }');
+  const url = `/card-art/arthide/pup.png?v=${vOf(png)}`;
+  await req('post', '/dashboard/hidden').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, hidden: '1' });
+  for (const setup of [() => {}, () => db.prepare('UPDATE users SET hidden = 0, created_at = ? WHERE id = ?').run(Date.now(), m.id)]) {
+    setup();
+    assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(url.replace(/'/g, '&#39;')));
+    assert.equal((await req('get', url)).status, 404);
+    assert.equal((await req('get', url).set('Cookie', other.cookie)).status, 404);
+    const own = await req('get', url).set('Cookie', m.cookie).buffer(true);
+    assert.equal(own.status, 200);
+    assert.deepEqual(own.body, PNG());
+    assert.equal(own.headers['cache-control'], 'private, no-store'); // never cached for others while the Site is unlisted
+    assert.equal(own.headers['content-security-policy'], 'sandbox');
+  }
+  // every other check still applies
+  artFile('arthide', 'pup.png', Buffer.from('not a png at all, really'));
+  assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
+  artFile('arthide', 'other.png', PNG());
+  assert.equal((await req('get', '/card-art/arthide/other.png').set('Cookie', m.cookie)).status, 404);
+  artFile('arthide', 'pup.png', PNG());
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(m.id);
+  assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
+});
+
 test('card art: after a Site rename, art points at the new name with no re-save; the old name is a 404', async () => {
   const m = await listedMember('artold');
   artFile('artold', 'pup.png', PNG());
