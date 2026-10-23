@@ -419,6 +419,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 <section class="box"><h2>My pad: ${esc(user.username)}</h2>${msg(m)}
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
+${d.cardCleared ? '<p class="err">An admin removed your card style. <a href="/dashboard/card">See why</a></p>' : ''}
 ${d.cardError ? '<p class="err">Your card style no longer passes our checks, so your card shows the stock card. <a href="/dashboard/card">Fix it.</a></p>' : ''}
 <a class="addr" href="${esc(url)}" target="_blank">${esc(url)}</a>
 <div class="status">${meter('Space used', fmtBytes(d.used.total), `of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'}`, d.used.total / (d.quota * 1048576))}
@@ -561,8 +562,8 @@ if(ins)ins.addEventListener('click',function(){
 };
 
 // card style: the source as typed; a rejected save comes back here with its text and the error
-const cardStyle = (ctx, m, source) => layout(ctx, 'Card style', `
-<section class="box"><h2>Card style</h2>${msg(m)}
+const cardStyle = (ctx, m, source, note) => layout(ctx, 'Card style', `
+<section class="box"><h2>Card style</h2>${note ? `<p class="err">An admin removed your card style: ${esc(note.reason)}</p>` : ''}${msg(m)}
 <p>A little CSS that dresses up your card in the <a href="/browse">dog park</a>. Save it empty to go back to the stock card.</p>
 <form class="stack" method="post" action="/dashboard/card">${csrfField(ctx)}<label for="css">Your card's CSS</label>
 <textarea id="css" name="css" rows="14" spellcheck="false">${esc(source)}</textarea><button>Save</button></form>
@@ -916,6 +917,9 @@ ${site ? `<p>Acting on <b>${esc(site)}</b>: <a href="${esc(ctx.cfg.siteUrl(site)
 <details class="mt"><summary>Supporter</summary>
 <form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}${siteField('ssite')}
 <label for="sdays">Days from now (0 removes supporter)</label><input type="number" id="sdays" name="days" min="0" max="3650" value="365" required><button>Set supporter</button></form></details>
+<details><summary>Card style</summary>
+<form class="stack" method="post" action="/admin/card-clear">${csrfField(ctx)}${siteField('csite')}
+<label for="creason">Reason shown to the member</label><input type="text" id="creason" name="reason" maxlength="200" required><button>Clear card style</button></form></details>
 <details><summary>Staff picks and site of the week</summary>
 <p>Site of the week: ${sotw ? `<a href="/site/${esc(sotw.username)}">${esc(sotw.username)}</a>` : 'none'}. Staff picks: ${picks.map((p) => `<a href="/site/${esc(p.username)}">${esc(p.username)}</a>`).join(', ') || 'none'}.
 The home page shows them while they are listed (not hidden, and past the new-site wait).</p>

@@ -1727,7 +1727,7 @@ const eventOf = (name) => db.prepare('SELECT e.id FROM events e JOIN users u ON 
 test('"act" on /admin fills every site box with that name, escaped', async () => {
   const boss = await bossLogin();
   const page = (await req('get', '/admin?site=picked').set('Cookie', boss.cookie)).text;
-  for (const id of ['bsite', 'ssite', 'fsite']) assert.match(page, new RegExp(`id="${id}" name="site" value="picked"`), id);
+  for (const id of ['bsite', 'ssite', 'fsite', 'csite']) assert.match(page, new RegExp(`id="${id}" name="site" value="picked"`), id);
   assert.match(page, /Acting on <b>picked<\/b>/);
   const evil = (await req('get', `/admin?site=${encodeURIComponent('"><script>x</script>')}`).set('Cookie', boss.cookie)).text;
   assert.ok(!evil.includes('<script>x'));
@@ -1765,6 +1765,72 @@ test('staff picks and the site of the week are set from /admin and shown on the 
   assert.deepEqual(db.prepare("SELECT action FROM admin_log WHERE action IN ('staff pick', 'site of the week', 'remove staff pick') AND site = 'picked' ORDER BY id").all().map((r) => r.action), ['staff pick', 'site of the week', 'remove staff pick']);
   // members can't do it
   assert.equal((await post(m, '/admin/feature', { site: 'picked', action: 'pick' })).status, 404);
+});
+
+// one admin login for the card clearing tests, so they don't use up the login rate limit later tests need
+let cardBossLogin;
+const cardBoss = () => (cardBossLogin ??= bossLogin());
+
+test('an admin clears a card style from /admin: the stock card again, one log row with the reason', async () => {
+  const boss = await cardBoss();
+  const m = await listedMember('cardclear');
+  await saveCard(m, '[data-part=card] { transform: rotate(9deg) }');
+  assert.ok(await memberCss('cardclear'));
+  assert.match((await req('get', '/admin?site=cardclear').set('Cookie', boss.cookie)).text, /<summary>Card style<\/summary>[^]*action="\/admin\/card-clear"[^]*id="csite" name="site" value="cardclear"[^]*<button>Clear card style<\/button>/);
+
+  const res = await post(boss, '/admin/card-clear', { site: 'cardclear', reason: `  ${'r'.repeat(250)}` });
+  assert.match(res.text, /<p class="ok" role="status">Cleared the card style of cardclear\.<\/p>/);
+  assert.equal(await memberCss('cardclear'), null);
+  assert.equal((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.match(/<textarea[^>]*>([^<]*)</)[1], '');
+  const rows = db.prepare("SELECT admin, action, detail FROM admin_log WHERE site = 'cardclear'").all();
+  assert.deepEqual(rows, [{ admin: 'boss', action: 'clear card style', detail: 'r'.repeat(200) }]);
+});
+
+test('the member sees why their card style was cleared until their next passing save', async () => {
+  const boss = await cardBoss();
+  const m = await listedMember('cardnoted');
+  await saveCard(m, '[data-part=card] { color: red }');
+  await post(boss, '/admin/card-clear', { site: 'cardnoted', reason: 'rude <words>' });
+  const notice = 'An admin removed your card style: rude &lt;words&gt;';
+  assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
+  const errLines = (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/<p class="err"[^]*?<\/p>/g) || [];
+  assert.equal(errLines.filter((l) => l.includes('href="/dashboard/card"')).length, 1);
+  // a rejected save keeps the note; a passing one, even empty, removes it
+  await saveCard(m, '.foo { color: <b>blue</b> }');
+  assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
+  await saveCard(m, '');
+  assert.ok(!(await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes('An admin removed'));
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /<p class="err"[^<]*<a href="\/dashboard\/card"/);
+  // the member may save again at once
+  await saveCard(m, '[data-part=card] { color: blue }');
+  assert.ok(await memberCss('cardnoted'));
+});
+
+test('clearing a card style: nothing to clear writes nothing, takedown leaves it alone, members are refused', async () => {
+  const boss = await cardBoss();
+  const m = await listedMember('cardkept');
+  const logRows = () => db.prepare("SELECT COUNT(*) n FROM admin_log WHERE action = 'clear card style'").get().n;
+  const before = logRows();
+  assert.match((await post(boss, '/admin/card-clear', { site: 'nosuchcardsite', reason: 'x' })).text, /No site with that name\./);
+  assert.match((await post(boss, '/admin/card-clear', { site: 'cardkept', reason: 'x' })).text, /No card style on that site\./);
+  assert.equal(logRows(), before);
+  assert.ok(!(await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes('An admin removed'));
+
+  await saveCard(m, '[data-part=card] { color: red }');
+  // a member can't clear one
+  assert.equal((await post(m, '/admin/card-clear', { site: 'cardkept', reason: 'x' })).status, 404);
+  assert.ok(await memberCss('cardkept'));
+
+  const live = db.prepare('SELECT source, css FROM card_styles WHERE user_id = ?').get(m.id);
+  await post(boss, '/admin/ban', { site: 'cardkept', action: 'ban', reason: 'spam' });
+  assert.deepEqual(db.prepare('SELECT source, css FROM card_styles WHERE user_id = ?').get(m.id), live);
+  await post(boss, '/admin/ban', { site: 'cardkept', action: 'unban' });
+  assert.deepEqual(db.prepare('SELECT source, css FROM card_styles WHERE user_id = ?').get(m.id), live);
+
+  // a taken-down Site can still be cleared
+  await post(boss, '/admin/ban', { site: 'cardkept', action: 'ban', reason: 'spam' });
+  assert.match((await post(boss, '/admin/card-clear', { site: 'cardkept', reason: 'x' })).text, /Cleared the card style of cardkept\./);
+  assert.equal(logRows(), before + 1);
 });
 
 test('profile comments: members comment, bots and floods are stopped, and only the owner deletes', async () => {

@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS card_styles (
   version INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- why an admin cleared a Site's card style, shown to the member until their next passing save
+CREATE TABLE IF NOT EXISTS card_notes (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_event ON comments(event_id);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
