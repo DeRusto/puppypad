@@ -421,7 +421,7 @@ ${TEXT_EXT.has(extOf(e.name)) ? `<a href="/dashboard/edit?path=${encodeURICompon
 ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? `<b>${esc(x.username)}</b>` : `<form class="inline" method="post" action="/dashboard/sites/switch">${csrfField(ctx)}<input type="hidden" name="id" value="${x.id}"><button class="link">${esc(x.username)}</button></form>`)).join(' | ')}</p>` : ''}
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
 ${d.cardCleared ? '<p class="err">An admin removed your card style. <a href="/dashboard/card">See why</a></p>' : ''}
-${d.cardError ? '<p class="err">Your card style no longer passes our checks, so your card shows the stock card. <a href="/dashboard/card">Fix it.</a></p>' : ''}
+${d.cardError ? `<p class="err">${CARD_FAILS}. <a href="/dashboard/card">Fix it.</a></p>` : ''}
 <a class="addr" href="${esc(url)}" target="_blank">${esc(url)}</a>
 <div class="status">${meter('Space used', fmtBytes(d.used.total), `of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'}`, d.used.total / (d.quota * 1048576))}
 ${meter('Bandwidth today', fmtBytes(d.bandwidth), `of ${cfg.BANDWIDTH_MB} MB`, d.bandwidth / (cfg.BANDWIDTH_MB * 1048576))}
@@ -564,6 +564,8 @@ if(ins)ins.addEventListener('click',function(){
 
 // card style: the source as typed; a rejected save comes back here with its text and the error.
 // check: the saved card as /browse shows it (row, css), next to the Stock card, and why it is the Stock card when it is
+// the dashboard's line, and the start of /dashboard/card's, for a saved style the current sanitizer rejects
+const CARD_FAILS = 'Your card style no longer passes our checks, so your card shows the stock card';
 const cardStyle = (ctx, m, source, note, check) => layout(ctx, 'Card style', `
 <section class="box"><h2>Card style</h2>${note ? `<p class="err">An admin removed your card style: ${esc(note.reason)}</p>` : ''}${msg(m)}
 <p>A little CSS that dresses up your card in the <a href="/browse">dog park</a>. Save it empty to go back to the stock card.</p>
@@ -980,4 +982,4 @@ ${events.map((e) => {
 `;
 };
 
-module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, cardStyle, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };
+module.exports = { CM, layout, support, home, browse, profile, feed, update, notifications, eventText, signup, login, login2fa, twoFactor, recoveryCodes, forgot, reset, notice, notices, dashboard, starterConfirm, links, stats, editor, styleEditor, cardStyle, CARD_FAILS, move, history, historyDeleted, guestbookAdmin, report, rules, privacy, admin, sitePage, sitePages, guestbook, atom, widgets, apiPage };

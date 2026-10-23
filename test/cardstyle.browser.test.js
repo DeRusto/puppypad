@@ -156,19 +156,28 @@ test('cards: the name and the [profile] link can\'t be hidden', async (t) => {
   assert.ok(await clickable(page, '.card [data-part=name]'));
   assert.ok(await clickable(page, '.card a[href^="/site/"]'));
   await page.close();
+  // nor by hiding the card root itself; a transform on it stays the member's
+  for (const rule of ['display: none', 'visibility: hidden', 'opacity: 0']) {
+    const p = await show({ a: `$ [data-part=card] { ${rule} !important; transform: rotate(3deg) }` });
+    assert.ok(await clickable(p, '.card [data-part=name]'), rule);
+    assert.ok(await clickable(p, '.card a[href^="/site/"]'), rule);
+    assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector('.card [data-part=name]')).opacity === '1' && getComputedStyle(document.querySelector('.card [data-part=card]')).opacity), '1', rule);
+    assert.match(await p.evaluate(() => getComputedStyle(document.querySelector('.card [data-part=card]')).transform), /^matrix\(/, rule);
+    await p.close();
+  }
 });
 
 test('cards: two cards with the same @keyframes name animate independently', async (t) => {
   if (skip) return t.skip(skip);
   db.prepare('DELETE FROM card_styles').run();
   const put = db.prepare('INSERT INTO card_styles (user_id, source, css, version, updated_at) VALUES (?, ?, ?, ?, 0)');
-  for (const [name, frame] of [['carda', 'transform: translateX(20px)'], ['cardb', 'opacity: 0']]) {
+  for (const [name, frame] of [['carda', 'transform: translateX(20px)'], ['cardb', 'transform: translateY(20px)']]) {
     const source = `@keyframes wiggle { to { ${frame} } } [data-part=card] { animation: wiggle 100s linear -50s paused }`;
     put.run(ids[name], source, sanitize(source, Number(ids[name])).css, VERSION);
   }
   const page = await browser.newPage();
   await page.goto(`http://localhost:${PORT}/browse`);
-  const st = await page.evaluate(() => [...document.querySelectorAll('.card [data-part=card]')].slice(0, 2).map((c) => { const s = getComputedStyle(c); return [s.transform, s.opacity]; }));
-  assert.deepEqual(st, [['matrix(1, 0, 0, 1, 10, 0)', '1'], ['none', '0.5']]);
+  const st = await page.evaluate(() => [...document.querySelectorAll('.card [data-part=card]')].slice(0, 2).map((c) => { const s = getComputedStyle(c); return s.transform; }));
+  assert.deepEqual(st, ['matrix(1, 0, 0, 1, 10, 0)', 'matrix(1, 0, 0, 1, 0, 10)']);
   await page.close();
 });

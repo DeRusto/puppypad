@@ -4,10 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const csstree = require('css-tree');
+const { extOf } = require('./util');
 
 // bump on any change to the rules below or to the Card parts (PARTS, or their markup on /browse): any Card part change
 // is a breaking change. Startup rebuilds stored copies with an older version from source (src/server.js)
-const VERSION = 2;
+const VERSION = 3;
 const MAX_BYTES = 4096;
 const MAX_DEPTH = 16; // brackets of any kind; real card styles stay far below this
 const PARTS = ['card', 'shot', 'name', 'tagline', 'tags', 'stats'];
@@ -19,16 +20,15 @@ const SAME = new Set(['is', 'where']); // these match exactly what's inside them
 const URL_FUNCTIONS = new Set(['image-set', '-webkit-image-set', 'image', 'src', 'cross-fade']);
 const MAX_ART = 8;
 const MAX_ART_BYTES = 512 * 1024;
-// Card art formats by extension: the name members see, and a check of the file's first 16 bytes
+// Card art formats by extension: the name members see, a check of the file's first 16 bytes, and the type it's served as
 const ART = {
-  png: ['PNG', (b) => b.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))],
-  jpg: ['JPEG', (b) => b.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))],
-  gif: ['GIF', (b) => /^GIF8[79]a/.test(b.toString('latin1', 0, 6))],
-  webp: ['WebP', (b) => b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP'],
-  avif: ['AVIF', (b) => b.toString('latin1', 4, 8) === 'ftyp' && ['avif', 'avis'].includes(b.toString('latin1', 8, 12))],
+  png: ['PNG', (b) => b.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')), 'image/png'],
+  jpg: ['JPEG', (b) => b.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')), 'image/jpeg'],
+  gif: ['GIF', (b) => /^GIF8[79]a/.test(b.toString('latin1', 0, 6)), 'image/gif'],
+  webp: ['WebP', (b) => b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP', 'image/webp'],
+  avif: ['AVIF', (b) => b.toString('latin1', 4, 8) === 'ftyp' && ['avif', 'avis'].includes(b.toString('latin1', 8, 12)), 'image/avif'],
 };
 ART.jpeg = ART.jpg;
-const extOf = (p) => (p.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
 // a path into the Site's own files: relative, no empty or dot segments, nothing a browser would read as a scheme, query or fragment
 const artPathOk = (p) => Object.hasOwn(ART, extOf(p)) && !/[\0-\x1f\\:?#]/.test(p) && p.split('/').every((s) => s && s[0] !== '.');
 const NTH = new Set(['nth-child', 'nth-last-child', 'nth-of-type', 'nth-last-of-type']);
@@ -111,7 +111,9 @@ function check(ast, id, marker) {
   const prefix = `cs${id}-`;
   const frames = new Set(); // keyframes names as written (decoded), case-sensitive like the browser
   const art = [];
-  csstree.walk(ast, function (n) {
+  const inUrl = []; // the url functions around the current node, innermost last
+  const isUrlFn = (n) => n.type === 'Function' && URL_FUNCTIONS.has(name(n.name));
+  csstree.walk(ast, { leave: (n) => { if (isUrlFn(n)) inUrl.pop(); }, enter(n) {
     if (n.type === 'Raw' || n.type === 'CDO' || n.type === 'CDC') no('Card style has CSS that can\'t be read.');
     if (n.type === 'Rule' && n.block.children.some((c) => c.type !== 'Declaration')) no('Nested rules aren\'t allowed in card style.');
     if (n.type === 'Atrule') {
@@ -124,8 +126,11 @@ function check(ast, id, marker) {
         frames.add(csstree.ident.decode(p.first.name));
       }
     }
-    // css-tree hands over urls and strings decoded, so escapes can't hide a target
-    if (n.type === 'Url' || (n.type === 'String' && this.function && URL_FUNCTIONS.has(name(this.function.name)))) {
+    // a custom property can't be judged as a url until it's used, so none goes inside a url function
+    if (inUrl.length && n.type === 'Function' && name(n.name) === 'var') no(`var() can't be used inside ${inUrl.at(-1)}().`);
+    if (isUrlFn(n)) inUrl.push(name(n.name));
+    // css-tree hands over urls and strings decoded, so escapes can't hide a target; any string at any depth under a url function is a url
+    if (n.type === 'Url' || (n.type === 'String' && inUrl.length)) {
       if (!artPathOk(n.value)) no(`Card art \`${n.value}\` must be a relative path to a PNG, JPEG, GIF, WebP or AVIF file of your site.`);
       let i = art.indexOf(n.value);
       if (i < 0) {
@@ -135,7 +140,7 @@ function check(ast, id, marker) {
       n.value = marker + i;
     }
     if (n.type === 'Function' && !FUNCTIONS.has(name(n.name)) && !URL_FUNCTIONS.has(name(n.name))) no(`Function ${name(n.name)}() is not allowed.`);
-  });
+  } });
   csstree.walk(ast, {
     visit: 'Rule',
     enter(rule) {
@@ -193,23 +198,31 @@ const fill = (css, urls) => css.replace(/url\(<(\d+)>\)|"<(\d+)>"/g, (_, u, s) =
 
 // The art check, shared by /browse and /card-art: each art path of a style, looked up in the Site folder root.
 // reason is null when the file passes, and v (mtime-size) then changes whenever the file does.
-function checkArt(root, art) {
+// read: also hand back the whole file as buf, with its type: the very bytes the checks ran on, so a swap between check and serve can't slip through
+function checkArt(root, art, read = false) {
   return art.map((p) => {
     const fail = (reason) => ({ path: p, reason });
     if (!artPathOk(p)) return fail('not card art');
     const full = path.join(root, ...p.split('/'));
-    const head = Buffer.alloc(16);
     let st;
+    let buf;
     try {
-      st = fs.statSync(full);
-      if (!st.isFile()) return fail('a folder, not a file');
-      if (st.size > MAX_ART_BYTES) return fail('over 512 KB');
+      const l = fs.lstatSync(full);
+      if (l.isSymbolicLink()) return fail('a link, not a file'); // Site files can't make one today; a link could point anywhere
+      if (!l.isFile()) return fail('a folder, not a file');
       const fd = fs.openSync(full, 'r');
-      try { fs.readSync(fd, head, 0, 16, 0); } finally { fs.closeSync(fd); }
+      try {
+        st = fs.fstatSync(fd);
+        if (!st.isFile()) return fail('a folder, not a file');
+        if (st.size > MAX_ART_BYTES) return fail('over 512 KB');
+        buf = read ? fs.readFileSync(fd) : Buffer.alloc(16);
+        if (!read) fs.readSync(fd, buf, 0, 16, 0);
+      } finally { fs.closeSync(fd); }
     } catch { return fail('missing'); }
-    const [kind, ok] = ART[extOf(p)];
-    if (!ok(head)) return fail(`not a real ${kind}`);
-    return { path: p, reason: null, v: `${Math.floor(st.mtimeMs)}-${st.size}` };
+    if (buf.length > MAX_ART_BYTES) return fail('over 512 KB'); // grew after the stat
+    const [kind, ok, type] = ART[extOf(p)];
+    if (!ok(buf)) return fail(`not a real ${kind}`);
+    return { path: p, reason: null, v: `${Math.floor(st.mtimeMs)}-${st.size}`, ...(read && { buf, type }) };
   });
 }
 

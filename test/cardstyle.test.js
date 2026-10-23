@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const csstree = require('css-tree');
-const { sanitize, VERSION, MAX_BYTES } = require('../src/cardstyle');
+const { sanitize, checkArt, VERSION, MAX_BYTES } = require('../src/cardstyle');
 
 const N = '[data-part=name]';
 const ok = (css, id = 7) => {
@@ -66,6 +66,11 @@ test('card style: urls are checked wherever they appear, and stored as placehold
   assert.equal(out('@keyframes k{to{background:url(x.png)}}'), '@keyframes cs7-k{to{background:url(<0>)}}');
   bad(`${N}{background:element(#x)}`, /element\(\)/); // not a url at all: it paints another element of the page
   for (const decl of ['background:image-set("//evil/x.png" 1x)', 'background:image("data:image/png;base64,AA==")', '--x:url(/x.png)', 'background:var(--x, url(x.svg))']) bad(`${N}{${decl}}`, /must be a relative path/);
+  // a string anywhere under a url function is a url, however deep; a custom property can't be judged until used, so var() there is refused
+  bad(`${N}{background:image-set(var(--y, "//evil/x.png") 1x)}`, /var\(\) can't be used inside image-set\(\)/);
+  bad(`${N}{--x:"/admin/x.png";background-image:image-set(var(--x) 1x)}`, /var\(\) can't be used inside image-set\(\)/);
+  bad(`${N}{background:cross-fade(image("x.png"), image-set(calc("//evil/x.png") 1x), 50%)}`, /`\/\/evil\/x\.png` must be a relative path/);
+  bad(`${N}{background:image-set(-webkit-image-set(var(--x)) 1x)}`, /var\(\) can't be used/);
 });
 
 test('card style: a url must be a relative path to a png, jpg, gif, webp or avif file of the Site', () => {
@@ -170,6 +175,27 @@ test('card style: < is escaped in the output, which has no <!-- and re-parses to
     assert.deepEqual(plain(out(o.replace(/\.cs-7 /g, ''))), plain(o)); // sanitizing the output again changes nothing
   }
   bad(`@media (width<600px){${N}{color:red}}`, /only use </); // \3c would turn the range into an identifier
+});
+
+test('card art: read hands back the very bytes it checked, with their type; links are refused', (t) => {
+  const fs = require('fs');
+  const path = require('path');
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cardart-'));
+  const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(92, 1)]);
+  fs.writeFileSync(path.join(root, 'a.png'), png);
+  fs.writeFileSync(path.join(root, 'b.JPG'), Buffer.from('ffd8ffe0', 'hex'));
+  const [a, b] = checkArt(root, ['a.png', 'b.JPG'], true);
+  assert.equal(a.reason, null);
+  assert.deepEqual(a.buf, png);
+  assert.equal(a.type, 'image/png');
+  assert.equal(b.type, 'image/jpeg');
+  assert.equal(checkArt(root, ['a.png'])[0].buf, undefined); // a plain check reads only the head
+  try {
+    fs.symlinkSync(path.join(root, 'a.png'), path.join(root, 'l.png'));
+  } catch (e) {
+    return t.skip(`can't make a symlink here (${e.code})`);
+  }
+  assert.equal(checkArt(root, ['l.png'])[0].reason, 'a link, not a file');
 });
 
 test('card style: a Site id is required', () => {
