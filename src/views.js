@@ -1,7 +1,7 @@
 const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
 const starters = require('./starters');
 const style = require('./style');
-const { PARTS: CARD_PARTS, MAX_BYTES: CARD_MAX_BYTES } = require('./cardstyle');
+const { PARTS: CARD_PARTS, MAX_BYTES: CARD_MAX_BYTES, MAX_ART: CARD_MAX_ART, MAX_ART_BYTES: CARD_MAX_ART_BYTES } = require('./cardstyle');
 const W = require('./widgets');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -61,11 +61,12 @@ const shotImg = (ctx, r, link, part = '') => (r.shot
   ? `<a${part} href="${esc(link)}"><img class="shot" src="/shots/${esc(r.username)}.jpg?v=${r.shot_at || 0}" alt="Screenshot of ${esc(r.username)}" loading="lazy" width="512" height="384"></a>`
   : `<a${part} class="shot none" href="${esc(link)}">${esc(r.username)}<br>no screenshot yet</a>`);
 const tagLinks = (tags) => tags.split(' ').map((t) => `<a href="/browse?q=${encodeURIComponent(t)}">#${esc(t)}</a>`).join(' ');
-// parts: /browse only; adds the member root and the Card part hooks that card style targets (all six, even when empty)
+// parts: /browse only; adds the member root and the Card part hooks that card style targets (all six, even when empty).
+// A row with no id gets no scope class, so no card style reaches it: the Stock card on /dashboard/card
 const cards = (ctx, rows, parts = false) => {
   const p = (name) => (parts ? ` data-part="${name}"` : '');
   return rows.length
-    ? `<ul class="grid">${rows.map((r) => `<li class="card${parts ? ` cs-${r.id}` : ''}${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? '<div data-part="card">' : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
+    ? `<ul class="grid">${rows.map((r) => `<li class="card${parts && r.id ? ` cs-${r.id}` : ''}${isSup(ctx, r.username) ? ' supporter' : ''}">${parts ? '<div data-part="card">' : ''}${shotImg(ctx, r, ctx.cfg.siteUrl(r.username), p('shot'))}
 <div><a${p('name')} href="${esc(ctx.cfg.siteUrl(r.username))}"><b>${nameTag(ctx, r.username)}</b></a> <a href="/site/${esc(r.username)}" class="t">[profile]</a></div>
 ${r.tagline || parts ? `<div${p('tagline')} class="t">${esc(r.tagline || '')}</div>` : ''}${r.tags || parts ? `<div${p('tags')} class="t">${r.tags ? tagLinks(r.tags) : ''}</div>` : ''}
 <div${p('stats')} class="t">updated ${ago(r.updated_at)} | ${r.followers} follower${r.followers === 1 ? '' : 's'} | ${r.hits} hits</div>${parts ? '</div>' : ''}</li>`).join('')}</ul>`
@@ -561,14 +562,21 @@ if(ins)ins.addEventListener('click',function(){
 })();</script>`, { tight: true, head });
 };
 
-// card style: the source as typed; a rejected save comes back here with its text and the error
-const cardStyle = (ctx, m, source, note) => layout(ctx, 'Card style', `
+// card style: the source as typed; a rejected save comes back here with its text and the error.
+// check: the saved card as /browse shows it (row, css), next to the Stock card, and why it is the Stock card when it is
+const cardStyle = (ctx, m, source, note, check) => layout(ctx, 'Card style', `
 <section class="box"><h2>Card style</h2>${note ? `<p class="err">An admin removed your card style: ${esc(note.reason)}</p>` : ''}${msg(m)}
 <p>A little CSS that dresses up your card in the <a href="/browse">dog park</a>. Save it empty to go back to the stock card.</p>
-<form class="stack" method="post" action="/dashboard/card">${csrfField(ctx)}<label for="css">Your card's CSS</label>
+${check.listed ? '' : '<p class="note">Your site isn\'t in the dog park right now, so nobody sees this card yet.</p>'}
+<p><b>${check.why ? `Your card shows the stock card because: ${esc(check.why)}.` : 'Your card shows your style.'}</b></p>
+${check.failing.length ? `<ul>${check.failing.map((f) => `<li><code>${esc(f.path)}</code>: ${esc(f.reason)}</li>`).join('')}</ul>` : ''}
+<p class="note">Your saved card, then the stock card, as the dog park shows them.</p>
+${cards(ctx, [check.row, { ...check.row, id: null }], true)}
+<form class="stack mt" method="post" action="/dashboard/card">${csrfField(ctx)}<label for="css">Your card's CSS</label>
 <textarea id="css" name="css" rows="14" spellcheck="false">${esc(source)}</textarea><button>Save</button></form>
-<p class="note">Style only the Card parts: ${CARD_PARTS.map((p) => `<code>[data-part="${p}"]</code>`).join(' ')}. Up to ${CARD_MAX_BYTES / 1024} KB; no <code>position: fixed</code> or <code>sticky</code>; <code>@media</code> and <code>@keyframes</code> are fine.</p>
-<p><a href="/dashboard">Back to my pad</a></p></section>`);
+<p class="note">Style only the Card parts: ${CARD_PARTS.map((p) => `<code>[data-part="${p}"]</code>`).join(' ')}. Every selector names a part; <code>:has()</code> and <code>:not()</code> only qualify one, and parts combine only with a space (descendant) or <code>&gt;</code> (child).</p>
+<p class="note">Rules: up to ${CARD_MAX_BYTES / 1024} KB; at most ${CARD_MAX_ART} art files, each up to ${CARD_MAX_ART_BYTES / 1024} KB and only relative paths to your own PNG, JPEG, GIF, WebP or AVIF files (like <code>url(img/bone.png)</code>); no <code>position: fixed</code> or <code>sticky</code>; no <code>&lt;</code> outside strings (use <code>max-width</code> in <code>@media</code>); <code>@media</code> and <code>@keyframes</code> are fine.</p>
+<p><a href="/dashboard">Back to my pad</a></p></section>`, { head: check.css ? `<style>${check.css}</style>` : '' });
 
 const styleEditor = (ctx, m, { s, page, tail, offerLink, images }) => {
   const opts = (list, cur) => list.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
