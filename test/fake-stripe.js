@@ -8,16 +8,19 @@ const Stripe = require('stripe');
 const listed = (data, limit = data.length) => Object.assign(Promise.resolve({ data: data.slice(0, limit), has_more: data.length > limit }), { [Symbol.asyncIterator]: async function* () { yield* data; } });
 
 function fakeStripe() {
-  const state = { customers: 0, open: [], subs: [], cancelled: [], fail: false };
+  const state = { customers: 0, open: [], sessions: [], subs: [], cancelled: [], fail: false };
   const calls = [];
   const call = (fn) => (...a) => { if (state.fail) throw new Error('Stripe is down'); calls.push(a[0]); return fn(...a); };
+  const real = new Stripe('sk_test_fake'); // signature work is local crypto, never a network call, so it is not gated on state.fail
   return {
     state,
     calls,
-    webhooks: new Stripe('sk_test_fake').webhooks,
+    webhooks: real.webhooks,
+    parseEventNotification: (...a) => real.parseEventNotification(...a),
     customers: { create: call(async () => ({ id: `cus_test${++state.customers}` })) },
     checkout: { sessions: {
       create: call(async () => ({ url: 'https://checkout.stripe.com/c/pay/test' })),
+      retrieve: call(async (id) => state.sessions.find((o) => o.id === id)),
       list: call(({ customer, limit }) => listed(state.open.filter((o) => o.customer === customer), limit)),
       expire: call(async (id) => { state.open = state.open.filter((o) => o.id !== id); return { id }; }),
     } },
