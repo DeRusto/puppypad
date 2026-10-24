@@ -42,7 +42,7 @@ function event(stripe, type, object, { secret = SECRET, store = true } = {}) {
 function thinEvent(stripe, type, object, { secret = SECRET } = {}) {
   if (type.startsWith('v1.customer.subscription.')) stripe.state.subs = stripe.state.subs.filter((o) => o.id !== object.id).concat(object);
   if (type.startsWith('v1.checkout.session.')) stripe.state.sessions = stripe.state.sessions.filter((o) => o.id !== object.id).concat(object);
-  const payload = JSON.stringify({ id: `evt_${type}`, object: 'v2.core.event', type, related_object: { id: object.id, type: type.includes('checkout') ? 'checkout.session' : 'subscription', url: `/v1/${type.includes('checkout') ? 'checkout/sessions' : 'subscriptions'}/${object.id}` } });
+  const payload = JSON.stringify({ id: `evt_${type}`, object: 'v2.core.event', type, related_object: { id: object.id, type: type.includes('checkout') ? 'checkout.session' : type.includes('subscription') ? 'subscription' : 'invoice', url: `/v1/${type.includes('checkout') ? 'checkout/sessions' : type.includes('subscription') ? 'subscriptions' : 'invoices'}/${object.id}` } });
   return make(stripe).receive(Buffer.from(payload), signer.generateTestHeaderString({ payload, secret }));
 }
 
