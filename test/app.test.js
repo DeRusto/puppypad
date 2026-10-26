@@ -2967,10 +2967,11 @@ test('support checkout, billing portal and account deletion stop when the member
   const m = await member('midstripe');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'midstripe')").run();
   const post = (url, body = {}) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
-  // each Stripe call signs the member out on its way, as "log out everywhere" or a ban from elsewhere would
+  // the request's last Stripe call answers only after the member is signed out, as "log out everywhere" or a ban from elsewhere would;
+  // so only a check after the await can stop it
   const during = async (obj, fn, run) => {
     const orig = obj[fn];
-    obj[fn] = (...a) => { signOut(); return orig(...a); };
+    obj[fn] = async (...a) => { const r = await orig(...a); signOut(); return r; };
     try { return await run(); } finally { obj[fn] = orig; }
   };
   const go = await during(stripe.checkout.sessions, 'create', async () => {
@@ -2987,8 +2988,10 @@ test('support checkout, billing portal and account deletion stop when the member
     return r;
   });
   assert.equal(portal.headers.location, '/login');
-  const del = await during(stripe.subscriptions, 'list', () => post('/dashboard/delete-account', { password: 'longpassword1' }));
+  fake.subs.push({ id: 'sub_mid', customer: 'cus_mid', status: 'active' });
+  const del = await during(stripe.subscriptions, 'cancel', () => post('/dashboard/delete-account', { password: 'longpassword1' }));
   assert.equal(del.headers.location, '/login');
+  assert.ok(fake.cancelled.includes('sub_mid')); // the cancel went through; the account stays
   assert.ok(db.prepare("SELECT 1 FROM users WHERE username = 'midstripe'").get());
 
   async function relogin() {
