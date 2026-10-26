@@ -18,15 +18,16 @@ that matches the background, a tiny `font-size`, or card art and `::before` cont
 Locking these one by one doesn't work:
 
 - `transform` on the card root is how the feature's hover effects work; the spec allows it on purpose.
-- `color` and `font-size` on the name are styling members are meant to have.
+- Locking `color` and `font-size` on the name would take away styling members are meant to use.
 - Even with all of those locked, draped art can still sit on top of the name.
 
 The only robust fix is moving the name and `[profile]` link out of the member's reach, into a platform strip in the
 outer card painted above the art. That removes `name` as a Card part, rejects every saved style that targets it, and
 takes away a large part of what members style. That's too much for the harm involved.
 
-And the harm is small: an unreadable name only hurts the member's own card. The card still links to the Site, so a
-viewer can always find out whose it is, and an admin who finds a card abusive clears it with
+And the harm is small: an unreadable name only hurts the member's own card. At worst (`scale(0)` on the card root)
+the whole card, links included, shrinks out of sight, which hides that Site from `/browse` and touches no one else's
+card. The name and `[profile]` link stay in the markup, and an admin who finds a card abusive clears it with
 **Admin → Card style → Clear card style** (the member sees the reason).
 
 ## Prior requests
