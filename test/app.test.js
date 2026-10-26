@@ -541,6 +541,45 @@ test('an upload or import still arriving when the member is signed out writes no
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latezip/late.html')), false);
 });
 
+// a form post whose body arrives after `between` runs; the session was read when the headers came in
+async function slowForm(m, url, fields, between) {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  const body = Buffer.from(new URLSearchParams({ _csrf: m.csrf, ...fields }).toString());
+  try {
+    return await new Promise((resolve, reject) => {
+      const r = require('http').request({ port: server.address().port, host: '127.0.0.1', method: 'POST', path: url, headers: {
+        Host: 'pad.test', Cookie: m.cookie, 'X-Forwarded-For': ip(), 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': body.length,
+      } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
+      r.on('error', reject);
+      r.write(body.subarray(0, 1));
+      setTimeout(() => { between(); r.end(body.subarray(1)); }, 100);
+    });
+  } finally {
+    server.close();
+  }
+}
+
+test('a dashboard form still arriving when the member is signed out or banned writes nothing', async () => {
+  const m = await member('slowsave');
+  const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowsave')").run();
+  const save = await slowForm(m, '/dashboard/save', { path: 'late.html', content: 'late' }, signOut);
+  assert.equal(save.statusCode, 302);
+  assert.equal(save.headers.location, '/login');
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowsave/late.html')), false);
+
+  // a ban ends every session of the login, so a delete still arriving is stopped the same way
+  const m2 = await member('slowdel');
+  assert.equal((await upload(m2, 'keep.html', 'keep')).status, 200);
+  const ban = () => {
+    db.prepare("UPDATE users SET banned = 1 WHERE username = 'slowdel'").run();
+    db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowdel')").run();
+  };
+  const del = await slowForm(m2, '/dashboard/delete', { path: 'keep.html' }, ban);
+  assert.equal(del.headers.location, '/login');
+  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowdel/keep.html')));
+});
+
 test('log in with the site name or the email address', async () => {
   await member('twoways', 'TwoWays@Example.com');
   const login = (username, password = 'longpassword1') => req('post', '/login').type('form').send({ username, password });
@@ -2898,4 +2937,51 @@ test('supporter checkout offers the monthly and the yearly price', async () => {
   fake.subs = fake.subs.filter((o) => o.id !== sub.id).concat(sub);
   assert.equal((await hook('customer.subscription.created', sub)).status, 200);
   assert.ok(db.prepare('SELECT supporter_until FROM users WHERE username = ?').get('choosey').supporter_until > end * 1000);
+});
+
+test('support checkout, billing portal and account deletion stop when the member is signed out while Stripe answers', async () => {
+  const m = await member('midstripe');
+  const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'midstripe')").run();
+  const post = (url, body = {}) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  // each Stripe call signs the member out on its way, as "log out everywhere" or a ban from elsewhere would
+  const during = async (obj, fn, run) => {
+    const orig = obj[fn];
+    obj[fn] = (...a) => { signOut(); return orig(...a); };
+    try { return await run(); } finally { obj[fn] = orig; }
+  };
+  const go = await during(stripe.checkout.sessions, 'create', async () => {
+    const r = await post('/dashboard/support');
+    // signed out mid-request: no Checkout link handed out; sign back in for the next step
+    Object.assign(m, await relogin());
+    return r;
+  });
+  assert.equal(go.headers.location, '/login');
+  const portal = await during(stripe.billingPortal.sessions, 'create', async () => {
+    db.prepare("UPDATE users SET stripe_customer_id = 'cus_mid' WHERE username = 'midstripe'").run();
+    const r = await post('/dashboard/support/portal');
+    Object.assign(m, await relogin());
+    return r;
+  });
+  assert.equal(portal.headers.location, '/login');
+  const del = await during(stripe.subscriptions, 'list', () => post('/dashboard/delete-account', { password: 'longpassword1' }));
+  assert.equal(del.headers.location, '/login');
+  assert.ok(db.prepare("SELECT 1 FROM users WHERE username = 'midstripe'").get());
+
+  async function relogin() {
+    const res = await req('post', '/login').type('form').send({ username: 'midstripe', password: 'longpassword1' });
+    const cookie = res.headers['set-cookie'][0].split(';')[0];
+    const csrf = (await req('get', '/dashboard').set('Cookie', cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+    return { cookie, csrf };
+  }
+});
+
+test('support checkout and billing portal share a rate limit per login', async () => {
+  const m = await member('hammer');
+  const post = (url) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf });
+  for (let i = 0; i < 5; i++) assert.equal((await post('/dashboard/support')).status, 303);
+  for (let i = 0; i < 5; i++) assert.notEqual((await post('/dashboard/support/portal')).status, 429);
+  const before = stripeCalls.length;
+  assert.equal((await post('/dashboard/support')).status, 429);
+  assert.equal((await post('/dashboard/support/portal')).status, 429);
+  assert.equal(stripeCalls.length, before); // turned away before any Stripe call
 });
