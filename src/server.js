@@ -898,6 +898,14 @@ const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.use
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
 const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null);
 main.get('/dashboard', auth, (req, res) => showDashboard(req, res, msgOf(req)));
+// PROTOTYPE (#154), throwaway: custom domain flow variants, never in production
+if (process.env.NODE_ENV !== 'production') {
+  main.get('/dashboard/domain-prototype', auth, (req, res) => {
+    let dash = '';
+    showDashboard(req, { status() { return this; }, send(h) { dash = h; } }, null);
+    res.send(require('./prototype-domain').render(req.ctx, req.query, dash, V.layout));
+  });
+}
 
 const savedMsg = (saved, skipped, verb) => ({
   ok: saved.length ? `${verb} ${saved.length} file${saved.length === 1 ? '' : 's'}.` : '',
