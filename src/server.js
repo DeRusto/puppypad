@@ -450,7 +450,10 @@ main.use((req, res, next) => {
   next();
 });
 const auth = (req, res, next) => (req.ctx.user ? next() : res.redirect('/login'));
-const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard') : next());
+// a form's body has arrived by now and can take a long time to; a ban, reset or deletion meanwhile must stop the write
+// (multipart bodies arrive later, so upload and import check again themselves)
+const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard')
+  : req.method === 'POST' && !stillCurrent(req, req.ctx.user) ? res.redirect('/login') : next());
 const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notices.noSuchPage(req.ctx)));
 
 // ----- SEO: robots, sitemap, brand assets -----
@@ -1138,6 +1141,7 @@ main.post('/dashboard/history/restore', auth, canEdit, async (req, res) => {
   const back = (kind, text) => res.redirect(`/dashboard/history/file?path=${encodeURIComponent(rel || '')}&${kind}=${encodeURIComponent(text)}`);
   const old = full && await H.show(user.id, siteDir(user.username), req.body.v, rel);
   if (!old) return back('err', 'That version is not kept any more.');
+  if (!stillCurrent(req, user)) return res.redirect('/login'); // H.show can wait behind other history work for this site
   const err = files.write(user, rel, old);
   if (err) return back('err', `Not restored: ${err}.`);
   back('ok', `Restored ${rel}. The version it replaced is kept in this list too.`);
@@ -1379,6 +1383,7 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
   if (billing && !(await billing.cancel(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
+  if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out or banned while Stripe answered
   logins.remove(req.ctx.user);
   res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
   res.send(V.notices.accountDeleted(req.ctx));
@@ -1391,10 +1396,14 @@ const supportPage = (req, res, m, status = 200) => res.status(status).send(V.sup
 }));
 main.get('/dashboard/support', auth, (req, res) => (cfg.SUPPORT_ON || isSupporter(req.ctx.login) ? supportPage(req, res, msgOf(req)) : res.redirect('/dashboard')));
 // Stripe's hosted Checkout takes the card; the webhook above turns the perks on once it is paid
+// every try is a few Stripe calls, so they share a limit with the portal below
+const supportLimited = (req, res) => !U.limit(`support:${req.ctx.login.id}`, 10, 900000) && supportPage(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
 main.post('/dashboard/support', auth, async (req, res) => {
   if (!billing) return res.redirect('/dashboard');
+  if (supportLimited(req, res)) return;
   try {
     const go = await billing.checkout(req.ctx.login, req.body.plan);
+    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out or banned while Stripe answered
     if (go.already) return supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
     res.redirect(303, go.url);
   } catch (e) {
@@ -1405,8 +1414,10 @@ main.post('/dashboard/support', auth, async (req, res) => {
 // Stripe's Customer Portal: cancel, change the card, see receipts
 main.post('/dashboard/support/portal', auth, async (req, res) => {
   if (!billing) return res.redirect('/dashboard/support');
+  if (supportLimited(req, res)) return;
   try {
     const url = await billing.portal(req.ctx.login);
+    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
     if (!url) return res.redirect('/dashboard/support');
     res.redirect(303, url);
   } catch (e) {
