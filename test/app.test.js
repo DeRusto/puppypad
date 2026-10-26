@@ -541,10 +541,12 @@ test('an upload or import still arriving when the member is signed out writes no
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latezip/late.html')), false);
 });
 
-// a form post whose body arrives after `between` runs; the session was read when the headers came in
+// a form post whose body arrives after `between` runs, once the server has read the session from the headers
 async function slowForm(m, url, fields, between) {
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
+  let seen = null;
+  server.once('request', (r) => { seen = r; });
   const body = Buffer.from(new URLSearchParams({ _csrf: m.csrf, ...fields }).toString());
   try {
     return await new Promise((resolve, reject) => {
@@ -553,7 +555,17 @@ async function slowForm(m, url, fields, between) {
       } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
       r.on('error', reject);
       r.write(body.subarray(0, 1));
-      setTimeout(() => { between(); r.end(body.subarray(1)); }, 100);
+      // ending the session any sooner would be caught by auth, not by the check under test
+      const started = Date.now();
+      const poll = setInterval(() => {
+        if (!seen?.ctx?.user) {
+          if (Date.now() - started > 5000) { clearInterval(poll); r.destroy(new Error('the server never read the session')); }
+          return;
+        }
+        clearInterval(poll);
+        between();
+        r.end(body.subarray(1));
+      }, 10);
     });
   } finally {
     server.close();
@@ -2739,6 +2751,18 @@ test('file history keeps each save of a text file, puts old versions back and br
     await saving;
     assert.ok(!H.exists(999999));
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  // a restore whose session ends while it waits on the history queue writes nothing
+  await save('<p>third</p>');
+  const login = await req('post', '/login').type('form').send({ username: 'historian', password: 'longpassword1' });
+  const other = { cookie: login.headers['set-cookie'][0].split(';')[0] };
+  other.csrf = (await req('get', '/dashboard').set('Cookie', other.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  const show = H.show;
+  H.show = (...a) => { db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(U.sha(other.cookie.split('=')[1])); return show(...a); };
+  try {
+    const late = await post(other, '/dashboard/history/restore', { path: 'a.html', v: left[0].sha });
+    assert.equal(late.headers.location, '/login');
+  } finally { H.show = show; }
+  assert.equal(fs.readFileSync(path.join(tree, 'a.html'), 'utf8'), '<p>third</p>');
   // deleting the account deletes its history, in the background
   await post(m, '/dashboard/delete-account', { password: 'longpassword1' });
   for (let i = 0; i < 100 && H.exists(user.id); i++) await new Promise((r) => setTimeout(r, 50));
