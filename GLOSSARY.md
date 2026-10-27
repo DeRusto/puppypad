@@ -36,6 +36,14 @@ _Avoid_: donor, subscriber, premium
 The module that owns a site's folder: every change to its files passes the site's limits and the phishing check and is kept in file history, usually with a feed event. It also creates, renames and removes whole sites.
 _Avoid_: storage, uploads
 
+**Update**:
+The entry a Site's file changes make in the feed. Followers see it, and members can comment on it and like it. Changes within an hour of the last Update join that Update.
+_Avoid_: event, post, activity
+
+**Block**:
+One member shutting another out. While either has blocked the other, neither can follow, comment on or like the other's Site, and the follows between them end. The blocked member's comments and likes are hidden on the blocker's Site and from the blocker's view.
+_Avoid_: mute, ban (a ban is a moderator taking a Site down)
+
 **Card style**:
 A site's own CSS that decorates only that site's card in the browse grid. Each site has its own; it never reaches the site itself, other cards or the rest of the page.
 _Avoid_: explore CSS, pad CSS, card CSS
