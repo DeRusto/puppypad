@@ -5,8 +5,8 @@
 const { db } = require('./db');
 
 // cfg for the admin list and limits; removeSite(site) deletes a site's folder, screenshot and history (Site files);
-// dropShot(site) deletes its screenshot
-function createLogins({ cfg, removeSite, dropShot }) {
+// dropShot(site) deletes its screenshot; holdName(name) holds a deleted Site's name (src/names.js)
+function createLogins({ cfg, removeSite, dropShot, holdName }) {
   const byId = db.prepare('SELECT * FROM users WHERE id = ?');
   const idOf = (site) => site.login_id || site.id;
   const loginOf = (site) => (site.login_id ? byId.get(site.login_id) : site);
@@ -30,15 +30,15 @@ function createLogins({ cfg, removeSite, dropShot }) {
     };
   };
 
-  // An extra site goes alone; a login takes its extra sites along. Deleted names stay unclaimable for a while
-  // (released_names), except a never-confirmed account's, which was never online. inTransaction(site) commits with the rows.
-  function remove(site, { inTransaction } = {}) {
+  // An extra site goes alone; a login takes its extra sites along. Deleted names are held (src/names.js), except a
+  // never-confirmed account's, which was never online, and with hold: false, the rollback of a Site whose making
+  // failed, whose name was never served. inTransaction(site) commits with the rows.
+  function remove(site, { inTransaction, hold = true } = {}) {
     const extra = db.prepare('SELECT * FROM users WHERE login_id = ?').all(site.id);
     db.transaction(() => {
-      const hold = db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)');
-      for (const s of extra) hold.run(s.username, Date.now());
+      if (hold) for (const s of extra) holdName(s.username);
       db.prepare('DELETE FROM users WHERE id = ?').run(site.id);
-      if (site.verified) hold.run(site.username, Date.now());
+      if (hold && site.verified) holdName(site.username);
       if (inTransaction) inTransaction(site);
     })();
     for (const s of extra) removeSite(s);

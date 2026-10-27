@@ -21,6 +21,7 @@ old.close();
 
 const { db } = require('../src/db'); // starts the way the app does
 const { createLogins } = require('../src/logins');
+const { createNames } = require('../src/names');
 
 const cols = () => db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
 const indexes = () => db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users'").all().map((r) => r.name);
@@ -33,7 +34,9 @@ const logins = createLogins({
   cfg: { ADMIN_EMAILS: new Set(['boss@x.test']), QUOTA_MB: 1, MAX_FILE_MB: 1, SUPPORTER_QUOTA_MB: 3, SUPPORTER_MAX_FILE_MB: 2, HISTORY_DAYS: 30, SUPPORTER_HISTORY_DAYS: 365 },
   removeSite: (site) => removed.push(site.username),
   dropShot: (site) => dropped.push(site.username),
+  holdName: (name) => names.hold(name),
 });
+const names = createNames({ files: { rename: () => {} } });
 
 let n = 0;
 const add = (fields = {}) => {
@@ -111,6 +114,13 @@ test('remove: an extra site goes alone; a login takes its sites, holds their nam
   const unconfirmed = add({ verified: 0 });
   logins.remove(unconfirmed);
   assert.equal(db.prepare('SELECT 1 FROM released_names WHERE name = ?').get(unconfirmed.username), undefined);
+
+  // hold: false, the rollback of a Site whose making failed, holds no name, its extra sites' neither
+  const rolled = add();
+  const rolledExtra = extra(rolled);
+  logins.remove(rolled, { hold: false });
+  assert.equal(names.taken(rolled.username), false);
+  assert.equal(names.taken(rolledExtra.username), false);
 });
 
 const report = (site) => db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES (?, 'Spam', 'x', 0)").run(site.username).lastInsertRowid;

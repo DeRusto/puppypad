@@ -19,6 +19,8 @@ const H = require('./history');
 const { createSiteFiles, siteDir, shotPath, resolveIn, resolve, MAX_FILES } = require('./sitefiles');
 const { createLogins } = require('./logins');
 const { createSessions } = require('./sessions');
+const { createListing } = require('./listing');
+const { createNames } = require('./names');
 const { createBilling, BadSignature } = require('./billing');
 
 // ---------- config ----------
@@ -58,7 +60,6 @@ const cfg = {
 };
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
 const DAY = 86400000;
-const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
 const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
 const IP_KEEP = 90 * DAY; // guestbook and report IPs are erased after this; the privacy page promises it
 const now = () => Date.now();
@@ -125,21 +126,16 @@ const tempBudget = (most) => (req, res, next) => {
   next();
 };
 const dropTemp = (files) => { for (const f of files) if (f && f.path) fs.rmSync(f.path, { force: true }); };
-const LIVE = 'verified = 1 AND banned = 0';
-// live, unhidden sites shown on the home page, the dog park, the sitemap and /random; the webring takes only those that joined it (profiles and addresses work for every live site)
-const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
-const listed = () => `${LIVE} AND hidden = 0 AND updates > 0 AND created_at <= ${listedSince()}`;
-const isListed = (u) => !!(u.verified && !u.banned && !u.hidden && u.updates > 0 && u.created_at <= listedSince());
+// Online, not hidden and Listed (src/listing.js); the webring takes only Listed Sites that joined it (profiles and addresses work for every Online Site)
+const listing = createListing({ cfg });
+const { ONLINE, unhiddenWhere, listedWhere } = listing;
 // Each member keeps the largest QUOTA_MB they have had: raising it in .env grows every site, lowering it only affects new signups
 db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
-
-// the current name of the site that gave up `name` in a rename, while that name is still held
-const renamedTo = (name) => db.prepare(`SELECT u.username FROM released_names r JOIN users u ON u.id = r.user_id WHERE r.name = ? AND r.released_at > ? AND ${LIVE}`).get(String(name), now() - NAME_HOLD)?.username;
 
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
 const MAX_SITES = 5;
 // what belongs to a site's login, from any of its sites (src/logins.js)
-const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site), dropShot: (site) => fs.rmSync(shotPath(site.username), { force: true }) });
+const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site), dropShot: (site) => fs.rmSync(shotPath(site.username), { force: true }), holdName: (name) => names.hold(name) });
 const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
 // signed-in visits, tokens and two-factor codes, and whether a Session is still good (src/sessions.js)
 const sessions = createSessions({ logins });
@@ -153,6 +149,8 @@ const makeBilling = (stripe) => createBilling({ cfg, logins, stripe, webhookSecr
 let billing = cfg.SUPPORT_ON ? makeBilling(new Stripe(env.STRIPE_SECRET_KEY)) : null;
 // every change to a site's folder goes through here (src/sitefiles.js)
 const files = createSiteFiles({ cfg, limitsFor, sendMail });
+// which names are taken, Held names and renames (src/names.js)
+const names = createNames({ files });
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
 const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
@@ -196,7 +194,7 @@ function withOgImage(buf, name) {
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
   if (!owner || !owner.verified) {
-    const to = renamedTo(req.siteName);
+    const to = names.renamedTo(req.siteName);
     // a day's cache, not forever: once the hold ends someone else may take the old name
     if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, cfg.siteUrl(to) + req.originalUrl);
     return res.status(404).send(V.sitePages.empty(cfg, req.siteName));
@@ -335,7 +333,7 @@ const shotAuth = (req, res, next) => {
 };
 main.get('/internal/shots/next', shotAuth, (req, res) => {
   // wait 20s after the last save so a burst of edits makes one screenshot
-  const u = db.prepare(`SELECT username FROM users WHERE ${LIVE} AND shot_dirty = 1 AND updated_at < ? ORDER BY updated_at LIMIT 1`).get(now() - 20000);
+  const u = db.prepare(`SELECT username FROM users WHERE ${ONLINE} AND shot_dirty = 1 AND updated_at < ? ORDER BY updated_at LIMIT 1`).get(now() - 20000);
   res.json(u ? { name: u.username, url: cfg.siteUrl(u.username) + '/' } : {});
 });
 main.post('/internal/shots/:name', shotAuth, express.raw({ type: '*/*', limit: '2mb' }), (req, res) => {
@@ -443,7 +441,7 @@ main.get('/robots.txt', (req, res) => res.type('text/plain').send(
   `User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /internal/\n\nSitemap: ${cfg.BASE_URL}/sitemap.xml\n`));
 main.get('/sitemap.xml', (req, res) => {
   const urls = [['/', null], ['/browse', null], ['/rules', null], ['/privacy', null],
-    ...db.prepare(`SELECT username, updated_at FROM users WHERE ${listed()} ORDER BY updated_at DESC`).all()
+    ...db.prepare(`SELECT username, updated_at FROM users WHERE ${listedWhere()} ORDER BY updated_at DESC`).all()
       .map((u) => [`/site/${u.username}`, new Date(u.updated_at).toISOString().slice(0, 10)])];
   res.set('Cache-Control', 'public, max-age=3600').type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(([loc, mod]) => `<url><loc>${cfg.BASE_URL}${loc}</loc>${mod ? `<lastmod>${mod}</lastmod>` : ''}</url>`).join('\n')}\n</urlset>\n`);
@@ -451,11 +449,11 @@ main.get('/sitemap.xml', (req, res) => {
 
 // ----- public pages -----
 main.get('/', (req, res) => res.send(V.home(req.ctx, {
-  sotw: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} AND u.sotw_at > 0`).all().map(hasShot)[0],
-  picks: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} AND u.staff_pick > 0 ORDER BY u.staff_pick DESC LIMIT 8`).all().map(hasShot),
-  recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
-  newest: db.prepare(`SELECT * FROM users WHERE ${listed()} ORDER BY id DESC LIMIT 10`).all(),
-  total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${LIVE}`).get().n,
+  sotw: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} AND u.sotw_at > 0`).all().map(hasShot)[0],
+  picks: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} AND u.staff_pick > 0 ORDER BY u.staff_pick DESC LIMIT 8`).all().map(hasShot),
+  recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
+  newest: db.prepare(`SELECT * FROM users WHERE ${listedWhere()} ORDER BY id DESC LIMIT 10`).all(),
+  total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${ONLINE}`).get().n,
   supporters: cfg.SUPPORT_ON ? db.prepare('SELECT COUNT(*) n FROM users WHERE supporter_until > ?').get(now()).n : 0,
 })));
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
@@ -483,8 +481,8 @@ const cardCssFor = (rows) => {
 main.get('/card-art/:name/*path', (req, res) => {
   res.set('Content-Security-Policy', 'sandbox').set('X-Content-Type-Options', 'nosniff');
   const rel = req.params.path.join('/');
-  const s = db.prepare(`SELECT u.username, c.art, ${listed()} AS shown FROM users u JOIN card_styles c ON c.user_id = u.id
-    WHERE u.username = ? AND (${listed()} OR (${LIVE} AND u.id = ?)) AND c.version = ? AND c.css IS NOT NULL`)
+  const s = db.prepare(`SELECT u.username, c.art, ${listedWhere()} AS shown FROM users u JOIN card_styles c ON c.user_id = u.id
+    WHERE u.username = ? AND (${listedWhere()} OR (${ONLINE} AND u.id = ?)) AND c.version = ? AND c.css IS NOT NULL`)
     .get(req.params.name, req.ctx.user?.id ?? 0, cardstyle.VERSION);
   const f = s && JSON.parse(s.art).includes(rel) && cardstyle.checkArt(siteDir(s.username), [rel], true)[0];
   if (!f || f.reason) return res.status(404).type('text').send('Not found');
@@ -505,7 +503,7 @@ main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
   const search = String(req.query.q || '').trim().toLowerCase().slice(0, 50);
   // part of a site name or tag; instr, not LIKE, so % and _ in the search are plain characters
-  const where = `${listed()}${search ? ' AND (instr(username, @search) OR instr(tags, @search))' : ''}`;
+  const where = `${listedWhere()}${search ? ' AND (instr(username, @search) OR instr(tags, @search))' : ''}`;
   const total = db.prepare(`SELECT COUNT(*) n FROM users WHERE ${where}`).get({ search }).n;
   const pages = Math.max(1, Math.ceil(total / 24));
   const page = Math.min(pages, Math.max(1, parseInt(req.query.page, 10) || 1));
@@ -514,9 +512,9 @@ main.get('/browse', (req, res) => {
   res.set('Cache-Control', 'no-store').send(V.browse(req.ctx, { rows, page, pages, sort, q: search, cardCss: cardCssFor(rows) }));
 });
 function showProfile(req, res, name, m, status = 200) {
-  const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
+  const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${ONLINE}`).get(String(name).toLowerCase());
   if (!p) {
-    const to = renamedTo(String(name).toLowerCase());
+    const to = names.renamedTo(String(name).toLowerCase());
     if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}`);
     return res.status(404).send(V.notices.noSuchSite(req.ctx));
   }
@@ -562,13 +560,13 @@ const pageOf = (req, total, key = 'page') => {
 const COMMENTS = 'FROM comments c JOIN users u ON u.id = c.author_id WHERE';
 // one page of the comments matching `where`, newest first, without those from banned or blocked members
 function commentPage(req, where, at, key) {
-  const filter = `${where} AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}`;
+  const filter = `${where} AND ${ONLINE} AND ${unblocked('c.author_id', 'c.user_id')}`;
   const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${COMMENTS} ${filter}`).get(at).n, key);
   return { rows: db.prepare(`SELECT c.*, u.username ${COMMENTS} ${filter} ORDER BY c.id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(at), page, pages };
 }
 // one page of the members on the `who` side of a site's follows, newest first
 function followPage(req, who, side, id, key) {
-  const from = `FROM follows f JOIN users u ON u.id = f.${who} WHERE f.${side} = ? AND ${LIVE}`;
+  const from = `FROM follows f JOIN users u ON u.id = f.${who} WHERE f.${side} = ? AND ${ONLINE}`;
   const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${from}`).get(id).n, key);
   return { rows: db.prepare(`SELECT u.username ${from} ORDER BY f.created_at DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(id), page, pages };
 }
@@ -577,9 +575,9 @@ const PREVIEW = 5; // comments shown under each update on the feed and profile; 
 function withSocial(events, viewer) {
   const at = { ids: JSON.stringify(events.map((e) => e.id)), viewer };
   const comments = db.prepare(`SELECT * FROM (SELECT c.*, u.username, ROW_NUMBER() OVER (PARTITION BY c.event_id ORDER BY c.id DESC) rn, COUNT(*) OVER (PARTITION BY c.event_id) total
-    ${COMMENTS} c.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}) WHERE rn <= ${PREVIEW} ORDER BY id`).all(at);
+    ${COMMENTS} c.event_id IN (SELECT value FROM json_each(@ids)) AND ${ONLINE} AND ${unblocked('c.author_id', 'c.user_id')}) WHERE rn <= ${PREVIEW} ORDER BY id`).all(at);
   const likes = db.prepare(`SELECT l.event_id, COUNT(*) n, MAX(l.user_id = @viewer) mine FROM likes l JOIN events e ON e.id = l.event_id JOIN users u ON u.id = l.user_id
-    WHERE l.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('l.user_id', 'e.user_id')} GROUP BY l.event_id`).all(at);
+    WHERE l.event_id IN (SELECT value FROM json_each(@ids)) AND ${ONLINE} AND ${unblocked('l.user_id', 'e.user_id')} GROUP BY l.event_id`).all(at);
   return events.map((e) => {
     const l = likes.find((x) => x.event_id === e.id);
     const mine = comments.filter((c) => c.event_id === e.id);
@@ -592,7 +590,7 @@ const notes = (user, cols, since = 0, tail = '') => db.prepare(`SELECT ${cols} F
     UNION ALL SELECT 'comment', author_id, event_id, id, body, created_at FROM comments WHERE user_id = @me
     UNION ALL SELECT 'like', l.user_id, l.event_id, NULL, '', l.created_at FROM likes l JOIN events e ON e.id = l.event_id WHERE e.user_id = @me
   ) n JOIN users u ON u.id = n.actor
-  WHERE ${LIVE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me) AND n.created_at > @since ${tail}`).bind({ me: user.id, since });
+  WHERE ${ONLINE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me) AND n.created_at > @since ${tail}`).bind({ me: user.id, since });
 const NOTE_KINDS = ['follow', 'comment', 'like'];
 const NOTE_TEXT = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
 // the optional email for one kind of notification; capped like guestbook mail so a burst can't flood the inbox
@@ -657,7 +655,7 @@ main.post('/block', auth, (req, res) => {
 });
 // one update with every comment on it, a page at a time
 main.get('/site/:name/update/:id', (req, res) => {
-  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${ONLINE}`).get(String(req.params.name).toLowerCase());
   const ev = p && db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(Number(req.params.id) || 0, p.id);
   if (!ev) return res.status(404).send(V.notices.updateGone(req.ctx));
   const viewer = req.ctx.user ? req.ctx.user.id : 0;
@@ -683,7 +681,7 @@ main.post('/notifications/settings', auth, (req, res) => {
 main.get('/feed', (req, res) => {
   if (!req.ctx.user) return res.redirect('/login');
   const events = db.prepare(`SELECT e.*, u.username, u.tagline FROM events e JOIN users u ON u.id = e.user_id
-    WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 AND u.hidden = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
+    WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND ${unhiddenWhere()} ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
   res.send(V.feed(req.ctx, { events: withSocial(events, req.ctx.user.id), count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
 });
 // Atom feeds: one per site (hidden sites too, like their profile), and the recently updated list without hidden or new sites
@@ -691,12 +689,12 @@ const atom = (res, feed) => res.set('Cache-Control', 'public, max-age=300').type
 main.get('/feed.xml', (req, res) => atom(res, {
   title: `${cfg.SITE_NAME}: recently updated`, path: '/feed.xml', link: `${cfg.BASE_URL}/browse`,
   events: db.prepare(`SELECT e.*, u.username FROM events e JOIN users u ON u.id = e.user_id
-    WHERE e.kind = 'update' AND e.user_id IN (SELECT id FROM users WHERE ${listed()}) ORDER BY e.id DESC LIMIT 50`).all(),
+    WHERE e.kind = 'update' AND e.user_id IN (SELECT id FROM users WHERE ${listedWhere()}) ORDER BY e.id DESC LIMIT 50`).all(),
 }));
 main.get('/site/:name/feed.xml', (req, res) => {
-  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${ONLINE}`).get(String(req.params.name).toLowerCase());
   if (!p) {
-    const to = renamedTo(String(req.params.name).toLowerCase());
+    const to = names.renamedTo(String(req.params.name).toLowerCase());
     return to ? res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}/feed.xml`) : res.sendStatus(404);
   }
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
@@ -705,16 +703,16 @@ main.get('/site/:name/feed.xml', (req, res) => {
     events: db.prepare('SELECT *, ? AS username FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 30').all(p.username, p.id),
   });
 });
-const inRing = () => `${listed()} AND webring = 1`;
+const inRing = () => `${listedWhere()} AND webring = 1`;
 const randomSite = (where) => (req, res) => {
   const r = db.prepare(`SELECT username FROM users WHERE ${where()} ORDER BY RANDOM() LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 };
-main.get('/random', randomSite(listed));
+main.get('/random', randomSite(listedWhere));
 main.get('/webring/random', randomSite(inRing));
 const webring = (next) => (req, res) => {
   const fromName = String(req.query.from || '').toLowerCase();
-  const from = q.userByName.get(fromName) || q.userByName.get(renamedTo(fromName) || ''); // old webring snippets still name the site's old name
+  const from = q.userByName.get(fromName) || q.userByName.get(names.renamedTo(fromName) || ''); // old webring snippets still name the site's old name
   const id = from ? from.id : 0;
   const ring = inRing();
   const r = next
@@ -747,7 +745,7 @@ main.post('/signup', async (req, res) => {
   if (!validEmail(email)) return fail('That email address does not look right.');
   if (password.length < 10 || password.length > 200) return fail('Use a password with at least 10 characters.');
   if (!req.body.agree) return fail('You need to be 13 or older and accept the rules.');
-  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
+  if (names.taken(username)) return fail('That site name is taken.');
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
   if (!(await humanCheck(req))) return fail('The "are you human" check did not pass. Try again.');
   const pwHash = await U.hashPw(password);
@@ -765,7 +763,7 @@ main.post('/signup', async (req, res) => {
   try {
     await files.create(q.userById.get(id), starters.render(starter, username, cfg));
   } catch {
-    try { logins.remove(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
+    try { logins.remove(q.userById.get(id), { hold: false }); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
     return fail('Something went wrong making your site. Try again.', 500);
   }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
@@ -860,7 +858,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cardError(user.id), cardCleared: !user.banned && !!cardNote(user.id), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: listing.isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cardError(user.id), cardCleared: !user.banned && !!cardNote(user.id), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1005,7 +1003,7 @@ const cardCheck = (user) => {
       : s.error ? s.error.replace(/\.$/, '')
         : failing.length ? "some of its art files don't work"
           : 'it is waiting to be checked again'; // a copy from an older sanitizer, until the startup rebuild
-  return { row, css, why, failing, listed: isListed(user) };
+  return { row, css, why, failing, listed: listing.isListed(user) };
 };
 main.get('/dashboard/card', auth, canEdit, (req, res) => {
   const stored = cardError(req.ctx.user.id);
@@ -1150,7 +1148,7 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   if (!isSupporter(owner)) return fail('Several sites under one login is for supporters.');
   if (sitesOf(owner).length >= MAX_SITES) return fail(`You can have up to ${MAX_SITES} sites.`);
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
-  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
+  if (names.taken(username)) return fail('That site name is taken.');
   const t = now();
   try {
     db.prepare("INSERT INTO users (username, email, pw_hash, verified, login_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
@@ -1159,8 +1157,7 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   try {
     await files.create(q.userByName.get(username), starters.render(starters.DEFAULT, username, cfg));
   } catch {
-    db.prepare('DELETE FROM users WHERE username = ?').run(username);
-    fs.rmSync(siteDir(username), { recursive: true, force: true });
+    logins.remove(q.userByName.get(username), { hold: false }); // never served, so its name is not held
     return fail('Something went wrong making that site. Nothing was changed.');
   }
   res.redirect(`/dashboard?ok=${encodeURIComponent(`Made ${username}. Switch to it from the list at the top.`)}`);
@@ -1309,22 +1306,12 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
   if (!(await confirmed(req, res, 'rename', fail, 'Wrong password. Nothing was changed.'))) return;
   // a member may take back a name they gave up themselves
-  const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
-  if (q.userByName.get(name) || (held && held.user_id !== user.id)) return fail('That site name is taken.');
-  const t = now();
-  try {
-    db.transaction(() => {
-      db.prepare('UPDATE users SET username = ?, renamed_at = ?, shot_dirty = 1 WHERE id = ?').run(name, t, user.id);
-      db.prepare('DELETE FROM released_names WHERE name = ?').run(name);
-      db.prepare('INSERT OR REPLACE INTO released_names (name, released_at, user_id) VALUES (?, ?, ?)').run(user.username, t, user.id);
-      db.prepare('UPDATE reports SET site = ? WHERE site = ?').run(name, user.username);
-      files.rename(user.username, name); // last, so a failed move rolls the rows back
-    })();
-  } catch (err) {
-    if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); // a signup took it meanwhile
+  let renamed;
+  try { renamed = names.rename(user, name); } catch (err) {
     console.error('rename failed:', err.message);
     return fail('Something went wrong renaming your site. Nothing was changed.', 500);
   }
+  if (renamed === 'taken') return fail('That site name is taken.');
   res.redirect(`/dashboard?ok=${encodeURIComponent(`Your site is now ${cfg.siteUrl(name)}. The old address redirects there for 90 days. Pages that spell out the old address or name need editing by hand.`)}`);
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
@@ -1435,7 +1422,7 @@ api.get('/site', (req, res) => {
   const used = files.usage(u.username);
   const lim = limitsFor(u);
   res.json({
-    name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: isListed(u), hidden: !!u.hidden,
+    name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: listing.isListed(u), hidden: !!u.hidden,
     used_bytes: used.total, quota_bytes: lim.quotaMB * 1048576, files: used.count, max_files: MAX_FILES, max_file_bytes: lim.fileMB * 1048576,
     bandwidth_today_bytes: bwToday(u), bandwidth_cap_bytes: cfg.BANDWIDTH_MB * 1048576, hits: u.hits, updated_at: new Date(u.updated_at).toISOString(),
     allowed_types: [...U.ALLOWED_EXT], any_type: lim.anyType,
@@ -1656,7 +1643,7 @@ const housekeeping = () => {
   // an error here must not kill the process: this runs from a timer with nobody watching
   try {
     sessions.sweep();
-    db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
+    names.sweep();
     db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     const statsFrom = statsSince();
@@ -1664,7 +1651,7 @@ const housekeeping = () => {
     db.prepare('DELETE FROM referrers WHERE day < ?').run(statsFrom);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) logins.remove(u);
     // daily guestbook digests: at most one a day per site, only when someone signed since the last
-    for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
+    for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${ONLINE}`).all(now() - DAY)) {
       const cutoff = now();
       const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
       if (!rows.length) continue;
@@ -1675,11 +1662,11 @@ const housekeeping = () => {
         .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
     }
     // weekly digests of updates from followed sites, for members who opted in; a quiet week sends nothing
-    for (const u of db.prepare(`SELECT * FROM users WHERE digest = 1 AND digest_at < ? AND ${LIVE}`).all(now() - 7 * DAY)) {
+    for (const u of db.prepare(`SELECT * FROM users WHERE digest = 1 AND digest_at < ? AND ${ONLINE}`).all(now() - 7 * DAY)) {
       const cutoff = now();
       const done = () => db.prepare('UPDATE users SET digest_at = ? WHERE id = ?').run(cutoff, u.id);
       const rows = db.prepare(`SELECT e.*, s.username FROM events e JOIN users s ON s.id = e.user_id
-        WHERE e.kind = 'update' AND e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND s.verified = 1 AND s.banned = 0 AND s.hidden = 0
+        WHERE e.kind = 'update' AND e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND ${unhiddenWhere()}
         AND e.created_at > ? AND e.created_at <= ? ORDER BY e.id DESC`).all(u.id, u.digest_at, cutoff);
       if (!rows.length) { done(); continue; }
       sendMail(loginOf(u).email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,

@@ -15,7 +15,7 @@ const { fakeStripe } = require('./fake-stripe');
 const DAY = 86400000;
 const SECRET = 'whsec_billing';
 const cfg = { ADMIN_EMAILS: new Set(), BASE_URL: 'http://pad.test', PRICE_ID: 'price_month', PRICE_ID_ANNUAL: 'price_year', QUOTA_MB: 1, MAX_FILE_MB: 1, SUPPORTER_QUOTA_MB: 3, SUPPORTER_MAX_FILE_MB: 2, HISTORY_DAYS: 30, SUPPORTER_HISTORY_DAYS: 365 };
-const logins = createLogins({ cfg, removeSite: () => {} });
+const logins = createLogins({ cfg, removeSite: () => {}, holdName: () => {} });
 const make = (stripe, c = cfg) => createBilling({ cfg: c, logins, stripe, webhookSecret: SECRET });
 
 let n = 0;

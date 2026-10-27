@@ -53,6 +53,8 @@ async function member(username, email = `${username}@example.com`) {
   const csrf = dash.text.match(/name="_csrf" value="([^"]+)"/)[1];
   return { cookie, csrf };
 }
+// past the new-site wait and edited, so the Site is Listed (unless hidden); the rule itself is in test/listing.test.js
+const makeListed = (...names) => { for (const n of names) db.prepare('UPDATE users SET created_at = ?, updates = MAX(updates, 1) WHERE username = ?').run(Date.now() - 25 * 3600000, n); };
 const upload = (m, name, content) => req('post', '/dashboard/upload').set('Cookie', m.cookie)
   .field('_csrf', m.csrf).field('dir', '').attach('files', Buffer.from(content), name);
 
@@ -460,7 +462,7 @@ test('new sites stay off the public lists until edited and a day old', async () 
   await upload(m, 'index.html', '<h1>mine now</h1>');
   assert.deepEqual(await inLists(), { browse: false, home: false }); // edited, but brand new
 
-  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'newbie');
+  makeListed('newbie');
   assert.deepEqual(await inLists(), { browse: true, home: true });
   assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /only after your first edit/);
 
@@ -1175,7 +1177,7 @@ test('webring next and prev go the right way, with or without a trailing slash',
   for (const [m, n] of [[a, 'ringa'], [b, 'ringb']]) {
     await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'x.html', content: 'x' });
     await req('post', '/dashboard/webring').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, webring: '1' });
-    db.prepare('UPDATE users SET created_at = 0 WHERE username = ?').run(n); // past the new-site wait
+    makeListed(n);
   }
   for (const slash of ['', '/']) {
     assert.match((await req('get', `/webring/next${slash}?from=ringa`)).headers.location, /ringb\./);
@@ -1285,7 +1287,7 @@ test('SEO: robots, sitemap, favicon, and page meta', async () => {
 test('the webring holds only sites that joined it', async () => {
   const a = await member('ringer');
   await member('loner');
-  for (const n of ['ringer', 'loner']) db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, n);
+  makeListed('ringer', 'loner');
   assert.match((await req('get', '/dashboard/widgets').set('Cookie', a.cookie)).text, /Join the webring/);
   await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
   assert.match((await req('get', '/dashboard/widgets').set('Cookie', a.cookie)).text, /Leave the webring/);
@@ -1302,7 +1304,8 @@ test('the webring holds only sites that joined it', async () => {
 test('a hidden site stays off listings, feeds and the ring, and asks not to be indexed', async () => {
   const a = await member('shyone');
   const f = await member('fanone');
-  db.prepare('UPDATE users SET created_at = ?, updates = 1, webring = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, 'shyone');
+  makeListed('shyone');
+  await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
   await req('post', '/follow').set('Cookie', f.cookie).type('form').send({ _csrf: f.csrf, site: 'shyone' });
   await req('post', '/dashboard/save').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, path: 'index.html', content: 'hi' });
   assert.match((await req('get', '/browse')).text, /shyone/);
@@ -1387,8 +1390,7 @@ test('restarting with a higher QUOTA_MB raises existing members; a lower one lea
 
 test('members tag their site, and the dog park finds sites by name or tag', async () => {
   const m = await member('tagdog');
-  const old = Date.now() - 25 * 3600000;
-  db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(old, 'tagdog');
+  makeListed('tagdog');
   await req('post', '/dashboard/tags').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, tags: 'Pixel-Art, cats #cats <b> retro x y z' });
   assert.equal(db.prepare('SELECT tags FROM users WHERE username = ?').get('tagdog').tags, 'pixel-art cats retro x y');
   assert.match((await req('get', '/site/tagdog')).text, /href="\/browse\?q=pixel-art">#pixel-art</);
@@ -1749,7 +1751,7 @@ test('Atom feeds: one per site, and recently updated without hidden or new sites
   assert.equal((await req('get', '/site/nobody-here/feed.xml')).status, 404);
   // brand new: not in the global feed yet
   assert.doesNotMatch((await req('get', '/feed.xml')).text, /atomdog/);
-  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'atomdog');
+  makeListed('atomdog');
   const global = (await req('get', '/feed.xml')).text;
   assert.match(global, /<title>atomdog updated index\.html<\/title>/);
   assert.doesNotMatch(global, /atomdog joined/);
@@ -1926,7 +1928,7 @@ test('staff picks and the site of the week are set from /admin and shown on the 
   const m = await member('picked');
   await upload(m, 'index.html', '<h1>pick me</h1>');
   await member('weekly');
-  db.prepare("UPDATE users SET created_at = ?, updates = 1 WHERE username IN ('picked', 'weekly')").run(Date.now() - 25 * 3600000);
+  makeListed('picked', 'weekly');
   await post(boss, '/admin/feature', { site: 'picked', action: 'pick' });
   await post(boss, '/admin/feature', { site: 'weekly', action: 'sotw' });
   let home = (await req('get', '/')).text;
