@@ -490,7 +490,7 @@ test('the drag-and-drop uploader gets JSON back', async () => {
 });
 
 // sends a multipart upload in two halves, running `between` once the server has started on it
-async function slowUpload(m, url, field, name, content, between) {
+async function slowUpload(m, url, field, name, content, between, auth = { Cookie: m.cookie }) {
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const b = 'slowboundary';
@@ -501,7 +501,7 @@ async function slowUpload(m, url, field, name, content, between) {
   try {
     return await new Promise((resolve, reject) => {
       const r = require('http').request({ port: server.address().port, host: '127.0.0.1', method: 'POST', path: url, headers: {
-        Host: 'pad.test', Cookie: m.cookie, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': first.length + tail.length,
+        Host: 'pad.test', ...auth, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': first.length + tail.length,
       } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
       r.on('error', reject);
       r.write(first);
@@ -525,7 +525,8 @@ async function slowUpload(m, url, field, name, content, between) {
   }
 }
 
-test('an upload or import still arriving when the member is signed out writes nothing', async () => {
+// one slow-body race per route family shows the wiring; the rules themselves are in test/sessions.test.js
+test('an upload still arriving when the member is signed out writes nothing, from the dashboard or the API', async () => {
   const m = await member('latecomer');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'latecomer')").run();
   const up = await slowUpload(m, '/dashboard/upload', 'files', 'late.html', Buffer.from('late'), signOut);
@@ -533,12 +534,13 @@ test('an upload or import still arriving when the member is signed out writes no
   assert.equal(up.headers.location, '/login');
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latecomer/late.html')), false);
 
-  const m2 = await member('latezip');
-  const zip = await makeZip([['late.html', 'late']]);
-  const del = () => db.prepare("DELETE FROM users WHERE username = 'latezip'").run();
-  const im = await slowUpload(m2, '/dashboard/import', 'zip', 'site.zip', zip, del);
-  assert.equal(im.statusCode, 302);
-  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latezip/late.html')), false);
+  // the API: a new key made meanwhile stops the write
+  const m2 = await member('lateapi');
+  db.prepare('UPDATE users SET api_key = ? WHERE username = ?').run(U.sha('pp_late'), 'lateapi');
+  const newKey = () => db.prepare('UPDATE users SET api_key = ? WHERE username = ?').run(U.sha('pp_newer'), 'lateapi');
+  const api = await slowUpload(m2, '/api/upload', 'files', 'late.html', Buffer.from('late'), newKey, { Authorization: 'Bearer pp_late' });
+  assert.equal(api.statusCode, 403);
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/lateapi/late.html')), false);
 });
 
 // a form post whose body arrives after `between` runs, once the server has read the session from the headers
@@ -572,24 +574,13 @@ async function slowForm(m, url, fields, between) {
   }
 }
 
-test('a dashboard form still arriving when the member is signed out or banned writes nothing', async () => {
+test('a dashboard form still arriving when the member is signed out writes nothing', async () => {
   const m = await member('slowsave');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowsave')").run();
   const save = await slowForm(m, '/dashboard/save', { path: 'late.html', content: 'late' }, signOut);
   assert.equal(save.statusCode, 302);
   assert.equal(save.headers.location, '/login');
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowsave/late.html')), false);
-
-  // a ban ends every session of the login, so a delete still arriving is stopped the same way
-  const m2 = await member('slowdel');
-  assert.equal((await upload(m2, 'keep.html', 'keep')).status, 200);
-  const ban = () => {
-    db.prepare("UPDATE users SET banned = 1 WHERE username = 'slowdel'").run();
-    db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowdel')").run();
-  };
-  const del = await slowForm(m2, '/dashboard/delete', { path: 'keep.html' }, ban);
-  assert.equal(del.headers.location, '/login');
-  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowdel/keep.html')));
 });
 
 test('log in with the site name or the email address', async () => {
@@ -1154,26 +1145,6 @@ test('a reset link that does not work is refused before any hashing', async () =
     assert.equal(res.status, 400);
     assert.equal(hashed, 0);
   } finally { U.hashPw = real; }
-});
-
-test('a password change that finishes after a reset logged everyone out changes nothing', async () => {
-  const m = await member('raced');
-  const realHash = U.hashPw;
-  // the reset lands while the change is hashing its new password
-  U.hashPw = async (pw) => {
-    const h = await realHash(pw);
-    if (pw === 'changedpassword') {
-      db.prepare("UPDATE users SET pw_hash = ? WHERE username = 'raced'").run(await realHash('resetpassword1'));
-      db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'raced')").run();
-    }
-    return h;
-  };
-  try {
-    const res = await req('post', '/account/password').set('Cookie', m.cookie).type('form')
-      .send({ _csrf: m.csrf, password: 'longpassword1', new_password: 'changedpassword', confirm_password: 'changedpassword' });
-    assert.equal(res.headers.location, '/login');
-  } finally { U.hashPw = realHash; }
-  assert.equal((await req('post', '/login').type('form').send({ username: 'raced', password: 'resetpassword1' })).status, 302); // the reset's password stands
 });
 
 test('an error thrown inside an async handler is a 500, not a crashed process', async () => {
@@ -2961,7 +2932,7 @@ test('supporter checkout offers the monthly and the yearly price', async () => {
   assert.ok(db.prepare('SELECT supporter_until FROM users WHERE username = ?').get('choosey').supporter_until > end * 1000);
 });
 
-test('support checkout, billing portal and account deletion stop when the member is signed out while Stripe answers', async () => {
+test('support checkout stops when the member is signed out while Stripe answers', async () => {
   const m = await member('midstripe');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'midstripe')").run();
   const post = (url, body = {}) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
@@ -2979,19 +2950,6 @@ test('support checkout, billing portal and account deletion stop when the member
     return r;
   });
   assert.equal(go.headers.location, '/login');
-  const portal = await during(stripe.billingPortal.sessions, 'create', async () => {
-    db.prepare("UPDATE users SET stripe_customer_id = 'cus_mid' WHERE username = 'midstripe'").run();
-    const r = await post('/dashboard/support/portal');
-    Object.assign(m, await relogin());
-    return r;
-  });
-  assert.equal(portal.headers.location, '/login');
-  fake.subs.push({ id: 'sub_mid', customer: 'cus_mid', status: 'active' });
-  const del = await during(stripe.subscriptions, 'cancel', () => post('/dashboard/delete-account', { password: 'longpassword1' }));
-  assert.equal(del.headers.location, '/login');
-  assert.ok(fake.cancelled.includes('sub_mid')); // the cancel went through; the account stays
-  assert.ok(db.prepare("SELECT 1 FROM users WHERE username = 'midstripe'").get());
-
   async function relogin() {
     const res = await req('post', '/login').type('form').send({ username: 'midstripe', password: 'longpassword1' });
     const cookie = res.headers['set-cookie'][0].split(';')[0];

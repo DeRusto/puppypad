@@ -30,15 +30,6 @@ function createLogins({ cfg, removeSite, dropShot }) {
     };
   };
 
-  // every session of the login and its sites but `except`, and its logins still waiting on their second step
-  function endSessions(site, { except } = {}) {
-    const id = idOf(site);
-    if (except) db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE id = ? OR login_id = ?) AND token_hash != ?').run(id, id, except);
-    else db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE id = ? OR login_id = ?)').run(id, id);
-    db.prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'login2fa'").run(id);
-  }
-  const revokeApiKeys = (site) => db.prepare("UPDATE users SET api_key = '' WHERE id = ? OR login_id = ?").run(idOf(site), idOf(site));
-
   // An extra site goes alone; a login takes its extra sites along. Deleted names stay unclaimable for a while
   // (released_names), except a never-confirmed account's, which was never online. inTransaction(site) commits with the rows.
   function remove(site, { inTransaction } = {}) {
@@ -80,7 +71,7 @@ function createLogins({ cfg, removeSite, dropShot }) {
     return 'ok';
   }
 
-  return { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor, endSessions, revokeApiKeys, remove, takeDown, restore };
+  return { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor, remove, takeDown, restore };
 }
 
 module.exports = { createLogins };

@@ -43,9 +43,6 @@ const add = (fields = {}) => {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(lastInsertRowid);
 };
 const extra = (login) => add({ login_id: login.id, email: `x${n + 1}@sites.invalid`, pw_hash: '!' });
-const session = (site) => { const t = `s${Math.random()}`; db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?, ?, ?, ?)').run(t, site.id, 'c', Date.now() + 1e6); return t; };
-const pending = (site) => db.prepare("INSERT INTO tokens (token_hash, user_id, kind, expires) VALUES (?, ?, 'login2fa', ?)").run(`t${Math.random()}`, site.id, Date.now() + 1e6);
-const sessionsOf = (...sites) => sites.map((s) => db.prepare('SELECT COUNT(*) n FROM sessions WHERE user_id = ?').get(s.id).n);
 const row = (site) => db.prepare('SELECT * FROM users WHERE id = ?').get(site.id);
 
 test('starting the new code renames owner_id to login_id on an older database, keeping its links', () => {
@@ -81,31 +78,6 @@ test('an extra site answers with its login: login, sites, supporter, admin and l
   assert.equal(logins.isAdmin(add({ email: 'boss2@x.test' })), false);
   db.prepare('UPDATE users SET verified = 0 WHERE id = ?').run(boss.id);
   assert.equal(logins.isAdmin(bossSite), false); // an unconfirmed address isn't proof
-});
-
-test('endSessions ends every session of the login and its pending two-factor logins, except the one kept', () => {
-  const login = add();
-  const site = extra(login);
-  const other = add();
-  const keep = session(site);
-  session(login);
-  session(other);
-  pending(login);
-  logins.endSessions(site, { except: keep });
-  assert.deepEqual(sessionsOf(login, site, other), [0, 1, 1]);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM tokens WHERE user_id = ? AND kind = 'login2fa'").get(login.id).n, 0);
-  logins.endSessions(login);
-  assert.deepEqual(sessionsOf(login, site, other), [0, 0, 1]);
-});
-
-test('revokeApiKeys switches off the keys of every site of the login and no other', () => {
-  const login = add();
-  const site = extra(login);
-  const other = add();
-  for (const [s, k] of [[login, 'k1'], [site, 'k2'], [other, 'k3']]) db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(k + n, s.id);
-  logins.revokeApiKeys(site);
-  assert.deepEqual([row(login).api_key, row(site).api_key], ['', '']);
-  assert.notEqual(row(other).api_key, '');
 });
 
 test('remove: an extra site goes alone; a login takes its sites, holds their names, and commits inTransaction with the rows', () => {

@@ -18,6 +18,7 @@ const W = require('./widgets');
 const H = require('./history');
 const { createSiteFiles, siteDir, shotPath, resolveIn, resolve, MAX_FILES } = require('./sitefiles');
 const { createLogins } = require('./logins');
+const { createSessions } = require('./sessions');
 const { createBilling, BadSignature } = require('./billing');
 
 // ---------- config ----------
@@ -135,41 +136,18 @@ db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB,
 // the current name of the site that gave up `name` in a rename, while that name is still held
 const renamedTo = (name) => db.prepare(`SELECT u.username FROM released_names r JOIN users u ON u.id = r.user_id WHERE r.name = ? AND r.released_at > ? AND ${LIVE}`).get(String(name), now() - NAME_HOLD)?.username;
 
-function makeToken(userId, kind, ttl) {
-  const t = U.newToken();
-  db.prepare('DELETE FROM tokens WHERE user_id = ? AND kind = ?').run(userId, kind);
-  db.prepare('INSERT INTO tokens (token_hash, user_id, kind, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, kind, now() + ttl);
-  return t;
-}
-function useToken(t, kind) {
-  const row = db.prepare('SELECT * FROM tokens WHERE token_hash = ? AND kind = ?').get(U.sha(String(t || '')), kind);
-  if (!row || row.expires < now()) return null;
-  db.prepare('DELETE FROM tokens WHERE token_hash = ?').run(row.token_hash);
-  return q.userById.get(row.user_id);
-}
-// is this token live? without spending it, so a costly step can be skipped for links that would fail anyway
-const tokenLive = (t, kind) => {
-  const row = db.prepare('SELECT expires FROM tokens WHERE token_hash = ? AND kind = ?').get(U.sha(String(t || '')), kind);
-  return !!row && row.expires >= now();
-};
-// Password hashing yields to other requests, so by the time it finishes a reset may have replaced the password
-// and logged every session out. Signed-in actions check that nothing like that happened before they act.
-// A rename meanwhile counts too (renamed_at changes with every one): the request would act on the old name's folder.
-const stillCurrent = (req, user) => {
-  const cur = q.userById.get(user.id);
-  return !!cur && cur.pw_hash === user.pw_hash && cur.renamed_at === user.renamed_at &&
-    (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
-};
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
-function startSession(res, userId) {
-  const t = U.newToken();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
-  res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
-}
 const MAX_SITES = 5;
 // what belongs to a site's login, from any of its sites (src/logins.js)
 const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site), dropShot: (site) => fs.rmSync(shotPath(site.username), { force: true }) });
 const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
+// signed-in visits, tokens and two-factor codes, and whether a Session is still good (src/sessions.js)
+const sessions = createSessions({ logins });
+const { makeToken, useToken, peekToken, useCode } = sessions;
+const startSession = (res, userId) => res.cookie(COOKIE, sessions.start(userId), { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: sessions.SESSION_TTL });
+const clearSession = (res) => res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+// what a route answers when its Session stopped being current while it waited
+const signedOut = (req, res) => (req.accepts(['html', 'json']) === 'json' ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login'));
 // the supporter tier's rules (src/billing.js), only while it is switched on; app.setStripe swaps the Stripe client for tests
 const makeBilling = (stripe) => createBilling({ cfg, logins, stripe, webhookSecret: env.STRIPE_WEBHOOK_SECRET });
 let billing = cfg.SUPPORT_ON ? makeBilling(new Stripe(env.STRIPE_SECRET_KEY)) : null;
@@ -407,17 +385,11 @@ main.use('/api', api);
 // session
 main.use((req, res, next) => {
   const m = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === COOKIE);
-  req.ctx = withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce, path: req.path });
-  if (m && m[1]) {
-    const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
-    if (s && s.expires > now()) {
-      const user = q.userById.get(s.user_id);
-      if (user) {
-        req.ctx = withFlair({ cfg, user, login: loginOf(user), csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n, path: req.path });
-        req.sessionHash = s.token_hash;
-      }
-    }
-  }
+  const s = sessions.lookup(m && m[1]);
+  req.session = s;
+  req.ctx = s
+    ? withFlair({ cfg, user: s.user, login: s.login, csrf: s.csrf, isAdmin: isAdmin(s.user), nonce: res.locals.nonce, unread: notes(s.user, 'COUNT(*) n', s.user.notes_seen_at).get().n, path: req.path })
+    : withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce, path: req.path });
   next();
 });
 // the editor posts whole files, and percent-escaping can triple a byte, so its cap tracks the member's file limit with room for that;
@@ -430,21 +402,23 @@ main.use(express.urlencoded({ extended: false })); // skips a body already parse
 main.use(bodyDefault);
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
-const csrfOk = (req) => !req.ctx.user || (req.body && req.body._csrf === req.ctx.csrf);
+const csrfOk = (req) => !req.session || req.session.csrfOk(req.body);
 main.use((req, res, next) => {
   if (req.method !== 'POST') return next();
   const origin = req.headers.origin;
   if (origin && origin !== cfg.BASE_URL) return res.status(403).type('text').send('Cross-site request blocked');
-  // multipart bodies are not parsed yet here, so their token cannot be checked yet:
-  // every multipart route MUST call csrfOk itself after multer runs (upload and import do)
+  // multipart bodies are not parsed yet here, so their token is checked by bodyCheck once multer has run
   if (!req.is('multipart/form-data') && !csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   next();
 });
+// after multer, for every multipart route (upload, import, the API's upload): the body's CSRF token, then whether the
+// Session is still good, since the body can take long to arrive. 'csrf', 'signedOut' or 'ok'
+const bodyCheck = (req) => (!csrfOk(req) ? 'csrf' : !req.session.current() ? 'signedOut' : 'ok');
 const auth = (req, res, next) => (req.ctx.user ? next() : res.redirect('/login'));
 // a form's body has arrived by now and can take a long time to; a ban, reset or deletion meanwhile must stop the write
-// (multipart bodies arrive later, so upload and import check again themselves)
+// (multipart bodies arrive later, so they go through bodyCheck too)
 const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard')
-  : req.method === 'POST' && !stillCurrent(req, req.ctx.user) ? res.redirect('/login') : next());
+  : req.method === 'POST' && !req.session.current() ? res.redirect('/login') : next());
 const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notices.noSuchPage(req.ctx)));
 
 // ----- SEO: robots, sitemap, brand assets -----
@@ -835,19 +809,19 @@ main.post('/login', async (req, res) => {
 // the second login step: the password was right, and the token says for whom, until a code from their app or a recovery code matches
 main.post('/login/2fa', (req, res) => {
   const token = String(req.body.token || '');
-  const row = db.prepare("SELECT user_id FROM tokens WHERE token_hash = ? AND kind = 'login2fa' AND expires >= ?").get(U.sha(token), now());
-  if (!row) return res.status(400).send(V.notices.loginTimedOut(req.ctx));
-  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login2fa:${row.user_id}`, 10, 900000)) {
+  const user = peekToken(token, 'login2fa');
+  if (!user) return res.status(400).send(V.notices.loginTimedOut(req.ctx));
+  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login2fa:${user.id}`, 10, 900000)) {
     return res.status(429).send(V.login2fa(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, token));
   }
-  if (!useCode(q.userById.get(row.user_id), req.body.code)) return res.status(401).send(V.login2fa(req.ctx, { err: 'That code is not right. Codes change every 30 seconds.' }, token));
+  if (!useCode(user, req.body.code)) return res.status(401).send(V.login2fa(req.ctx, { err: 'That code is not right. Codes change every 30 seconds.' }, token));
   if (!useToken(token, 'login2fa')) return res.redirect('/login');
-  startSession(res, row.user_id);
+  startSession(res, user.id);
   res.redirect('/dashboard');
 });
 main.post('/logout', (req, res) => {
-  if (req.sessionHash) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
-  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  if (req.session) sessions.end(req.session);
+  clearSession(res);
   res.redirect('/');
 });
 main.get('/forgot', (req, res) => res.send(V.forgot(req.ctx)));
@@ -864,13 +838,13 @@ main.post('/reset', async (req, res) => {
   if (password.length < 10 || password.length > 200) return res.status(400).send(V.reset(req.ctx, { err: 'Use a password with at least 10 characters.' }, String(req.body.token || '')));
   const expired = () => res.status(400).send(V.notices.resetLinkExpired(req.ctx));
   if (!U.limit(`reset:${req.ip}`, 10, 3600000)) return res.status(429).send(V.notices.tooManyResets(req.ctx));
-  if (!tokenLive(req.body.token, 'reset')) return expired(); // hashing costs real time, so only for a link that works
+  if (!peekToken(req.body.token, 'reset')) return expired(); // hashing costs real time, so only for a link that works
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
   if (!user) return expired();
   db.prepare("UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?").run(pwHash, user.id);
-  logins.revokeApiKeys(user); // a reset may follow a break-in, so the API keys of all its sites go too
-  logins.endSessions(user);
+  sessions.revokeApiKeys(user); // a reset may follow a break-in, so the API keys of all its sites go too
+  sessions.endSessions(user);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
   if (user.totp_secret) return res.send(V.notices.passwordSaved(req.ctx));
   startSession(res, user.id);
@@ -909,9 +883,9 @@ main.post('/dashboard/upload', auth, canEdit, uploadBudget, (req, res, next) => 
 async function handleUpload(req, res, err) {
   const json = req.accepts(['html', 'json']) === 'json';
   const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
-  if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
-  // the body can take a long time to arrive; a ban, reset or deletion meanwhile must stop the write
-  if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
+  const body = bodyCheck(req);
+  if (body === 'csrf') return fail('Form expired. Reload the page and try again.', 403);
+  if (body === 'signedOut') return signedOut(req, res);
   if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return fail('That folder name is not allowed.', 400);
@@ -919,7 +893,7 @@ async function handleUpload(req, res, err) {
   if (req.body.shrink === '1') {
     for (const f of ups) f.size = await U.shrinkImage(f.path, f.name);
     // the shrinking took a while; a ban, reset or deletion meanwhile must still stop the write
-    if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
+    if (!req.session.current()) return signedOut(req, res);
   }
   const { saved, skipped } = files.writeMany(req.ctx.user, dir, ups);
   if (json) return res.json({ saved: saved.length, skipped });
@@ -930,7 +904,9 @@ async function handleUpload(req, res, err) {
 const zipUpload = multer({ storage: tmpStorage, limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
 main.post('/dashboard/import', auth, canEdit, tempBudget((req) => (cfg.ZIP_MAX_MB + limitsFor(req.ctx.user).quotaMB) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
 async function importZip(req, res, err) {
-  if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
+  const body = bodyCheck(req);
+  if (body === 'csrf') return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
+  if (body === 'signedOut') return res.redirect('/login');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
   if (!req.file) return showDashboard(req, res, { err: 'Choose a .zip file to import.' }, 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
@@ -944,7 +920,7 @@ async function importZip(req, res, err) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }
   try {
-    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out, banned or deleted while the zip arrived
+    if (!req.session.current()) return res.redirect('/login'); // signed out, banned or deleted while the zip unpacked
     const { saved, skipped } = files.writeMany(req.ctx.user, dir, zip.files);
     showDashboard(req, res, savedMsg(saved, [...zip.skipped, ...skipped], 'Imported'));
   } finally {
@@ -1132,7 +1108,7 @@ main.post('/dashboard/history/restore', auth, canEdit, async (req, res) => {
   const back = (kind, text) => res.redirect(`/dashboard/history/file?path=${encodeURIComponent(rel || '')}&${kind}=${encodeURIComponent(text)}`);
   const old = full && await H.show(user.id, siteDir(user.username), req.body.v, rel);
   if (!old) return back('err', 'That version is not kept any more.');
-  if (!stillCurrent(req, user)) return res.redirect('/login'); // H.show can wait behind other history work for this site
+  if (!req.session.current()) return res.redirect('/login'); // H.show can wait behind other history work for this site
   const err = files.write(user, rel, old);
   if (err) return back('err', `Not restored: ${err}.`);
   back('ok', `Restored ${rel}. The version it replaced is kept in this list too.`);
@@ -1191,7 +1167,7 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
 });
 main.post('/dashboard/sites/switch', auth, (req, res) => {
   const target = sitesOf(req.ctx.user).find((s) => s.id === Number(req.body.id));
-  if (target) db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(target.id, req.sessionHash);
+  if (target) sessions.move(req.session, target.id);
   res.redirect('/dashboard');
 });
 main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
@@ -1234,21 +1210,28 @@ main.post('/dashboard/guestbook/delete', auth, (req, res) => {
   db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
   res.redirect(gbBack(req));
 });
+// the password step of a signed-in action (sessions.confirmPassword); answers the request itself unless it passed
+async function confirmed(req, res, action, fail, wrong) {
+  const r = await sessions.confirmPassword(req.session, action, req.body.password);
+  if (r === 'signedOut') res.redirect('/login');
+  else if (r === 'limited') await fail(action === 'email' ? 'Too many attempts. Try again in an hour.' : 'Too many attempts. Wait 15 minutes and try again.', 429);
+  else if (r === 'wrong') await fail(wrong, 400);
+  return r === 'ok';
+}
 main.post('/account/password', auth, async (req, res) => {
   const user = loginOf(req.ctx.user); // an extra site has no password, email or 2FA of its own
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const password = String(req.body.new_password || '');
-  if (!U.limit(`pwchange:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your current password is wrong. Nothing was changed.');
+  if (!(await confirmed(req, res, 'password', fail, 'Your current password is wrong. Nothing was changed.'))) return;
   if (password.length < 10 || password.length > 200) return fail('Use a new password with at least 10 characters.');
   if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   const pwHash = await U.hashPw(password);
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!req.session.current()) return res.redirect('/login');
   db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
   // log out everywhere else and switch off the API keys, in case the old password leaked
-  logins.revokeApiKeys(user);
-  logins.endSessions(user, { except: req.sessionHash });
+  sessions.revokeApiKeys(user);
+  sessions.endSessions(user, { except: req.session });
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
@@ -1256,9 +1239,7 @@ main.post('/account/email', auth, async (req, res) => {
   const user = loginOf(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const email = String(req.body.email || '').trim().toLowerCase();
-  if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Nothing was changed.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'email', fail, 'Your password is wrong. Nothing was changed.'))) return;
   if (!validEmail(email)) return fail('That email address does not look right.');
   if (email === user.email) return fail('That is already your email address.');
   if (q.userByEmail.get(email)) return fail('That email already has a site.');
@@ -1280,23 +1261,10 @@ main.get('/account/email/confirm', (req, res) => {
 });
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
-  logins.endSessions(req.ctx.user);
-  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  sessions.endSessions(req.ctx.user);
+  clearSession(res);
   res.send(V.notices.loggedOutEverywhere(req.ctx));
 });
-// a code from the member's app, used at most once (its step must be newer than the last one used), or one of their recovery codes
-function useCode(user, raw) {
-  if (!user || !user.totp_secret) return false;
-  const code = String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (/^\d{6}$/.test(code)) {
-    const step = U.totpStep(user.totp_secret, code);
-    return !!step && db.prepare('UPDATE users SET totp_step = ? WHERE id = ? AND totp_step < ?').run(step, user.id, step).changes === 1;
-  }
-  const codes = lines(user.totp_codes);
-  const left = codes.filter((h) => h !== U.sha(code));
-  return code.length === 10 && left.length < codes.length &&
-    db.prepare('UPDATE users SET totp_codes = ? WHERE id = ? AND totp_codes = ?').run(left.join('\n'), user.id, user.totp_codes).changes === 1;
-}
 const otpauth = (user, secret) => `otpauth://totp/${encodeURIComponent(`${cfg.SITE_NAME}:${user.username}`)}?secret=${secret}&issuer=${encodeURIComponent(cfg.SITE_NAME)}`;
 // the setup page: the key as text, a link and a QR code, all for the same otpauth address
 const twoFactorPage = async (req, m, secret) => {
@@ -1313,11 +1281,9 @@ main.post('/account/2fa/on', auth, async (req, res) => {
   const secret = String(req.body.secret || '');
   if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
   const fail = async (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(await twoFactorPage(req, { err }, secret));
-  if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still off.');
+  if (!(await confirmed(req, res, '2fa', fail, 'Your password is wrong. Two-factor login is still off.'))) return;
   const step = U.totpStep(secret, String(req.body.code || '').replace(/\D/g, ''));
   if (!step) return fail('That code is not right. Check the key in your app and try the newest code.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
   const codes = Array.from({ length: 10 }, () => U.newTotpSecret().slice(0, 10).toLowerCase());
   if (!db.prepare("UPDATE users SET totp_secret = ?, totp_step = ?, totp_codes = ? WHERE id = ? AND totp_secret = ''").run(secret, step, codes.map(U.sha).join('\n'), user.id).changes) {
     return res.redirect(`/site/${user.username}#security`); // already on, from another tab
@@ -1327,9 +1293,7 @@ main.post('/account/2fa/on', auth, async (req, res) => {
 main.post('/account/2fa/off', auth, async (req, res) => {
   const user = loginOf(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
-  if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still on.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, '2fa', fail, 'Your password is wrong. Two-factor login is still on.'))) return;
   if (!useCode(q.userById.get(user.id), req.body.code)) return fail('That code is not right. Two-factor login is still on.');
   db.prepare("UPDATE users SET totp_secret = '', totp_step = 0, totp_codes = '' WHERE id = ?").run(user.id);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Two-factor login is off.')}#security`);
@@ -1343,9 +1307,7 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   if (wait > 0) return fail(`You can rename your site again in ${Math.ceil(wait / DAY)} day${Math.ceil(wait / DAY) === 1 ? '' : 's'}.`);
   if (name === user.username) return fail('That is already your site name.');
   if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
-  if (!U.limit(`rename:${user.id}`, 5, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), loginOf(user).pw_hash))) return fail('Wrong password. Nothing was changed.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'rename', fail, 'Wrong password. Nothing was changed.'))) return;
   // a member may take back a name they gave up themselves
   const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
   if (q.userByName.get(name) || (held && held.user_id !== user.id)) return fail('That site name is taken.');
@@ -1366,18 +1328,16 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   res.redirect(`/dashboard?ok=${encodeURIComponent(`Your site is now ${cfg.siteUrl(name)}. The old address redirects there for 90 days. Pages that spell out the old address or name need editing by hand.`)}`);
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
-  if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
-  if (!(await U.checkPw(String(req.body.password || ''), loginOf(req.ctx.user).pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
-  if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'delete', (err, code) => showDashboard(req, res, { err }, code), 'Wrong password. Nothing was deleted.'))) return;
   if (!isLogin(req.ctx.user)) { // an extra site goes alone, and the session moves back to the login
-    db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(loginOf(req.ctx.user).id, req.sessionHash);
+    sessions.move(req.session, loginOf(req.ctx.user).id);
     logins.remove(req.ctx.user);
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
   if (billing && !(await billing.cancel(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
-  if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out or banned while Stripe answered
+  if (!req.session.current()) return res.redirect('/login'); // signed out or banned while Stripe answered
   logins.remove(req.ctx.user);
-  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  clearSession(res);
   res.send(V.notices.accountDeleted(req.ctx));
 });
 
@@ -1395,7 +1355,7 @@ main.post('/dashboard/support', auth, async (req, res) => {
   if (supportLimited(req, res)) return;
   try {
     const go = await billing.checkout(req.ctx.login, req.body.plan);
-    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out or banned while Stripe answered
+    if (!req.session.current()) return res.redirect('/login'); // signed out or banned while Stripe answered
     if (go.already) return supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
     res.redirect(303, go.url);
   } catch (e) {
@@ -1409,7 +1369,7 @@ main.post('/dashboard/support/portal', auth, async (req, res) => {
   if (supportLimited(req, res)) return;
   try {
     const url = await billing.portal(req.ctx.login);
-    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
+    if (!req.session.current()) return res.redirect('/login');
     if (!url) return res.redirect('/dashboard/support');
     res.redirect(303, url);
   } catch (e) {
@@ -1452,10 +1412,8 @@ main.post('/dashboard/api', auth, async (req, res) => {
     return show({ ok: 'Your API key is switched off.' });
   }
   if (user.banned) return res.redirect('/dashboard');
-  if (!U.limit(`apikey:${user.id}`, 5, 900000)) return show({ err: 'Too many attempts. Wait 15 minutes and try again.' }, '', 429);
   // a key outlives the session, so making one takes the password, as a rename does
-  if (!(await U.checkPw(String(req.body.password || ''), loginOf(user).pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'apikey', (err, code) => show({ err }, '', code), 'Wrong password. No key was made.'))) return;
   const key = `pp_${U.newToken()}`;
   db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(U.sha(key), user.id);
   show(null, key);
@@ -1463,18 +1421,15 @@ main.post('/dashboard/api', auth, async (req, res) => {
 api.use((req, res, next) => {
   req.headers.accept = 'application/json'; // so shared steps like tempBudget answer in JSON
   const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
-  const user = m && db.prepare("SELECT * FROM users WHERE api_key = ? AND api_key != ''").get(U.sha(m[1]));
+  const s = sessions.forKey(m && m[1]);
+  const user = s && s.user;
   if (!user || !user.verified) return res.status(401).json({ error: 'Missing or unknown API key. Make one at /dashboard/api.' });
   if (user.banned) return res.status(403).json({ error: 'A moderator took this site down. Editing is disabled.' });
   if (!U.limit(`api:${user.id}`, 120, 60000)) return res.status(429).set('Retry-After', '60').json({ error: 'Too many requests. Wait a minute.' });
+  req.session = s;
   req.ctx = { cfg, user, csrf: '', isAdmin: false, nonce: '' };
   next();
 });
-// an upload can take a while to arrive; a new key, a ban or a rename meanwhile stops the write
-const apiCurrent = (user) => {
-  const cur = q.userById.get(user.id);
-  return !!cur && cur.api_key === user.api_key && !cur.banned && cur.renamed_at === user.renamed_at;
-};
 api.get('/site', (req, res) => {
   const u = req.ctx.user;
   const used = files.usage(u.username);
@@ -1505,7 +1460,8 @@ api.get('/files', async (req, res) => {
 api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err) => {
   try {
     if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time, in a field called "files".' });
-    if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the upload.' });
+    // an upload can take a while to arrive; a new key, a ban or a rename meanwhile stops the write
+    if (bodyCheck(req) !== 'ok') return res.status(403).json({ error: 'The API key changed or the site was taken down during the upload.' });
     if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files. Send them in a field called "files".' });
     const dir = U.safeRel(req.body?.dir || '', { file: false });
     if (dir === null) return res.status(400).json({ error: 'That folder name is not allowed.' });
@@ -1515,7 +1471,7 @@ api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err
 }, true));
 // one file as { path }, or up to 100 as { paths: [...] } with one history entry for the lot
 api.post('/delete', express.urlencoded({ extended: false }), express.json(), (req, res) => {
-  if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
+  if (!req.session.current()) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
   const user = req.ctx.user;
   if (req.body?.paths !== undefined) {
     const list = [req.body.paths].flat();
@@ -1676,7 +1632,7 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   // the state change and its log entry commit together, so no take-down or restore goes unrecorded;
   // either take-down ends every session of the login
   if (action === 'ban') {
-    logins.takeDown(target, reason, { inTransaction: () => { adminLog(req, 'take down', target.username, reason); logins.endSessions(target); } });
+    logins.takeDown(target, reason, { inTransaction: () => { adminLog(req, 'take down', target.username, reason); sessions.endSessions(target); } });
     return showAdmin(req, res, { ok: `${target.username} is offline.` });
   }
   if (logins.restore(target, { inTransaction: () => adminLog(req, 'restore', target.username) }) === 'login-down') {
@@ -1699,8 +1655,7 @@ upgrade.ensureDir(DATA_DIR);
 const housekeeping = () => {
   // an error here must not kill the process: this runs from a timer with nobody watching
   try {
-    db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
-    db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
+    sessions.sweep();
     db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
     db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
