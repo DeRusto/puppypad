@@ -21,6 +21,38 @@ function resolveIn(site, rel) {
   const full = path.resolve(root, rel);
   return full === root || full.startsWith(root + path.sep) ? full : null;
 }
+// The file urlPath (decoded, starting with /) serves from root, the way the site router serves it: { file },
+// { redirect } for a folder asked for without its trailing slash, or null. A folder serves its index.html, and a path
+// without an extension or trailing slash falls back to .html. Dot segments, .. and NUL never resolve.
+function resolve(root, urlPath) {
+  if (urlPath.includes('\0') || urlPath.split('/').some((s) => s === '..' || s.startsWith('.'))) return null;
+  const full = path.join(root, urlPath);
+  if (!full.startsWith(root)) return null;
+  const slash = urlPath.endsWith('/');
+  const st = statOf(full);
+  if (st && st.isDirectory()) {
+    if (!slash) return { redirect: `${urlPath}/` };
+    return statOf(path.join(full, 'index.html'))?.isFile() ? { file: path.join(full, 'index.html') } : null;
+  }
+  if (st) return !slash && st.isFile() ? { file: full } : null;
+  // clean URLs: /about serves about.html when nothing called "about" exists
+  if (slash || path.extname(full)) return null;
+  return statOf(`${full}.html`)?.isFile() ? { file: `${full}.html` } : null;
+}
+const statOf = (full) => { try { return fs.statSync(full); } catch { return null; } };
+// every file under dir as a slash-separated path relative to it, read off the main thread
+async function listFiles(dir) {
+  const out = [];
+  const walk = async (d, pre) => {
+    for (const e of await fs.promises.readdir(d, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(path.join(d, e.name), `${pre}${e.name}/`);
+      else if (e.isFile()) out.push(pre + e.name);
+    }
+  };
+  if (fs.existsSync(dir)) await walk(dir, '');
+  return out;
+}
+const LINK_ATTR = /(?<![\w-])(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/gi;
 // write beside the target and rename over it, so a failed write never leaves a replaced file half-written
 function writeAtomic(full, data) {
   const tmp = `${full}.${crypto.randomBytes(6).toString('hex')}.tmp`;
@@ -240,8 +272,38 @@ function createSiteFiles({ cfg, limitsFor, sendMail }) {
     H.remove(site.id).catch((e) => console.error(`file history remove for ${site.username} failed:`, e.message));
   }
 
+  const list = (site) => listFiles(siteDir(site.username));
+  // href and src values in a site's pages that point at its own files that don't exist, through resolve like the router
+  async function brokenLinks(site) {
+    const root = siteDir(site.username);
+    const served = (url) => { const r = resolve(root, url); return !!r && (!!r.file || !!resolve(root, r.redirect)); };
+    const broken = [];
+    for (const file of (await list(site)).filter((f) => /\.html?$/i.test(f))) {
+      let html = await fs.promises.readFile(path.join(root, file), 'utf8');
+      // a <base href> moves where the page's relative links point, as in the browser; it is no link itself
+      const baseTag = html.match(/<base\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/i);
+      let base = new URL(`http://x/${file}`);
+      try { if (baseTag) base = new URL((baseTag[1] ?? baseTag[2] ?? baseTag[3]).trim(), base); } catch { /* invalid: the browser ignores it too */ }
+      html = html.replace(/<base\b[^>]*>/gi, '');
+      for (const m of html.matchAll(LINK_ATTR)) {
+        const link = (m[1] ?? m[2] ?? m[3]).trim();
+        // other sites, mail and script links, in-page anchors and the /_hw/ widgets are not files to check
+        if (!link || link.startsWith('#') || link.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(link) || link.includes('{')) continue;
+        let p = null;
+        try {
+          const u = new URL(link, base);
+          if (u.host !== 'x') continue; // the base points at another site
+          p = decodeURIComponent(u.pathname);
+        } catch { /* malformed: reported below */ }
+        if (p !== null && (p === '/_hw' || p.startsWith('/_hw/') || served(p))) continue;
+        broken.push({ file, link });
+      }
+    }
+    return broken;
+  }
+
   const forgetUsage = (name) => usageCache.delete(name); // for tests that put files on disk behind the module's back
-  return { write, writeMany, deleteFiles, move, create, rename, removeSite, usage, refreshUsage, historySweep, relFor, forgetUsage };
+  return { write, writeMany, deleteFiles, move, create, rename, removeSite, usage, refreshUsage, historySweep, relFor, list, brokenLinks, forgetUsage };
 }
 
-module.exports = { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES, SCANNED };
+module.exports = { createSiteFiles, siteDir, shotPath, resolveIn, resolve, MAX_FILES, SCANNED };

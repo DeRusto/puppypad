@@ -16,7 +16,7 @@ const cardstyle = require('./cardstyle');
 const upgrade = require('./upgrade');
 const W = require('./widgets');
 const H = require('./history');
-const { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES } = require('./sitefiles');
+const { createSiteFiles, siteDir, shotPath, resolveIn, resolve, MAX_FILES } = require('./sitefiles');
 const { createLogins } = require('./logins');
 const { createBilling, BadSignature } = require('./billing');
 
@@ -311,25 +311,16 @@ site.use((req, res) => {
   if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
     return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
   }
-  if (rel.includes('\0') || rel.split('/').some((s) => s === '..' || s.startsWith('.'))) return notFound();
-  let full = path.join(root, rel);
-  if (!full.startsWith(root)) return notFound();
-  fs.stat(full, (err, st) => {
-    if (!err && st.isDirectory()) {
-      if (!req.path.endsWith('/')) return res.redirect(301, req.path + '/');
-      full = path.join(full, 'index.html');
-    } else if (err) {
-      // clean URLs: /about serves about.html when nothing called "about" exists
-      if (req.path.endsWith('/') || path.extname(full)) return notFound();
-      full += '.html';
-    }
-    page = /\.html?$/i.test(full);
-    res.set('Cache-Control', 'public, max-age=60');
-    if (page && fs.existsSync(shotPath(req.owner.username))) {
-      return fs.readFile(full, (e, buf) => (e ? notFound() : res.type('html').send(withOgImage(buf, req.owner.username))));
-    }
-    res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
-  });
+  const r = resolve(root, rel);
+  if (!r) return notFound();
+  if (r.redirect) return res.redirect(301, req.path + '/');
+  const full = r.file;
+  page = /\.html?$/i.test(full);
+  res.set('Cache-Control', 'public, max-age=60');
+  if (page && fs.existsSync(shotPath(req.owner.username))) {
+    return fs.readFile(full, (e, buf) => (e ? notFound() : res.type('html').send(withOgImage(buf, req.owner.username))));
+  }
+  res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
 });
 
 // ================= main site =================
@@ -974,7 +965,7 @@ main.get('/dashboard/download', auth, (req, res) => {
 
 // the member's pictures for the editor's image picker
 const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
-const siteImages = async (user, rel) => (/\.html?$/i.test(rel) ? (await U.listFiles(siteDir(user.username))).filter((f) => IMAGE.test(f)).sort() : []);
+const siteImages = async (user, rel) => (/\.html?$/i.test(rel) ? (await files.list(user)).filter((f) => IMAGE.test(f)).sort() : []);
 main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   const rel = U.safeRel(req.query.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
@@ -1011,7 +1002,7 @@ main.get('/dashboard/style', auth, canEdit, async (req, res) => {
     page: index ?? starters.render(user.starter, user.username, cfg),
     tail: style.tail(css),
     offerLink: css !== null && index !== null && !style.hasLink(index),
-    images: (await U.listFiles(root)).filter((f) => style.IMAGE.test(f)).sort(), // for "use my own" background
+    images: (await files.list(user)).filter((f) => style.IMAGE.test(f)).sort(), // for "use my own" background
   }));
 });
 main.post('/dashboard/style', auth, canEdit, (req, res) => {
@@ -1148,7 +1139,7 @@ main.post('/dashboard/history/restore', auth, canEdit, async (req, res) => {
 });
 main.get('/dashboard/links', auth, async (req, res) => {
   if (!U.limit(`links:${req.ctx.user.id}`, 30, 3600000)) return showDashboard(req, res, { err: 'That is a lot of link checks. Try again in an hour.' }, 429);
-  res.send(V.links(req.ctx, await U.brokenLinks(siteDir(req.ctx.user.username))));
+  res.send(V.links(req.ctx, await files.brokenLinks(req.ctx.user)));
 });
 const statsSince = () => new Date(now() - (STATS_DAYS - 1) * DAY).toISOString().slice(0, 10);
 main.get('/dashboard/stats', auth, (req, res) => {
@@ -1429,7 +1420,7 @@ main.post('/dashboard/support/portal', auth, async (req, res) => {
 // ----- widgets -----
 main.get('/dashboard/widgets', auth, async (req, res) => res.send(V.widgets(req.ctx, msgOf(req), {
   groups: W.groups(cfg, req.ctx.user, isSupporter(req.ctx.login)),
-  pages: (await U.listFiles(siteDir(req.ctx.user.username))).filter((f) => /\.html?$/i.test(f)).sort(),
+  pages: (await files.list(req.ctx.user)).filter((f) => /\.html?$/i.test(f)).sort(),
 })));
 main.post('/dashboard/widgets/status', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET status = ? WHERE id = ?').run(W.cleanStatus(req.body.status), req.ctx.user.id);
@@ -1496,18 +1487,18 @@ api.get('/site', (req, res) => {
 });
 api.get('/files', async (req, res) => {
   const root = siteDir(req.ctx.user.username);
-  const files = [];
-  for (const f of (await U.listFiles(root)).sort()) {
+  const list = [];
+  for (const f of (await files.list(req.ctx.user)).sort()) {
     try {
       const full = path.join(root, f);
       const st = await fs.promises.stat(full);
       // the CLI compares hashes to skip unchanged files; mtimes mean nothing after a git checkout
       // shortcut: hashes the whole site on every listing (500 MB at most); cache by size and mtime if listings get slow
       const sha256 = crypto.createHash('sha256').update(await fs.promises.readFile(full)).digest('hex');
-      files.push({ path: f, size: st.size, modified: st.mtime.toISOString(), sha256 });
+      list.push({ path: f, size: st.size, modified: st.mtime.toISOString(), sha256 });
     } catch { /* deleted meanwhile */ }
   }
-  res.json({ files });
+  res.json({ files: list });
 });
 // preservePath keeps the folders in a filename like pics/cat.png, so one request can upload a whole tree
 api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err) => {
