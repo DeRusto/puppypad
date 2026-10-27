@@ -51,7 +51,7 @@ const row = (site) => db.prepare('SELECT * FROM users WHERE id = ?').get(site.id
 test('starting the new code renames owner_id to login_id on an older database, keeping its links', () => {
   assert.ok(cols().includes('login_id'));
   assert.ok(!cols().includes('owner_id'));
-  assert.equal(version(), 1);
+  assert.equal(version(), 2);
   assert.ok(indexes().includes('idx_users_login'));
   assert.ok(!indexes().includes('idx_users_owner'));
   const oldExtra = db.prepare('SELECT * FROM users WHERE id = 2').get();
@@ -182,7 +182,7 @@ test('restore refuses an extra site on its own while its login is taken down, ch
 test('schema down 0 puts owner_id back for an older release, does nothing twice, and the new code re-applies it', () => {
   const login = add();
   const site = extra(login);
-  assert.match(schemaCli('down', '0'), /database schema 1 -> 0/);
+  assert.match(schemaCli('down', '0'), /database schema 2 -> 0/);
   assert.ok(cols().includes('owner_id'));
   assert.ok(!cols().includes('login_id'));
   assert.equal(version(), 0);
@@ -199,12 +199,12 @@ test('schema down 0 puts owner_id back for an older release, does nothing twice,
   // the newer app starting again (its src/db.js) moves the database forward
   execFileSync(process.execPath, ['-e', "require('./src/db')"], { cwd: path.join(__dirname, '..'), env: { ...process.env } });
   assert.ok(cols().includes('login_id'));
-  assert.equal(version(), 1);
+  assert.equal(version(), 2);
   assert.deepEqual(logins.sitesOf(site).map((s) => s.id), [login.id, site.id]);
 });
 
 test('schema.js refuses anything but down <n> and version', () => {
   assert.throws(() => schemaCli('down'), /usage/);
   assert.throws(() => schemaCli('up', '1'), /usage/);
-  assert.equal(schemaCli('version').trim(), '1');
+  assert.equal(schemaCli('version').trim(), '2');
 });
