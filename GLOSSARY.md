@@ -8,6 +8,18 @@ A free homepage host in the old-web style: every member gets a site at name.your
 A member's homepage: one folder of files served at its own subdomain. A login has one site, and supporters may have up to five.
 _Avoid_: account (that is the login), page
 
+**Online**:
+A Site anyone can visit: its login confirmed the email and no moderator has taken it down.
+_Avoid_: live, active, published
+
+**Listed**:
+An Online Site shown in the dog park, on the home page, in the sitemap and in the webring. It is listed once it isn't hidden, has been edited at least once, and is past the new-site wait.
+_Avoid_: visible, public, discoverable
+
+**Held name**:
+A name a Site gave up, by being deleted or renamed, that nobody else can claim for 90 days. A renamed Site's old held name sends visitors to its new address, and its own login may take that name back.
+_Avoid_: released name, reserved name (reserved names are the ones no Site may ever take)
+
 **Login**:
 What a member signs in with. It owns one site (up to five for supporters) and holds the email, password, two-factor login, supporter status and admin rights for all of them.
 _Avoid_: account, owner, user
