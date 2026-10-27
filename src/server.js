@@ -1088,7 +1088,7 @@ main.post('/account/password', auth, async (req, res) => {
   if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   const pwHash = await U.hashPw(password);
-  if (!req.session.current()) return res.redirect('/login');
+  if (!req.session.current({ takenDown: true })) return res.redirect('/login');
   db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
   // log out everywhere else and switch off the API keys, in case the old password leaked
   sessions.revokeApiKeys(user);
@@ -1186,7 +1186,7 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
   if (billing && !(await billing.cancel(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
-  if (!req.session.current()) return res.redirect('/login'); // signed out or banned while Stripe answered
+  if (!req.session.current({ takenDown: true })) return res.redirect('/login'); // signed out while Stripe answered (a take-down ends every session too)
   logins.remove(req.ctx.user);
   clearSession(res);
   res.send(V.notices.accountDeleted(req.ctx));
@@ -1206,7 +1206,7 @@ main.post('/dashboard/support', auth, async (req, res) => {
   if (supportLimited(req, res)) return;
   try {
     const go = await billing.checkout(req.ctx.login, req.body.plan);
-    if (!req.session.current()) return res.redirect('/login'); // signed out or banned while Stripe answered
+    if (!req.session.current({ takenDown: true })) return res.redirect('/login'); // signed out while Stripe answered (a take-down ends every session too)
     if (go.already) return supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
     res.redirect(303, go.url);
   } catch (e) {
@@ -1220,7 +1220,7 @@ main.post('/dashboard/support/portal', auth, async (req, res) => {
   if (supportLimited(req, res)) return;
   try {
     const url = await billing.portal(req.ctx.login);
-    if (!req.session.current()) return res.redirect('/login');
+    if (!req.session.current({ takenDown: true })) return res.redirect('/login');
     if (!url) return res.redirect('/dashboard/support');
     res.redirect(303, url);
   } catch (e) {

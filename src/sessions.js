@@ -37,10 +37,12 @@ function createSessions({ logins }) {
     return {
       user, login, csrf: s.csrf, hash: s.token_hash,
       csrfOk: (body) => !!body && body._csrf === s.csrf,
-      // the same password, name and session row, and not taken down (renamed_at changes with every rename)
-      current() {
+      // the same password, name and session row, and not taken down (renamed_at changes with every rename);
+      // takenDown: true for the member's own account steps (password, email, two-factor, deletion, billing), which a
+      // taken-down member may still take
+      current({ takenDown = false } = {}) {
         const cur = byId.get(user.id);
-        return !!cur && !cur.banned && cur.renamed_at === user.renamed_at && logins.loginOf(cur).pw_hash === login.pw_hash && !!sessionRow.get(s.token_hash);
+        return !!cur && (takenDown || !cur.banned) && cur.renamed_at === user.renamed_at && logins.loginOf(cur).pw_hash === login.pw_hash && !!sessionRow.get(s.token_hash);
       },
     };
   }
@@ -68,12 +70,13 @@ function createSessions({ logins }) {
   }
   const revokeApiKeys = (site) => { const id = logins.loginOf(site).id; db.prepare("UPDATE users SET api_key = '' WHERE id = ? OR login_id = ?").run(id, id); };
 
-  // 'ok', 'wrong', 'limited', or 'signedOut' when the Session stopped being current while the password was checked
+  // 'ok', 'wrong', 'limited', or 'signedOut' when the Session stopped being current while the password was checked.
+  // A take-down alone doesn't stop it: the actions that edit the Site (rename, a new API key) refuse taken-down Sites first
   async function confirmPassword(session, action, password) {
     const [key, max, windowMs, per] = LIMITS[action];
     if (!U.limit(`${key}:${(per === 'login' ? session.login : session.user).id}`, max, windowMs)) return 'limited';
     if (!(await U.checkPw(String(password || ''), session.login.pw_hash))) return 'wrong';
-    return session.current() ? 'ok' : 'signedOut';
+    return session.current({ takenDown: true }) ? 'ok' : 'signedOut';
   }
 
   // a new token replaces the site's last one of its kind

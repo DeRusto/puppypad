@@ -61,6 +61,9 @@ test('current() turns false after a reset, a rename, a take-down or the session 
   const banned = signIn(site);
   set(site, 'banned = 1');
   assert.equal(banned.current(), false);
+  // the member's own account steps still work while their site is taken down
+  assert.equal(banned.current({ takenDown: true }), true);
+  assert.equal(await sessions.confirmPassword(banned, 'delete', 'resetpassword1'), 'ok'); // the reset above changed it
   set(site, 'banned = 0');
 
   const ended = signIn(site);

@@ -132,6 +132,17 @@ test('unknown and unconfirmed sites 404, banned sites 410', async () => {
   boss.csrf = (await req('get', '/admin').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
   await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'baddog', action: 'ban', reason: 'test' });
   assert.equal((await req('get', '/', 'baddog.pad.test')).status, 410);
+
+  // taken down, the member can't edit, but can still look after their account: change the password or delete it
+  const back = await req('post', '/login').type('form').send({ username: 'baddog', password: 'longpassword1' });
+  const m = { cookie: back.headers['set-cookie'][0].split(';')[0] };
+  m.csrf = (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  const send = (url, body) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  assert.equal((await send('/dashboard/tagline', { tagline: 'x' })).headers.location, '/dashboard');
+  const pw = await send('/account/password', { password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
+  assert.match(pw.headers.location, /Password%20changed/);
+  assert.match((await send('/dashboard/delete-account', { password: 'longpassword2' })).text, /Account deleted/);
+  assert.equal(db.prepare("SELECT 1 FROM users WHERE username = 'baddog'").get(), undefined);
 });
 
 test('a deleted site name is held, a reserved one is refused', async () => {
