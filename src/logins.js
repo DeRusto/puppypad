@@ -1,8 +1,13 @@
-// Login: the account a member signs in with. A supporter's extra sites are their own users rows pointing at the
+// Login: what a member signs in with. A supporter's extra sites are their own users rows pointing at the
 // login's row through login_id; email, password, two-factor login, supporter status and admin rights live on the
 // login's row only. Every function here takes any site row, a login's own or an extra one, and answers for its
 // login, so no caller has to remember which row a fact lives on.
 const { db } = require('./db');
+
+// Taken down (users.banned): UP is not taken down, ALONE was taken down on its own, WITH_LOGIN only along with its login
+const UP = 0;
+const ALONE = 1;
+const WITH_LOGIN = 2;
 
 // cfg for the admin list and limits; removeSite(site) deletes a site's folder, screenshot and history (Site files);
 // dropShot(site) deletes its screenshot; holdName(name) holds a deleted Site's name (src/names.js)
@@ -31,7 +36,7 @@ function createLogins({ cfg, removeSite, dropShot, holdName }) {
   };
 
   // An extra site goes alone; a login takes its extra sites along. Deleted names are held (src/names.js), except a
-  // never-confirmed account's, which was never online, and with hold: false, the rollback of a Site whose making
+  // never-confirmed Site's, which was never online, and with hold: false, the rollback of a Site whose making
   // failed, whose name was never served. inTransaction(site) commits with the rows.
   function remove(site, { inTransaction, hold = true } = {}) {
     const extra = db.prepare('SELECT * FROM users WHERE login_id = ?').all(site.id);
@@ -45,27 +50,26 @@ function createLogins({ cfg, removeSite, dropShot, holdName }) {
     removeSite(site);
   }
 
-  // Taken down: banned 0 is Online, 1 is taken down on its own, 2 is taken down only along with its login. A login's
-  // take-down covers its Online extra sites (as 2); an extra site's covers only itself. inTransaction(sites) commits with
-  // the rows; the shots go after.
+  // A login's take-down covers its Online extra sites (as WITH_LOGIN); an extra site's covers only itself.
+  // inTransaction(sites) commits with the rows; the shots go after.
   function takeDown(site, reason, { inTransaction } = {}) {
-    const sites = isLogin(site) ? sitesOf(site).filter((s) => s.id === site.id || s.banned === 0) : [site];
+    const sites = isLogin(site) ? sitesOf(site).filter((s) => s.id === site.id || s.banned === UP) : [site];
     db.transaction(() => {
       for (const s of sites) {
-        db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(s.id === site.id ? 1 : 2, reason, s.id);
+        db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(s.id === site.id ? ALONE : WITH_LOGIN, reason, s.id);
         db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
       }
       if (inTransaction) inTransaction(sites);
     })();
     for (const s of sites) dropShot(s);
   }
-  // Brings back the site, and for a login the extra sites marked 2, never one taken down on its own.
+  // Brings back the site, and for a login the extra sites marked WITH_LOGIN, never one taken down on its own (ALONE).
   // 'login-down', changing nothing, for an extra site whose login is taken down: no Online Site under a taken-down login
   function restore(site, { inTransaction } = {}) {
     if (!isLogin(site) && loginOf(site).banned) return 'login-down';
-    const sites = isLogin(site) ? sitesOf(site).filter((s) => s.id === site.id || s.banned === 2) : [site];
+    const sites = isLogin(site) ? sitesOf(site).filter((s) => s.id === site.id || s.banned === WITH_LOGIN) : [site];
     db.transaction(() => {
-      for (const s of sites) db.prepare('UPDATE users SET banned = 0, ban_reason = NULL, shot_dirty = 1 WHERE id = ?').run(s.id);
+      for (const s of sites) db.prepare('UPDATE users SET banned = ?, ban_reason = NULL, shot_dirty = 1 WHERE id = ?').run(UP, s.id);
       if (inTransaction) inTransaction(sites);
     })();
     return 'ok';

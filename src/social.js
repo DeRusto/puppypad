@@ -1,12 +1,13 @@
 // Social: follows, comments, likes, Blocks, notifications and the follow feed. Never touches req or res.
 // A comment or like shows only while its author is Online and neither the member whose space it is nor the one looking
 // blocked them. A Block applies both ways: while either member has blocked the other, neither can follow, comment on
-// or like the other's Site. Notifications are worked out from the follows, comments and likes themselves on every read,
-// so deletes and Blocks apply at once.
+// or like the other's Site, and an action a Block stops returns 'ok', so it looks like it went through.
+// Notifications are worked out from the follows, comments and likes themselves on every read, so deletes and Blocks
+// apply at once.
 const { db } = require('./db');
 const U = require('./util');
 
-const PER_PAGE = 50;
+const { PER_PAGE, pageOf } = U;
 const PREVIEW = 5; // comments shown under each Update on the feed and profile; the Update's own page has them all
 const NOTE_KINDS = ['follow', 'comment', 'like'];
 const NOTE_TEXT = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
@@ -23,11 +24,6 @@ function createSocial({ cfg, logins, listing, sendMail }) {
   const blockedEither = (a, b) => blocked(a.id, b.id) || blocked(b.id, a.id);
   // hidden when the member whose space it is (`owner`, a column), or the one looking (@viewer), blocked its author
   const unblocked = (col, owner) => `${col} NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ${owner} OR blocker_id = @viewer)`;
-  // page n of `total` rows, kept within the pages there are
-  const pageOf = (total, n) => {
-    const pages = Math.max(1, Math.ceil(total / PER_PAGE));
-    return { page: Math.min(pages, Math.max(1, Number(n) || 1)), pages };
-  };
   const limitOf = (page) => `LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`;
 
   // the optional email for one kind of notification; capped like guestbook mail so a burst can't flood the inbox
@@ -149,4 +145,4 @@ function createSocial({ cfg, logins, listing, sendMail }) {
   };
 }
 
-module.exports = { createSocial, WITH_FOLLOWERS, NOTE_KINDS, PER_PAGE };
+module.exports = { createSocial, WITH_FOLLOWERS, NOTE_KINDS };

@@ -144,7 +144,17 @@ function totpStep(secret, code, t = Date.now()) {
   return [now - 1, now, now + 1].find((s) => totp(secret, s) === code) || 0;
 }
 
-const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+const DAY = 86400000;
+// the non-blank lines of a newline list (blocked words, recovery codes, a feed event's files), trimmed
+const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
+// lists that page show 50 at a time; page n of `total` rows, kept within the pages there are
+const PER_PAGE = 50;
+const pageOf = (total, n) => {
+  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
+  return { page: Math.min(pages, Math.max(1, parseInt(n, 10) || 1)), pages };
+};
+
+const fmtBytes =(n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 // Runs work one at a time per key: each call starts once the key's previous one has settled (returned or thrown) and
 // gets its own result or error. Keys with nothing waiting are dropped, so finished keys cost nothing.
@@ -160,4 +170,4 @@ function keyedQueue() {
   return { run, size: () => tails.size };
 }
 
-module.exports = { keyedQueue, esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };
+module.exports = { DAY, lines, PER_PAGE, pageOf, keyedQueue, esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };

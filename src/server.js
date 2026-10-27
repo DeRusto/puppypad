@@ -61,7 +61,7 @@ const cfg = {
   siteUrl: (name) => `${base.protocol}//${name}.${base.host}`,
 };
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
-const DAY = 86400000;
+const { DAY, lines, PER_PAGE } = U;
 const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
 const IP_KEEP = 90 * DAY; // report IPs are erased after this (src/guestbook.js keeps its own); the privacy page promises it
 const now = () => Date.now();
@@ -220,7 +220,6 @@ site.get('/_hw/counter.svg', (req, res) => {
 site.get('/_hw/updated.svg', (req, res) => res.set('Cache-Control', 'public, max-age=300').type('image/svg+xml').send(W.updatedSvg(req.owner.updated_at)));
 site.get('/_hw/status.svg', (req, res) => res.set('Cache-Control', 'public, max-age=60').type('image/svg+xml').send(W.statusSvg(req.owner.status)));
 
-const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 // signing, spam rules, owner tools and mail (src/guestbook.js); the routes here read forms and render
 const guestbook = createGuestbook({ cfg, logins, sendMail, listing });
 site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(guestbook.page(req.owner, req.query.page), '', W.gbTheme(req.query.theme))));
@@ -505,12 +504,8 @@ main.post('/follow', (req, res) => {
 });
 
 // ----- comments, likes, blocks, notifications (src/social.js) -----
-const PER_PAGE = 50;
 // the page asked for in ?<key>=, kept within the pages there are
-const pageOf = (req, total, key = 'page') => {
-  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
-  return { page: Math.min(pages, Math.max(1, parseInt(req.query[key], 10) || 1)), pages };
-};
+const pageOf = (req, total, key = 'page') => U.pageOf(total, req.query[key]);
 // a comment or like lands back on the page of ours it was made from, never on another site
 const BACK = /^\/(feed|notifications|site\/[a-z0-9-]+(\/update\/\d+)?)$/;
 const backTo = (req, owner) => (BACK.test(String(req.body.back || '')) ? req.body.back : `/site/${owner.username}`);

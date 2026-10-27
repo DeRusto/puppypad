@@ -8,13 +8,12 @@ const { db, SITES_DIR, SHOTS_DIR } = require('./db');
 const U = require('./util');
 const H = require('./history');
 
-const DAY = 86400000;
+const { DAY, lines } = U;
 const MAX_FILES = 2000; // the byte quota alone lets a member mint unlimited empty files; this is far above any real site
 // the types a browser runs as a page or script; supporters may upload the rarer ones (xhtml, shtml, mjs) too
 const SCANNED = /\.(x?html?|shtml|m?js|svg|xml)$/i;
 const siteDir = (name) => path.join(SITES_DIR, name);
 const shotPath = (name) => path.join(SHOTS_DIR, `${name}.jpg`);
-const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 // resolve a member path inside their folder, or null
 function resolveIn(site, rel) {
   const root = siteDir(site.username);

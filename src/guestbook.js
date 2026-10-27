@@ -3,13 +3,11 @@
 const { db } = require('./db');
 const U = require('./util');
 
-const DAY = 86400000;
-const PER_PAGE = 50;
+const { DAY, PER_PAGE, lines } = U;
 const KEEP = 90 * DAY; // entry addresses are erased and blocks expire after this; the privacy page promises it
 const MAX_BLOCKS = 200; // per Site
 const LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz|top|click|link)\b/i; // shortcut: a TLD list, not a URL parser
 const NOTIFY = ['instant', 'daily', 'off'];
-const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 
 // listing (src/listing.js) picks the Sites still Online, for the digest
 function createGuestbook({ cfg, logins, sendMail, listing }) {
@@ -38,8 +36,7 @@ function createGuestbook({ cfg, logins, sendMail, listing }) {
   // page n, newest first, kept within the pages there are: the approved entries visitors see, or all for the owner
   function page(site, n, { all = false } = {}) {
     const from = `FROM guestbook WHERE user_id = ?${all ? '' : ' AND approved = 1'}`;
-    const pages = Math.max(1, Math.ceil(db.prepare(`SELECT COUNT(*) n ${from}`).get(site.id).n / PER_PAGE));
-    const at = Math.min(pages, Math.max(1, parseInt(n, 10) || 1));
+    const { page: at, pages } = U.pageOf(db.prepare(`SELECT COUNT(*) n ${from}`).get(site.id).n, n);
     return { rows: db.prepare(`SELECT * ${from} ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(at - 1) * PER_PAGE}`).all(site.id), page: at, pages };
   }
 
@@ -52,7 +49,8 @@ function createGuestbook({ cfg, logins, sendMail, listing }) {
     const e = db.prepare('SELECT ip FROM guestbook WHERE id = ? AND user_id = ?').get(Number(entryId) || 0, site.id);
     if (!e?.ip) return;
     db.transaction(() => {
-      db.prepare('INSERT OR IGNORE INTO guestbook_blocks (user_id, ip, created_at) VALUES (?, ?, ?)').run(site.id, e.ip, Date.now());
+      // blocking an address again starts its 90 days over
+      db.prepare('INSERT INTO guestbook_blocks (user_id, ip, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id, ip) DO UPDATE SET created_at = excluded.created_at').run(site.id, e.ip, Date.now());
       db.prepare(`DELETE FROM guestbook_blocks WHERE user_id = ? AND rowid NOT IN
         (SELECT rowid FROM guestbook_blocks WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ${MAX_BLOCKS})`).run(site.id, site.id);
     })();

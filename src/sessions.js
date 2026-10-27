@@ -6,7 +6,7 @@
 const { db } = require('./db');
 const U = require('./util');
 
-const DAY = 86400000;
+const { DAY, lines } = U;
 const SESSION_TTL = 30 * DAY;
 // the per-action limits on confirming a password: [key, tries, window, counted per login or per site]
 const LIMITS = {
@@ -17,7 +17,6 @@ const LIMITS = {
   rename: ['rename', 5, 900000, 'site'],
   delete: ['delacct', 5, 900000, 'site'],
 };
-const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
 
 function createSessions({ logins }) {
   const byId = db.prepare('SELECT * FROM users WHERE id = ?');
@@ -28,9 +27,9 @@ function createSessions({ logins }) {
     db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), Date.now() + SESSION_TTL);
     return t;
   }
-  // the Session of a cookie's token, a snapshot of the site and its login as they were when the request came in; null when none
-  function lookup(token) {
-    const s = token ? sessionRow.get(U.sha(String(token))) : null;
+  // the Session of a session cookie's value, a snapshot of the Site and its Login as they were when the request came in; null when none
+  function lookup(cookie) {
+    const s = cookie ? sessionRow.get(U.sha(String(cookie))) : null;
     const user = s && s.expires > Date.now() && byId.get(s.user_id);
     if (!user) return null;
     const login = logins.loginOf(user);

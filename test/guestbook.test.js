@@ -211,4 +211,11 @@ test('sweep erases entry addresses and expires blocks after 90 days', () => {
   assert.deepEqual(guestbook.blocked(site), [fresh.ip]);
   assert.equal(sign(row(site), 'unblocked now', { ip: old.ip }), 'ok');
   assert.equal(entries(site).at(-1).message, 'unblocked now');
+
+  // blocking an address again starts its 90 days over
+  db.prepare('UPDATE guestbook_blocks SET created_at = ? WHERE ip = ?').run(Date.now() - 89 * DAY, fresh.ip);
+  guestbook.blockIp(site, fresh.id);
+  db.prepare('UPDATE guestbook_blocks SET created_at = created_at - ? WHERE ip = ?').run(2 * DAY, fresh.ip);
+  guestbook.sweep();
+  assert.deepEqual(guestbook.blocked(site), [fresh.ip]);
 });
