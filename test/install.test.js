@@ -242,3 +242,46 @@ test('installer: when the database cannot be put back after a failed upgrade, th
   assert.ok(fs.existsSync(path.join(s.root, '.upgrade/prev.env')));
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
 });
+
+// Step 2 on its own, through src/schema.js the way the installer runs it: blocked guestbook addresses move to
+// guestbook_blocks on the way up and the newest 200 per Site go back to users.gb_ips on the way down
+test('schema step 2: blocked guestbook addresses survive up and then down', () => {
+  const Database = require('better-sqlite3');
+  const schema = require('../src/schema');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-schema2-'));
+  const file = path.join(dir, 'puppypad.db');
+  const many = Array.from({ length: 205 }, (_, i) => `10.3.0.${i}`);
+  let db = new Database(file);
+  // a database as schema 1 left it, with the users columns step 2 reads
+  db.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL, login_id INTEGER, gb_ips TEXT NOT NULL DEFAULT '');
+    PRAGMA user_version = 1;`);
+  const put = db.prepare('INSERT INTO users (id, username, gb_ips) VALUES (?, ?, ?)');
+  put.run(1, 'few', '10.0.0.1\n 10.0.0.2 \n\n10.0.0.1');
+  put.run(2, 'many', many.join('\n'));
+  put.run(3, 'none', '');
+  const before = Date.now();
+  schema.up(db);
+  assert.equal(db.pragma('user_version', { simple: true }), 2);
+  const blocks = (id) => db.prepare('SELECT ip, created_at FROM guestbook_blocks WHERE user_id = ? ORDER BY rowid').all(id);
+  assert.deepEqual(blocks(1).map((b) => b.ip), ['10.0.0.1', '10.0.0.2']);
+  assert.equal(blocks(2).length, 205);
+  assert.ok(blocks(1).every((b) => b.created_at >= before)); // the 90 days count from the upgrade
+  assert.deepEqual(db.prepare('SELECT gb_ips FROM users ORDER BY id').all().map((u) => u.gb_ips), ['', '', '']);
+  db.prepare('INSERT INTO guestbook_blocks (user_id, ip, created_at) VALUES (3, ?, ?)').run('10.9.9.9', Date.now()); // blocked after the upgrade
+  db.close();
+
+  const out = execFileSync(process.execPath, [path.join(REPO, 'src/schema.js'), 'down', '1'], { env: { ...process.env, DATA_DIR: dir }, encoding: 'utf8' });
+  assert.match(out, /database schema 2 -> 1/);
+  db = new Database(file);
+  assert.equal(db.pragma('user_version', { simple: true }), 1);
+  const ips = (id) => db.prepare('SELECT gb_ips FROM users WHERE id = ?').get(id).gb_ips.split('\n');
+  assert.deepEqual(ips(1), ['10.0.0.1', '10.0.0.2']);
+  assert.deepEqual(ips(2), many.slice(-200)); // the newest 200
+  assert.deepEqual(ips(3), ['10.9.9.9']);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM guestbook_blocks').get().n, 0);
+
+  schema.up(db); // and up again
+  assert.deepEqual(blocks(3).map((b) => b.ip), ['10.9.9.9']);
+  assert.equal(blocks(2).length, 200);
+  db.close();
+});

@@ -150,7 +150,8 @@ for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dir
 // two-factor login: totp_secret is '' when it is off; totp_step is the last code's step, so a code works once;
 // totp_codes holds the sha256 of each unused recovery code, one per line
 // login_id: a supporter's extra site is its own row (files, stats and guestbook stay keyed by site) pointing at the login row that owns it;
-// it has no password of its own. Made by src/schema.js, which also holds the way back for older releases
+// it has no password of its own. Made by src/schema.js, which also holds the way back for older releases.
+// gb_ips is only for older releases: blocked guestbook addresses live in guestbook_blocks (src/schema.js step 2)
 require('./schema').up(db);
 // the API key's sha256; '' when the member has none
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key) WHERE api_key != ''");

@@ -18,6 +18,7 @@ const W = require('./widgets');
 const H = require('./history');
 const { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES } = require('./sitefiles');
 const { createLogins } = require('./logins');
+const { createGuestbook } = require('./guestbook');
 const { createBilling, BadSignature } = require('./billing');
 
 // ---------- config ----------
@@ -59,7 +60,7 @@ const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdom
 const DAY = 86400000;
 const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
 const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
-const IP_KEEP = 90 * DAY; // guestbook and report IPs are erased after this; the privacy page promises it
+const IP_KEEP = 90 * DAY; // report IPs are erased after this (src/guestbook.js keeps its own); the privacy page promises it
 const now = () => Date.now();
 const today = () => new Date().toISOString().slice(0, 10); // UTC
 const bwToday = (u) => (u.bw_day === today() ? u.bw_bytes : 0);
@@ -237,39 +238,20 @@ site.get('/_hw/counter.svg', (req, res) => {
   }
   res.set('Cache-Control', 'no-store').type('image/svg+xml').send(W.counterSvg(hits));
 });
-W.siteRoutes(site);
+site.get('/_hw/updated.svg', (req, res) => res.set('Cache-Control', 'public, max-age=300').type('image/svg+xml').send(W.updatedSvg(req.owner.updated_at)));
+site.get('/_hw/status.svg', (req, res) => res.set('Cache-Control', 'public, max-age=60').type('image/svg+xml').send(W.statusSvg(req.owner.status)));
 
 const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
-const GB_LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz|top|click|link)\b/i; // shortcut: a TLD list, not a URL parser
-const gbEntryText = (e) => `${e.name} wrote:\n${e.message}${e.approved ? '' : '\n(This entry has a link, so it waits for your approval.)'}`;
-const gbMailFooter = `Approve or delete entries, or change how often we email you about them: ${cfg.BASE_URL}/dashboard/guestbook`;
-const GB_NOTIFY = ['instant', 'daily', 'off'];
-// one page of a guestbook, newest first: the approved entries visitors see, or all of them for the owner
-function gbPage(req, id, all = false) {
-  const from = `FROM guestbook WHERE user_id = ?${all ? '' : ' AND approved = 1'}`;
-  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${from}`).get(id).n);
-  return { rows: db.prepare(`SELECT * ${from} ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(id), page, pages };
-}
-site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbPage(req, req.owner.id), '', W.gbTheme(req.query.theme))));
+// signing, spam rules, owner tools and mail (src/guestbook.js); the routes here read forms and render
+const guestbook = createGuestbook({ cfg, logins, sendMail, live: LIVE });
+site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(guestbook.page(req.owner, req.query.page), '', W.gbTheme(req.query.theme))));
 site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
-  const name = String(req.body.name || '').trim().slice(0, 40);
-  const message = String(req.body.message || '').trim().slice(0, 500);
   const theme = W.gbTheme(req.query.theme);
-  const back = `/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`;
-  const fail = (code, err) => res.status(code).send(V.guestbook(gbPage(req, req.owner.id), err, theme));
-  if (req.body.website) return res.redirect(back); // bot filled the hidden field
-  if (!name || !message) return fail(400, 'Name and message are both required.');
-  if (!U.limit(`gb:${req.ip}`, 3, 600000)) return fail(429, 'Too many entries from you. Try again in ten minutes.');
-  if (lines(req.owner.gb_ips).includes(req.ip)) return res.redirect(back); // blocked: look like success
-  const text = `${name} ${message}`.toLowerCase();
-  if (lines(req.owner.gb_words).some((w) => text.includes(w.toLowerCase()))) return fail(400, 'Your entry contains a word the owner has blocked.');
-  const approved = GB_LINK.test(text) ? 0 : 1; // entries with links wait for the owner
-  db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
-  // capped so a spam wave from many addresses can't flood the owner's inbox
-  if (req.owner.gb_notify === 'instant' && U.limit(`gbmail:${req.owner.id}`, 10, 3600000)) {
-    sendMail(loginOf(req.owner).email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
-  }
-  res.redirect(back);
+  // website is the hidden field only bots fill
+  const result = guestbook.sign(req.owner, { name: req.body.name, message: req.body.message, ip: req.ip, bot: !!req.body.website });
+  const fail = { missing: [400, 'Name and message are both required.'], limited: [429, 'Too many entries from you. Try again in ten minutes.'], word: [400, 'Your entry contains a word the owner has blocked.'] }[result];
+  if (fail) return res.status(fail[0]).send(V.guestbook(guestbook.page(req.owner, req.query.page), fail[1], theme));
+  res.redirect(`/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`);
 });
 
 site.use((req, res) => {
@@ -471,7 +453,12 @@ main.get('/img/pup-hero.webp', asset('pup-hero.webp', 'image/webp'));
 main.get('/img/pup-coder.webp', asset('pup-coder.webp', 'image/webp'));
 main.get('/img/pup-accident.webp', asset('pup-accident.webp', 'image/webp'));
 main.get('/img/pup-guestbook.webp', asset('pup-guestbook.webp', 'image/webp'));
-W.assetRoutes(main); // backgrounds, buttons and effects member pages load from here
+// backgrounds, buttons and effects member pages load from here, so they cache for a long time
+main.get('/assets/:kind/:file', (req, res) => {
+  const rel = `${req.params.kind}/${req.params.file}`;
+  if (!W.ASSET_FILES.has(rel)) return res.sendStatus(404);
+  res.set('Cache-Control', 'public, max-age=2592000').type(path.extname(rel) === '.js' ? 'text/javascript' : 'image/svg+xml').sendFile(path.join(ASSETS_DIR, rel));
+});
 main.get('/robots.txt', (req, res) => res.type('text/plain').send(
   // /login, /signup, /forgot, /reset and /feed stay crawlable on purpose: they carry noindex tags,
   // which a crawler can only read if robots.txt lets it in. Only the auth-gated areas are disallowed.
@@ -1207,39 +1194,31 @@ main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET hidden = ? WHERE id = ?').run(hide ? 1 : 0, req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent(hide ? 'Your site is hidden from browsing.' : 'Your site is back in the listings.')}`);
 });
-main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null, gbPage(req, req.ctx.user.id, true), lines(req.ctx.user.gb_ips))));
+main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null, guestbook.page(req.ctx.user, req.query.page, { all: true }), guestbook.blocked(req.ctx.user))));
 // an entry's buttons send the page they were on, so the owner lands back there
 const gbBack = (req) => `/dashboard/guestbook${Number(req.body.page) > 1 ? `?page=${Number(req.body.page)}` : ''}`;
 main.post('/dashboard/guestbook/approve', auth, (req, res) => {
-  db.prepare('UPDATE guestbook SET approved = 1 WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  guestbook.approve(req.ctx.user, req.body.id);
   res.redirect(gbBack(req));
 });
 main.post('/dashboard/guestbook/notify', auth, (req, res) => {
-  // the digest restarts from now, so switching from instant never repeats entries already mailed
-  // saving the same setting again keeps entries already waiting for the digest
-  if (GB_NOTIFY.includes(req.body.notify)) {
-    // one ms back, so an entry signed in the same millisecond as the switch still makes the digest (it counts entries after gb_digest_at)
-    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now() - 1, id: req.ctx.user.id });
-  }
+  guestbook.settings(req.ctx.user, { notify: req.body.notify });
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/settings', auth, (req, res) => {
-  db.prepare('UPDATE users SET gb_words = ? WHERE id = ?').run(lines(req.body.words).slice(0, 100).map((l) => l.slice(0, 60)).join('\n'), req.ctx.user.id);
+  guestbook.settings(req.ctx.user, { words: req.body.words });
   res.redirect('/dashboard/guestbook');
 });
-const setIps = (id, ips) => db.prepare('UPDATE users SET gb_ips = ? WHERE id = ?').run(ips.slice(-200).join('\n'), id);
 main.post('/dashboard/guestbook/block-ip', auth, (req, res) => {
-  const e = db.prepare('SELECT ip FROM guestbook WHERE id = ? AND user_id = ?').get(Number(req.body.id) || 0, req.ctx.user.id);
-  const ips = lines(req.ctx.user.gb_ips);
-  if (e && e.ip && !ips.includes(e.ip)) setIps(req.ctx.user.id, [...ips, e.ip]);
+  guestbook.blockIp(req.ctx.user, req.body.id);
   res.redirect(gbBack(req));
 });
 main.post('/dashboard/guestbook/unblock-ip', auth, (req, res) => {
-  setIps(req.ctx.user.id, lines(req.ctx.user.gb_ips).filter((ip) => ip !== req.body.ip));
+  guestbook.unblockIp(req.ctx.user, req.body.ip);
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/delete', auth, (req, res) => {
-  db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  guestbook.remove(req.ctx.user, req.body.id);
   res.redirect(gbBack(req));
 });
 main.post('/account/password', auth, async (req, res) => {
@@ -1717,23 +1696,13 @@ const housekeeping = () => {
     db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
     db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
     db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
-    db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+    guestbook.sweep();
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     const statsFrom = statsSince();
     db.prepare('DELETE FROM page_views WHERE day < ?').run(statsFrom);
     db.prepare('DELETE FROM referrers WHERE day < ?').run(statsFrom);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) logins.remove(u);
-    // daily guestbook digests: at most one a day per site, only when someone signed since the last
-    for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
-      const cutoff = now();
-      const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
-      if (!rows.length) continue;
-      const held = rows.filter((e) => !e.approved).length;
-      sendMail(loginOf(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
-        `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(gbEntryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${gbMailFooter}`)
-        // only a digest that went out moves the cutoff, so a failed one is retried at the next hourly run
-        .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
-    }
+    guestbook.sendDigests(); // a failed digest is retried at the next hourly run
     // weekly digests of updates from followed sites, for members who opted in; a quiet week sends nothing
     for (const u of db.prepare(`SELECT * FROM users WHERE digest = 1 AND digest_at < ? AND ${LIVE}`).all(now() - 7 * DAY)) {
       const cutoff = now();

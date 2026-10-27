@@ -374,16 +374,16 @@ test('restoring a starter respects the file cap and the storage quota, and a ref
   assert.match(fs.readFileSync(index, 'utf8'), /tightfit's Pad/);
 });
 
-test('guestbook and report IPs are erased after 90 days', () => {
+test('housekeeping erases report and guestbook IPs after 90 days', () => {
   const old = Date.now() - 91 * 86400000;
   const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
   const gbOld = db.prepare("INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?, 'a', 'hi', '10.0.0.1', ?)").run(owner, old).lastInsertRowid;
-  const gbNew = db.prepare("INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?, 'b', 'hi', '10.0.0.2', ?)").run(owner, Date.now()).lastInsertRowid;
   const rpOld = db.prepare("INSERT INTO reports (site, reason, details, ip, created_at) VALUES ('iptest', 'Spam', 'x', '10.0.0.3', ?)").run(old).lastInsertRowid;
+  const rpNew = db.prepare("INSERT INTO reports (site, reason, details, ip, created_at) VALUES ('iptest', 'Spam', 'x', '10.0.0.4', ?)").run(Date.now()).lastInsertRowid;
   app.housekeeping();
-  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbOld).ip, null);
-  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbNew).ip, '10.0.0.2');
   assert.equal(db.prepare('SELECT ip FROM reports WHERE id = ?').get(rpOld).ip, null);
+  assert.equal(db.prepare('SELECT ip FROM reports WHERE id = ?').get(rpNew).ip, '10.0.0.4');
+  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbOld).ip, null); // the guestbook's sweep runs too (test/guestbook.test.js)
 });
 
 test('clean URLs: /about serves about.html unless something called about exists', async () => {
@@ -794,43 +794,9 @@ test('visitors can sign a guestbook and the entry shows', async () => {
   const page = await req('get', '/_hw/guestbook', 'hostdog.pad.test');
   assert.match(page.text, /Visitor/);
   assert.match(page.text, /nice pad!/);
-});
-
-test('guestbook holds link entries and refuses blocked words', async () => {
-  const m = await member('modpad');
-  const owner = (path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
-  await owner('settings', { words: 'viagra' });
-  const sign = (message) => req('post', '/_hw/guestbook', 'modpad.pad.test').type('form').send({ name: 'V', message });
-  assert.equal((await sign('buy at http://spam.example')).status, 302);
-  assert.equal((await sign('cheap VIAGRA')).status, 400);
-  const page = await req('get', '/_hw/guestbook', 'modpad.pad.test');
-  assert.doesNotMatch(page.text, /spam\.example/);
-  const held = db.prepare("SELECT id, approved FROM guestbook WHERE message LIKE '%spam.example'").get();
-  assert.equal(held.approved, 0);
-  await owner('approve', { id: held.id });
-  assert.match((await req('get', '/_hw/guestbook', 'modpad.pad.test')).text, /spam\.example/);
-});
-
-test('guestbook owner can block an entry\'s IP, unblock it, and cannot touch other owners\' entries', async () => {
-  const m = await member('modown');
-  const other = await member('modother');
-  const sign = (site, message) => req('post', '/_hw/guestbook', `${site}.pad.test`).type('form').send({ name: 'V', message });
-  const post = (who, path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', who.cookie).type('form').send({ _csrf: who.csrf, ...body });
-  await sign('modown', 'hello');
-  await sign('modother', 'see http://x.example');
-  const mine = db.prepare("SELECT id FROM guestbook WHERE message = 'hello'").get().id;
-  const theirs = db.prepare("SELECT id FROM guestbook WHERE message LIKE '%x.example'").get().id;
-  await post(other, 'block-ip', { id: mine }); // not theirs: no effect
-  assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modother'").get().gb_ips, '');
-  await post(m, 'approve', { id: theirs }); // not mine: no effect
-  assert.equal(db.prepare('SELECT approved FROM guestbook WHERE id = ?').get(theirs).approved, 0);
-  await post(m, 'block-ip', { id: mine });
-  const ip = db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips;
-  assert.ok(ip);
-  await req('post', '/_hw/guestbook', 'modown.pad.test').set('X-Forwarded-For', ip).type('form').send({ name: 'V', message: 'again' }); // req() gives each call a fresh IP
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM guestbook WHERE message = 'again'").get().n, 0);
-  await post(m, 'unblock-ip', { ip });
-  assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips, '');
+  const empty = await req('post', '/_hw/guestbook', 'hostdog.pad.test').type('form').send({ name: 'Visitor', message: ' ' });
+  assert.equal(empty.status, 400);
+  assert.match(empty.text, /Name and message are both required/);
 });
 
 test('site file cap: new files stop at the cap, replacements still work, deletes free slots', async () => {
@@ -1787,44 +1753,6 @@ test('Atom feeds: one per site, and recently updated without hidden or new sites
   assert.equal((await req('get', '/site/atomdog/feed.xml')).headers['x-robots-tag'], 'noindex');
 });
 
-test('guestbook emails: instant, a daily digest, or off; held entries say so', async () => {
-  const m = await member('mailpad');
-  const sign = (message) => req('post', '/_hw/guestbook', 'mailpad.pad.test').type('form').send({ name: 'Vee', message });
-  const notify = (v) => req('post', '/dashboard/guestbook/notify').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, notify: v });
-  const mailsTo = () => mail.filter((s) => s.includes('to=mailpad@example.com') && s.includes('guestbook')).length;
-  assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
-
-  await notify('instant');
-  await sign('lovely pad');
-  await sign('see http://spam.example');
-  assert.equal(mailsTo(), 2);
-  assert.match(mail.at(-1), /spam\.example\n\(This entry has a link, so it waits for your approval\.\)/);
-
-  await notify('off');
-  await sign('quiet one');
-  app.housekeeping();
-  assert.equal(mailsTo(), 2);
-
-  await notify('daily');
-  await sign('digest one');
-  app.housekeeping();
-  assert.equal(mailsTo(), 2); // the digest waits a day after switching
-  // a day passes
-  db.prepare('UPDATE users SET gb_digest_at = gb_digest_at - 86401000 WHERE username = ?').run('mailpad');
-  db.prepare("UPDATE guestbook SET created_at = created_at - 86401000 WHERE user_id = (SELECT id FROM users WHERE username = 'mailpad')").run();
-  await notify('daily'); // saving the same setting keeps what waits for the digest
-  app.housekeeping();
-  await new Promise(setImmediate); // the cutoff moves once the mail is handed over
-  assert.equal(mailsTo(), 3);
-  assert.match(mail.at(-1), /1 new guestbook entry on mailpad\.pad\.test/);
-  assert.match(mail.at(-1), /digest one/);
-  assert.doesNotMatch(mail.at(-1), /lovely pad|quiet one/);
-  app.housekeeping();
-  assert.equal(mailsTo(), 3); // once a day at most
-  await notify('bogus');
-  assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
-});
-
 test('the link checker lists links and images that point at missing files of the site', async () => {
   const m = await member('linkcheck');
   await upload(m, 'about.html', '<p>about</p>');
@@ -2683,6 +2611,13 @@ test('guestbooks and the report queue page through every entry, so none is out o
   const back = await post(m, '/dashboard/guestbook/approve', { id: held, page: 11 });
   assert.equal(back.headers.location, '/dashboard/guestbook?page=11');
   assert.equal(db.prepare('SELECT approved FROM guestbook WHERE id = ?').get(held).approved, 1);
+  // the owner page lists a blocked address until it is unblocked
+  const signed = add.run(id, 'spammer', 'hi', 1, Date.now()).lastInsertRowid;
+  db.prepare("UPDATE guestbook SET ip = '10.66.0.1' WHERE id = ?").run(signed);
+  await post(m, '/dashboard/guestbook/block-ip', { id: signed });
+  assert.match((await req('get', '/dashboard/guestbook').set('Cookie', m.cookie)).text, /Blocked IPs: 10\.66\.0\.1 /);
+  await post(m, '/dashboard/guestbook/unblock-ip', { ip: '10.66.0.1' });
+  assert.match((await req('get', '/dashboard/guestbook').set('Cookie', m.cookie)).text, /Blocked IPs: none/);
   // the admin queue pages too
   const boss = { cookie: (await req('post', '/login').type('form').send({ username: 'boss', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0] };
   boss.csrf = (await req('get', '/dashboard').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
