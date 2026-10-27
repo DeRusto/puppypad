@@ -16,6 +16,10 @@ _Avoid_: live, active, published
 An Online Site shown in the dog park, on the home page, in the sitemap and in the webring. It is listed once it isn't hidden, has been edited at least once, and is past the new-site wait.
 _Avoid_: visible, public, discoverable
 
+**Taken down**:
+A Site a moderator took offline for breaking the rules. Visitors see that it was removed, editing stops and its login is signed out. Taking a login down takes its extra sites with it. Restoring the login brings back only those, never one a moderator took down on its own, and no extra site comes back while its login is down.
+_Avoid_: banned, suspended
+
 **Held name**:
 A name a Site gave up, by being deleted or renamed, that nobody else can claim for 90 days. A renamed Site's old held name sends visitors to its new address, and its own login may take that name back.
 _Avoid_: released name, reserved name (reserved names are the ones no Site may ever take)
@@ -42,7 +46,7 @@ _Avoid_: event, post, activity
 
 **Block**:
 One member shutting another out. While either has blocked the other, neither can follow, comment on or like the other's Site, and the follows between them end. The blocked member's comments and likes are hidden on the blocker's Site and from the blocker's view.
-_Avoid_: mute, ban (a ban is a moderator taking a Site down)
+_Avoid_: mute, ban (that is a Site being taken down)
 
 **Guestbook**:
 A Site's visitor book, where anyone can sign without a login. Entries with a link wait for the owner's approval, and the owner can block words and visitors' addresses.
