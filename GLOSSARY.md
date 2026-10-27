@@ -44,6 +44,10 @@ _Avoid_: event, post, activity
 One member shutting another out. While either has blocked the other, neither can follow, comment on or like the other's Site, and the follows between them end. The blocked member's comments and likes are hidden on the blocker's Site and from the blocker's view.
 _Avoid_: mute, ban (a ban is a moderator taking a Site down)
 
+**Guestbook**:
+A Site's visitor book, where anyone can sign without a login. Entries with a link wait for the owner's approval, and the owner can block words and visitors' addresses.
+_Avoid_: comments (those are members' and sit on profiles and Updates)
+
 **Card style**:
 A site's own CSS that decorates only that site's card in the browse grid. Each site has its own; it never reaches the site itself, other cards or the rest of the page.
 _Avoid_: explore CSS, pad CSS, card CSS
