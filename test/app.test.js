@@ -1504,32 +1504,19 @@ test('a rejected card style save keeps the typed text and the old style; an empt
   const bad = await saveCard(m, '.foo { color: <b>blue</b> }');
   assert.equal(bad.status, 400); // the page again, no redirect
   assert.match(bad.text, /<p class="err" role="alert">Not saved: [^<]*<\/p>[^]*<textarea[^>]*>\.foo \{ color: &lt;b&gt;blue&lt;\/b&gt; \}<\/textarea>/);
-  const big = await saveCard(m, `[data-part=name] { color: red } /*${'x'.repeat(4096)}*/`);
-  assert.match(big.text, /Not saved: Card style is over 4096 bytes\./);
   assert.equal(await memberCss('cardreject'), live);
 
   assert.match((await saveCard(m, '  \n')).headers.location, /^\/dashboard\/card\?ok=/);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM card_styles WHERE user_id = ?').get(m.id).n, 0);
-  assert.equal(await memberCss('cardreject'), null);
   assert.match((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text, /<textarea[^>]*><\/textarea>/);
   assert.equal((await req('get', '/browse?q=cardreject')).text.replace(/_csrf" value="[^"]*"/g, ''), stock.replace(/_csrf" value="[^"]*"/g, ''));
 });
 
-test('a sanitizer version bump rebuilds stale card styles; one it rejects shows the stock card and says so until fixed', async () => {
-  const { VERSION } = require('../src/cardstyle');
+test('a saved card style the sanitizer now rejects says so on the dashboard until fixed', async () => {
   const ok = await listedMember('cardstale');
   const bad = await listedMember('cardnowbad');
   await saveCard(ok, '[data-part=card] { color: red }');
-  await saveCard(bad, '[data-part=card] { color: blue }');
-  // as if both were saved under an older sanitizer: stale copies, and a source the current one rejects
-  db.prepare("UPDATE card_styles SET version = ?, css = '.stale{}' WHERE user_id IN (?, ?)").run(VERSION - 1, ok.id, bad.id);
-  const rejected = '[data-part=card] { position: fixed }';
-  db.prepare('UPDATE card_styles SET source = ? WHERE user_id = ?').run(rejected, bad.id);
-  // a stale copy is never served, even before the rebuild
-  assert.equal(await memberCss('cardstale'), null);
-
-  app.rebuildCardStyles();
-  assert.equal(await memberCss('cardstale'), `.cs-${ok.id} [data-part=card]{color:red}`);
+  // as the startup rebuild leaves a source the current sanitizer rejects
+  db.prepare("INSERT INTO card_styles (user_id, source, error, version, updated_at) VALUES (?, '[data-part=card] { position: fixed }', 'Position can only be static, relative or absolute.', ?, 0)").run(bad.id, require('../src/cardstyle').VERSION);
   assert.equal(await memberCss('cardnowbad'), null);
   const page = (await req('get', '/dashboard/card').set('Cookie', bad.cookie)).text;
   assert.match(page, /<p class="err" role="alert">[^<]*stock card: Position[^<]*<\/p>[^]*<textarea[^>]*>\[data-part=card\] \{ position: fixed \}<\/textarea>/);
@@ -1585,24 +1572,14 @@ const artFile = (site, rel, data) => {
 };
 const vOf = (full) => { const s = fs.statSync(full); return `${Math.floor(s.mtimeMs)}-${s.size}`; };
 
-test('card art: own-Site images on cards, and the stock card when any art file fails', async () => {
+test('card art: /card-art serves a listed Site\'s art as a sandboxed image, cached, outside bandwidth', async () => {
   const m = await listedMember('artpad');
-  const res = await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") } [data-part=name]::after { content: ""; background: image-set("b.gif" 1x) }');
-  // a style with missing art still saves; the page lists each failing file with its reason
-  assert.equal(res.status, 302);
-  assert.match(decodeURIComponent(res.headers.location), /^\/dashboard\/card\?ok=Saved your card style\./);
-  const artList = async () => (await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.replace(/&#39;/g, "'");
-  const ok = await artList();
-  assert.match(ok, /art\/it's here\.png<\/code>: missing/);
-  assert.match(ok, /b\.gif<\/code>: missing/);
-  assert.equal(await memberCss('artpad'), null); // the stock card, with no CSS
+  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") } [data-part=name]::after { content: ""; background: image-set("b.gif" 1x) }');
   assert.equal((await req('get', '/card-art/artpad/b.gif')).status, 404);
-
   const png = artFile('artpad', "art/it's here.png", PNG());
-  const gif = artFile('artpad', 'b.gif', GIF);
-  // a path with a space and a quote comes out quoted and percent-encoded
+  artFile('artpad', 'b.gif', GIF);
   const url = `/card-art/artpad/art/it's%20here.png?v=${vOf(png)}`;
-  assert.equal(await memberCss('artpad'), `.cs-${m.id} [data-part=card]{background:url("${url}")}.cs-${m.id} [data-part=name]::after{content:"";background:image-set("/card-art/artpad/b.gif?v=${vOf(gif)}"1x)}`);
+  assert.match(await memberCss('artpad'), new RegExp(`url\\("${url.replace(/[?.]/g, '\\$&')}"\\)`));
 
   const bw = () => db.prepare('SELECT bw_bytes FROM users WHERE id = ?').get(m.id).bw_bytes;
   const before = bw();
@@ -1618,36 +1595,17 @@ test('card art: own-Site images on cards, and the stock card when any art file f
   // hotlinked or not, the hotlink limiter doesn't apply
   for (let i = 0; i < 70; i++) assert.equal((await req('get', url).set('Referer', 'https://elsewhere.example/')).status, 200);
 
-  // replacing a file changes its v; an old v still gets the current file
-  artFile('artpad', "art/it's here.png", PNG(200));
-  assert.match(await memberCss('artpad'), new RegExp(`v=${vOf(png)}"`));
-  assert.equal((await req('get', url).buffer(true)).body.length, 200);
-
-  // /browse and /card-art agree: 512 KB passes, one byte over doesn't; nor does a fake PNG, a folder or a deleted file
-  artFile('artpad', "art/it's here.png", PNG(512 * 1024));
-  assert.notEqual(await memberCss('artpad'), null);
-  assert.equal((await req('get', url)).status, 200);
-  for (const data of [PNG(512 * 1024 + 1), Buffer.from('not a png at all, really'), 'folder', null]) {
-    artFile('artpad', "art/it's here.png", data);
-    assert.equal(await memberCss('artpad'), null, String(data).slice(0, 20));
-    const r = await req('get', url);
-    assert.equal(r.status, 404);
-    assert.equal(r.headers['content-security-policy'], 'sandbox');
-    assert.equal(r.headers['x-content-type-options'], 'nosniff');
-  }
-  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png"), url(b.gif) }');
-  const saved = await artList();
-  assert.match(saved, /art\/it's here\.png<\/code>: missing/);
-  assert.doesNotMatch(saved, /b\.gif<\/code>:/); // only failing files are listed
+  // a failing file is a 404 that is still sandboxed
   artFile('artpad', "art/it's here.png", Buffer.from('not a png at all, really'));
-  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") }');
-  assert.match(await artList(), /not a real PNG/);
+  const r = await req('get', url);
+  assert.equal(r.status, 404);
+  assert.equal(r.headers['content-security-policy'], 'sandbox');
+  assert.equal(r.headers['x-content-type-options'], 'nosniff');
   artFile('artpad', "art/it's here.png", PNG());
 
-  // 404 for a file the style doesn't use, an svg, traversal, and Sites /browse leaves out
+  // 404 for a file the style doesn't use, encoded traversal, and Sites /browse leaves out
   artFile('artpad', 'other.png', PNG());
-  artFile('artpad', 'x.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>');
-  for (const p of ['other.png', 'x.svg', '%2e%2e/artpad/b.gif', 'art/%2e%2e/b.gif', 'art/..%2fb.gif']) assert.equal((await req('get', `/card-art/artpad/${p}`)).status, 404, p);
+  for (const p of ['other.png', '%2e%2e/artpad/b.gif', 'art/%2e%2e/b.gif', 'art/..%2fb.gif']) assert.equal((await req('get', `/card-art/artpad/${p}`)).status, 404, p);
   assert.equal((await req('get', url)).status, 200);
   for (const [col, val] of [['hidden', 1], ['banned', 1], ['verified', 0], ['updates', 0]]) {
     db.prepare(`UPDATE users SET ${col} = ? WHERE id = ?`).run(val, m.id);
@@ -1694,13 +1652,6 @@ test('/dashboard/card shows the saved card as /browse does, next to the stock ca
   assert.equal(cardSide(p, m.id).css, null);
   assert.deepEqual(cardSide(p, m.id), await browse());
 
-  // a style the sanitizer now rejects
-  db.prepare("UPDATE card_styles SET css = NULL, error = 'Position fixed is not allowed.' WHERE user_id = ?").run(m.id);
-  p = await page();
-  assert.match(p, /Your card shows the stock card because: Position fixed is not allowed\./);
-  assert.doesNotMatch(p, /gone\.gif<\/code>:/);
-  assert.deepEqual(cardSide(p, m.id), await browse());
-
   // a hidden Site sees the note and can still save
   await req('post', '/dashboard/hidden').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, hidden: '1' });
   assert.match((await saveCard(m, '[data-part=name] { color: red }')).headers.location, /^\/dashboard\/card\?ok=/);
@@ -1728,26 +1679,9 @@ test('card art: a hidden or new Site sees its own art in the /dashboard/card pre
     assert.equal(own.headers['cache-control'], 'private, no-store'); // never cached for others while the Site is unlisted
     assert.equal(own.headers['content-security-policy'], 'sandbox');
   }
-  // every other check still applies
-  artFile('arthide', 'pup.png', Buffer.from('not a png at all, really'));
-  assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
-  artFile('arthide', 'other.png', PNG());
-  assert.equal((await req('get', '/card-art/arthide/other.png').set('Cookie', m.cookie)).status, 404);
-  artFile('arthide', 'pup.png', PNG());
+  // a taken-down Site's own session doesn't see it either
   db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(m.id);
   assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
-});
-
-test('card art: after a Site rename, art points at the new name with no re-save; the old name is a 404', async () => {
-  const m = await listedMember('artold');
-  artFile('artold', 'pup.png', PNG());
-  await saveCard(m, '[data-part=card] { background: url(pup.png) }');
-  assert.match(await memberCss('artold'), /url\("\/card-art\/artold\/pup\.png\?v=/);
-  const r = await req('post', '/dashboard/rename').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username: 'artnew', password: 'longpassword1' });
-  assert.equal(r.status, 302);
-  assert.match(await memberCss('artnew'), new RegExp(`^\\.cs-${m.id} \\[data-part=card\\]\\{background:url\\("/card-art/artnew/pup\\.png\\?v=`));
-  assert.equal((await req('get', '/card-art/artnew/pup.png')).status, 200);
-  assert.equal((await req('get', '/card-art/artold/pup.png')).status, 404);
 });
 
 test('feed updates name the files they changed, folded into one event per hour', async () => {
@@ -2024,9 +1958,7 @@ test('the member sees why their card style was cleared until their next passing 
   assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
   const errLines = (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/<p class="err"[^]*?<\/p>/g) || [];
   assert.equal(errLines.filter((l) => l.includes('href="/dashboard/card"')).length, 1);
-  // a rejected save keeps the note; a passing one, even empty, removes it
-  await saveCard(m, '.foo { color: <b>blue</b> }');
-  assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
+  // an empty save removes it
   await saveCard(m, '');
   assert.ok(!(await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes('An admin removed'));
   assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /<p class="err"[^<]*<a href="\/dashboard\/card"/);

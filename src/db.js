@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS card_styles (
   version INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
--- why an admin cleared a Site's card style, shown to the member until their next passing save
+-- why an admin cleared a Site's card style, shown to the member until their next save that isn't rejected, even an empty one
 CREATE TABLE IF NOT EXISTS card_notes (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   reason TEXT NOT NULL,

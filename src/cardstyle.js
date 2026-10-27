@@ -7,7 +7,7 @@ const csstree = require('css-tree');
 const { extOf } = require('./util');
 
 // bump on any change to the rules below or to the Card parts (PARTS, or their markup on /browse): any Card part change
-// is a breaking change. Startup rebuilds stored copies with an older version from source (src/server.js)
+// is a breaking change. Startup rebuilds stored copies with an older version from source (rebuild() below)
 const VERSION = 4;
 const MAX_BYTES = 4096;
 const MAX_DEPTH = 16; // brackets of any kind; real card styles stay far below this
@@ -227,4 +227,86 @@ function checkArt(root, art, read = false) {
   });
 }
 
-module.exports = { sanitize, fill, checkArt, VERSION, MAX_BYTES, MAX_ART, MAX_ART_BYTES, PARTS };
+// Card style: each Site's stored style, the Stock card rule and Card art. A site is a users row; siteDir(name) is its folder
+function createCardStyles({ db, siteDir }) {
+  const row = db.prepare('SELECT source, css, error, art FROM card_styles WHERE user_id = ?');
+  const artOf = (site, art, read) => checkArt(siteDir(site.username), art, read);
+  const artUrl = (site, f) => `/card-art/${site.username}/${f.path.split('/').map(encodeURIComponent).join('/')}?v=${f.v}`;
+  const dropNote = db.prepare('DELETE FROM card_notes WHERE user_id = ?');
+
+  // a rejected source saves nothing; bad art still saves, and the card is the Stock card until it's fixed
+  const save = (site, source) => {
+    const r = sanitize(source, site.id);
+    if (r.error) return { error: r.error };
+    db.transaction(() => {
+      dropNote.run(site.id);
+      db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, error = NULL, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
+        .run(site.id, source, r.css, JSON.stringify(r.art), r.version, Date.now());
+    })();
+    return {};
+  };
+
+  // no reason: the member's empty save. A reason: an admin's clear, which the member sees until their next save.
+  // True when there was a style to clear
+  const clear = (site, reason) => db.transaction(() => {
+    const had = db.prepare('DELETE FROM card_styles WHERE user_id = ?').run(site.id).changes > 0;
+    if (!reason) dropNote.run(site.id);
+    else if (had) db.prepare('INSERT OR REPLACE INTO card_notes (user_id, reason, created_at) VALUES (?,?,?)').run(site.id, reason, Date.now());
+    return had;
+  })();
+
+  // startup, in one pass: re-derive every copy made by an older sanitizer; a source it now rejects is kept, with css NULL
+  // and the reason. src/server.js runs this before it listens, so no request ever sees a row from an older sanitizer
+  const rebuild = db.transaction(() => {
+    const set = db.prepare('UPDATE card_styles SET css = ?, error = ?, art = ?, version = ? WHERE user_id = ?');
+    for (const s of db.prepare('SELECT user_id, source FROM card_styles WHERE version <> ?').all(VERSION)) {
+      const r = sanitize(s.source, s.user_id);
+      set.run(r.css ?? null, r.error ?? null, JSON.stringify(r.art ?? []), VERSION, s.user_id);
+    }
+  });
+
+  // the card style CSS of every card on the page that has one, in card order, art filled in; '' when none.
+  // A card with any failing art file adds nothing, so it shows as the Stock card. Checked every request, like the shot.
+  const cssFor = (rows) => {
+    if (!rows.length) return '';
+    const styles = new Map(db.prepare(`SELECT user_id, css, art FROM card_styles WHERE css IS NOT NULL AND user_id IN (${rows.map(() => '?').join(',')})`)
+      .all(...rows.map((r) => r.id)).map((s) => [s.user_id, s]));
+    return rows.map((r) => {
+      const s = styles.get(r.id);
+      if (!s) return '';
+      const art = artOf(r, JSON.parse(s.art));
+      return art.some((f) => f.reason) ? '' : fill(s.css, art.map((f) => artUrl(r, f)));
+    }).filter(Boolean).join('\n');
+  };
+
+  // source as typed ('' when none), why the current sanitizer rejects it, and why an admin cleared the last one
+  const of = (site) => {
+    const s = row.get(site.id);
+    return { source: s?.source ?? '', error: s?.error ?? undefined, note: db.prepare('SELECT reason, created_at FROM card_notes WHERE user_id = ?').get(site.id) };
+  };
+
+  // save-and-check: the card's CSS exactly as cssFor gives it for this row, and why it is the Stock card when it is
+  const check = (site) => {
+    const css = cssFor([site]);
+    const s = row.get(site.id);
+    const failing = s && !s.error ? artOf(site, JSON.parse(s.art)).filter((f) => f.reason) : [];
+    const why = css ? null
+      : !s ? "you haven't saved a card style"
+        : s.error ? s.error.replace(/\.$/, '')
+          : "some of its art files don't work";
+    return { css, why, failing };
+  };
+
+  // Card art: one file of the style's art list, as the very bytes the art check passed, or null.
+  // Who may see the Site is the caller's question
+  const art = (site, rel) => {
+    const s = row.get(site.id);
+    const f = s?.css != null && JSON.parse(s.art).includes(rel) && artOf(site, [rel], true)[0];
+    return f && !f.reason ? { buf: f.buf, type: f.type } : null;
+  };
+
+  return { save, clear, rebuild, cssFor, check, of, art };
+}
+
+module.exports = { createCardStyles, sanitize, fill, checkArt, VERSION, MAX_BYTES, MAX_ART, MAX_ART_BYTES, PARTS };
