@@ -168,7 +168,7 @@ function startSession(res, userId) {
 }
 const MAX_SITES = 5;
 // what belongs to a site's login, from any of its sites (src/logins.js)
-const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site) });
+const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site), dropShot: (site) => fs.rmSync(shotPath(site.username), { force: true }) });
 const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
 // the supporter tier's rules (src/billing.js), only while it is switched on; app.setStripe swaps the Stripe client for tests
 const makeBilling = (stripe) => createBilling({ cfg, logins, stripe, webhookSecret: env.STRIPE_WEBHOOK_SECRET });
@@ -1170,6 +1170,7 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   const owner = loginOf(req.ctx.user);
   const username = String(req.body.username || '').trim().toLowerCase();
   const fail = (e) => res.redirect(`/dashboard?err=${encodeURIComponent(e)}`);
+  if (owner.banned) return fail('A moderator took this login down, so it cannot make new sites.');
   if (!isSupporter(owner)) return fail('Several sites under one login is for supporters.');
   if (sitesOf(owner).length >= MAX_SITES) return fail(`You can have up to ${MAX_SITES} sites.`);
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
@@ -1672,23 +1673,16 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
     logins.remove(target, { inTransaction: (u) => adminLog(req, 'delete', u.username, reason) });
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
   }
-  const ban = action === 'ban' ? 1 : 0;
-  // the state change and its log entry commit together, so no take-down or restore goes unrecorded
-  // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login.
-  // banned = 2 marks an extra site taken down only along with its login, so restoring the login brings back those
-  // and never one a moderator took down on its own (banned = 1)
-  const sites = isLogin(target) ? sitesOf(target).filter((s) => s.id === target.id || s.banned === (ban ? 0 : 2)) : [target];
-  db.transaction(() => {
-    for (const s of sites) {
-      db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban && s.id !== target.id ? 2 : ban, ban ? reason : null, s.id);
-      if (ban) db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
-      else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(s.id);
-    }
-    adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
-    if (ban) logins.endSessions(target);
-  })();
-  if (ban) for (const s of sites) fs.rmSync(shotPath(s.username), { force: true });
-  showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
+  // the state change and its log entry commit together, so no take-down or restore goes unrecorded;
+  // either take-down ends every session of the login
+  if (action === 'ban') {
+    logins.takeDown(target, reason, { inTransaction: () => { adminLog(req, 'take down', target.username, reason); logins.endSessions(target); } });
+    return showAdmin(req, res, { ok: `${target.username} is offline.` });
+  }
+  if (logins.restore(target, { inTransaction: () => adminLog(req, 'restore', target.username) }) === 'login-down') {
+    return showAdmin(req, res, { err: `${loginOf(target).username} is taken down, so ${target.username} stays down with it. Restore ${loginOf(target).username} first.` });
+  }
+  showAdmin(req, res, { ok: `${target.username} is back online.` });
 });
 
 main.use((req, res) => res.status(404).send(V.notices.notFound(req.ctx)));

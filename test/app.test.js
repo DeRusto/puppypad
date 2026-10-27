@@ -2637,6 +2637,17 @@ test('extra sites follow their login for admin rights, bans, API keys and deleti
   assert.equal((await req('get', '/', 'multi.pad.test')).status, 200);
   assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
   assert.equal(db.prepare('SELECT ban_reason FROM users WHERE username = ?').get('multi-two').ban_reason, 'phishing');
+  // while the login is down, none of its sites comes back alone and it makes no new ones
+  await post(boss, '/admin/ban', { site: 'multi', action: 'ban', reason: 'spam' });
+  assert.match((await post(boss, '/admin/ban', { site: 'multi-two', action: 'unban' })).text, /Restore multi first/);
+  assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
+  db.prepare('UPDATE users SET banned = 0 WHERE username = ?').run('multi-two'); // as an older release could leave it
+  const back = await req('post', '/login').type('form').send({ username: 'multi', password: 'longpassword2' });
+  const again = { cookie: back.headers['set-cookie'][0].split(';')[0] };
+  again.csrf = (await req('get', '/site/multi').set('Cookie', again.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  await post(again, '/dashboard/sites/switch', { id: id('multi-two') });
+  assert.match(decodeURIComponent((await post(again, '/dashboard/sites/new', { username: 'multi-four' })).headers.location), /took this login down/);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('multi-four'), undefined);
 });
 
 test('only the editor takes big forms; a huge one anywhere else is refused, not held in memory', async () => {

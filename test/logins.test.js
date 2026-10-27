@@ -28,9 +28,11 @@ const version = () => db.pragma('user_version', { simple: true });
 const schemaCli = (...args) => execFileSync(process.execPath, [path.join(__dirname, '../src/schema.js'), ...args], { env: { ...process.env }, encoding: 'utf8' });
 
 const removed = [];
+const dropped = [];
 const logins = createLogins({
   cfg: { ADMIN_EMAILS: new Set(['boss@x.test']), QUOTA_MB: 1, MAX_FILE_MB: 1, SUPPORTER_QUOTA_MB: 3, SUPPORTER_MAX_FILE_MB: 2, HISTORY_DAYS: 30, SUPPORTER_HISTORY_DAYS: 365 },
   removeSite: (site) => removed.push(site.username),
+  dropShot: (site) => dropped.push(site.username),
 });
 
 let n = 0;
@@ -137,6 +139,62 @@ test('remove: an extra site goes alone; a login takes its sites, holds their nam
   const unconfirmed = add({ verified: 0 });
   logins.remove(unconfirmed);
   assert.equal(db.prepare('SELECT 1 FROM released_names WHERE name = ?').get(unconfirmed.username), undefined);
+});
+
+const report = (site) => db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES (?, 'Spam', 'x', 0)").run(site.username).lastInsertRowid;
+const reportStatus = (id) => db.prepare('SELECT status FROM reports WHERE id = ?').get(id).status;
+const banned = (...sites) => sites.map((s) => row(s).banned);
+
+test('takeDown: a login takes its Online extra sites down with it, closes their reports and drops their shots after commit', () => {
+  const login = add();
+  const a = extra(login);
+  const b = extra(login);
+  const r = report(a);
+  dropped.length = 0;
+  const seen = [];
+  logins.takeDown(login, 'spam', { inTransaction: (sites) => seen.push(...sites.map((s) => s.username)) });
+  assert.deepEqual(banned(login, a, b), [1, 2, 2]);
+  assert.equal(row(login).ban_reason, 'spam');
+  assert.equal(reportStatus(r), 'closed');
+  assert.deepEqual(seen.sort(), [login.username, a.username, b.username].sort());
+  assert.deepEqual(dropped.sort(), seen);
+
+  // a failing inTransaction leaves everything up and drops no shot
+  const c = add();
+  dropped.length = 0;
+  assert.throws(() => logins.takeDown(c, 'x', { inTransaction: () => { throw new Error('log failed'); } }));
+  assert.deepEqual(banned(c), [0]);
+  assert.deepEqual(dropped, []);
+});
+
+test('restore: a login brings back the extra sites that went down with it, and leaves one taken down on its own', () => {
+  const login = add();
+  const alone = extra(login);
+  const along = extra(login);
+  logins.takeDown(alone, 'phishing');
+  logins.takeDown(login, 'spam');
+  assert.deepEqual(banned(login, alone, along), [1, 1, 2]);
+  db.prepare('UPDATE users SET shot_dirty = 0 WHERE id IN (?, ?)').run(login.id, along.id);
+  const seen = [];
+  assert.equal(logins.restore(login, { inTransaction: (sites) => seen.push(...sites.map((s) => s.username)) }), 'ok');
+  assert.deepEqual(banned(login, alone, along), [0, 1, 0]);
+  assert.equal(row(alone).ban_reason, 'phishing');
+  assert.deepEqual([row(login).shot_dirty, row(along).shot_dirty], [1, 1]);
+  assert.deepEqual(seen.sort(), [login.username, along.username].sort());
+});
+
+test('restore refuses an extra site on its own while its login is taken down, changing nothing', () => {
+  const login = add();
+  const site = extra(login);
+  logins.takeDown(login, 'spam');
+  let called = false;
+  assert.equal(logins.restore(site, { inTransaction: () => { called = true; } }), 'login-down');
+  assert.deepEqual(banned(login, site), [1, 2]);
+  assert.equal(called, false);
+  logins.restore(login);
+  logins.takeDown(site, 'phishing');
+  assert.equal(logins.restore(site), 'ok'); // with the login up, it comes back alone
+  assert.deepEqual(banned(login, site), [0, 0]);
 });
 
 test('schema down 0 puts owner_id back for an older release, does nothing twice, and the new code re-applies it', () => {
