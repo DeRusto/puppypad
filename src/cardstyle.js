@@ -294,7 +294,8 @@ function createCardStyles({ db, siteDir }) {
     const why = css ? null
       : !s ? "you haven't saved a card style"
         : s.error ? s.error.replace(/\.$/, '')
-          : "some of its art files don't work";
+          : failing.length ? "some of its art files don't work"
+            : 'it has no rules'; // nothing left once sanitized, like a lone comment
     return { css, why, failing };
   };
 

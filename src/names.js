@@ -22,6 +22,7 @@ function createNames({ files }) {
   // 'taken' or 'ok'; the folder moves last, so a failed move rolls the rows back (and throws)
   function rename(site, name) {
     if (taken(name, { by: site })) return 'taken';
+    let moved = false;
     try {
       db.transaction(() => {
         db.prepare('UPDATE users SET username = ?, renamed_at = ?, shot_dirty = 1 WHERE id = ?').run(name, Date.now(), site.id);
@@ -29,8 +30,11 @@ function createNames({ files }) {
         hold(site.username, { site });
         db.prepare('UPDATE reports SET site = ? WHERE site = ?').run(name, site.username);
         files.rename(site.username, name);
+        moved = true;
       })();
     } catch (err) {
+      // the commit itself failed after the folder moved: move it back to the name the rows still have
+      if (moved) try { files.rename(name, site.username); } catch (e) { console.error('rename rollback failed:', e.message); }
       if (String(err && err.code).includes('CONSTRAINT')) return 'taken'; // a signup took it meanwhile
       throw err;
     }

@@ -268,6 +268,8 @@ test('schema step 2: blocked guestbook addresses survive up and then down', () =
   assert.ok(blocks(1).every((b) => b.created_at >= before)); // the 90 days count from the upgrade
   assert.deepEqual(db.prepare('SELECT gb_ips FROM users ORDER BY id').all().map((u) => u.gb_ips), ['', '', '']);
   db.prepare('INSERT INTO guestbook_blocks (user_id, ip, created_at) VALUES (3, ?, ?)').run('10.9.9.9', Date.now()); // blocked after the upgrade
+  // expired but not swept yet: an older release would keep it for good, so it doesn't go back
+  db.prepare('INSERT INTO guestbook_blocks (user_id, ip, created_at) VALUES (3, ?, ?)').run('10.8.8.8', Date.now() - 91 * 86400000);
   db.close();
 
   const out = execFileSync(process.execPath, [path.join(REPO, 'src/schema.js'), 'down', '1'], { env: { ...process.env, DATA_DIR: dir }, encoding: 'utf8' });

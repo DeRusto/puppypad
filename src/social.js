@@ -120,7 +120,7 @@ function createSocial({ cfg, logins, listing, sendMail }) {
       UNION ALL SELECT 'comment', author_id, event_id, id, body, created_at FROM comments WHERE user_id = @me
       UNION ALL SELECT 'like', l.user_id, l.event_id, NULL, '', l.created_at FROM likes l JOIN events e ON e.id = l.event_id WHERE e.user_id = @me
     ) n JOIN users u ON u.id = n.actor
-    WHERE ${ONLINE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me) AND n.created_at > @since ${tail}`).bind({ me: me.id, since });
+    WHERE ${ONLINE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me UNION SELECT blocker_id FROM blocks WHERE blocked_id = @me) AND n.created_at > @since ${tail}`).bind({ me: me.id, since });
   // page n of a member's notifications, newest first
   function notifications(me, n) {
     const { page, pages } = pageOf(notes(me, 'COUNT(*) n').get().n, n);

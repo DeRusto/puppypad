@@ -25,9 +25,10 @@ function resolveIn(site, rel) {
 // without an extension or trailing slash falls back to .html. Dot segments, .. and NUL never resolve.
 // Async, so a slow disk never holds up other visitors' requests.
 async function resolve(root, urlPath) {
-  if (urlPath.includes('\0') || urlPath.split('/').some((s) => s === '..' || s.startsWith('.'))) return null;
+  // a backslash is a folder on Windows, so it would slip past the segment check; safeRel never makes such a name
+  if (/[\0\\]/.test(urlPath) || urlPath.split('/').some((s) => s === '..' || s.startsWith('.'))) return null;
   const full = path.join(root, urlPath);
-  if (!full.startsWith(root)) return null;
+  if (full !== root && !full.startsWith(root + path.sep)) return null;
   const slash = urlPath.endsWith('/');
   const st = await statOf(full);
   if (st && st.isDirectory()) {

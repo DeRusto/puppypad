@@ -401,6 +401,8 @@ const auth = (req, res, next) => (req.ctx.user ? next() : res.redirect('/login')
 // (multipart bodies arrive later, so they go through bodyCheck too)
 const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard')
   : req.method === 'POST' && !req.session.current() ? res.redirect('/login') : next());
+// the social forms are open to taken-down members too (src/social.js turns their actions away), so only the sign-out half
+main.post(['/follow', '/comment', '/comment/delete', '/like', '/block'], (req, res, next) => (req.session && !req.session.current({ takenDown: true }) ? res.redirect('/login') : next()));
 const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notices.noSuchPage(req.ctx)));
 
 // ----- SEO: robots, sitemap, brand assets -----

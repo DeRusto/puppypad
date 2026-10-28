@@ -107,6 +107,12 @@ test('notifications come from the follows, comments and likes themselves: a dele
   assert.equal(kinds().length, 4);
   social.deleteComment(me, pestComment.id);
   assert.equal(kinds().length, 3);
+  // a Block hides notifications either way: here the one who commented blocks me afterwards
+  const rude = add();
+  social.comment(rude, on(me), 'bye', { ip: ip() });
+  assert.equal(kinds().length, 4);
+  social.block(rude, me);
+  assert.equal(kinds().length, 3);
   social.block(me, fan);
   assert.deepEqual(kinds(), []);
 });

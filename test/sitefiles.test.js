@@ -206,6 +206,8 @@ test('resolve: which file a URL path serves, the one rule the router and the lin
     ['/.env', null],
     ['/pics/.hidden', null],
     ['/a\0b', null],
+    ['/pics\\..\\..\\puppypad.db', null], // backslashes are folders on Windows
+    ['/pics\\cat.png', null],
   ]) assert.deepEqual(await resolve(root, url), want, url);
 });
 

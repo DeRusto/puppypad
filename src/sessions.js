@@ -8,14 +8,15 @@ const U = require('./util');
 
 const { DAY, lines } = U;
 const SESSION_TTL = 30 * DAY;
-// the per-action limits on confirming a password: [key, tries, window, counted per login or per site]
+// the per-action limits on confirming a password: [key, tries, window, counted per login or per site, and whether a
+// taken-down member may still take it: their own account steps yes, the steps that edit the Site no]
 const LIMITS = {
-  password: ['pwchange', 10, 900000, 'login'],
-  email: ['emailchange', 5, 3600000, 'login'],
-  '2fa': ['2fa', 10, 900000, 'login'],
-  apikey: ['apikey', 5, 900000, 'site'],
-  rename: ['rename', 5, 900000, 'site'],
-  delete: ['delacct', 5, 900000, 'site'],
+  password: ['pwchange', 10, 900000, 'login', true],
+  email: ['emailchange', 5, 3600000, 'login', true],
+  '2fa': ['2fa', 10, 900000, 'login', true],
+  delete: ['delacct', 5, 900000, 'site', true],
+  apikey: ['apikey', 5, 900000, 'site', false],
+  rename: ['rename', 5, 900000, 'site', false],
 };
 
 function createSessions({ logins }) {
@@ -69,13 +70,12 @@ function createSessions({ logins }) {
   }
   const revokeApiKeys = (site) => { const id = logins.loginOf(site).id; db.prepare("UPDATE users SET api_key = '' WHERE id = ? OR login_id = ?").run(id, id); };
 
-  // 'ok', 'wrong', 'limited', or 'signedOut' when the Session stopped being current while the password was checked.
-  // A take-down alone doesn't stop it: the actions that edit the Site (rename, a new API key) refuse taken-down Sites first
+  // 'ok', 'wrong', 'limited', or 'signedOut' when the Session stopped being current while the password was checked
   async function confirmPassword(session, action, password) {
-    const [key, max, windowMs, per] = LIMITS[action];
+    const [key, max, windowMs, per, takenDown] = LIMITS[action];
     if (!U.limit(`${key}:${(per === 'login' ? session.login : session.user).id}`, max, windowMs)) return 'limited';
     if (!(await U.checkPw(String(password || ''), session.login.pw_hash))) return 'wrong';
-    return session.current({ takenDown: true }) ? 'ok' : 'signedOut';
+    return session.current({ takenDown }) ? 'ok' : 'signedOut';
   }
 
   // a new token replaces the site's last one of its kind

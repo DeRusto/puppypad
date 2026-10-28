@@ -554,6 +554,14 @@ test('an upload still arriving when the member is signed out writes nothing, fro
   const api = await slowUpload(m2, '/api/upload', 'files', 'late.html', Buffer.from('late'), newKey, { Authorization: 'Bearer pp_late' });
   assert.equal(api.statusCode, 403);
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/lateapi/late.html')), false);
+
+  // an import: the Site deleted meanwhile
+  const m3 = await member('latezip');
+  const zip = await makeZip([['late.html', 'late']]);
+  const del = () => db.prepare("DELETE FROM users WHERE username = 'latezip'").run();
+  const im = await slowUpload(m3, '/dashboard/import', 'zip', 'site.zip', zip, del);
+  assert.equal(im.statusCode, 302);
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latezip/late.html')), false);
 });
 
 // a form post whose body arrives after `between` runs, once the server has read the session from the headers
@@ -594,6 +602,14 @@ test('a dashboard form still arriving when the member is signed out writes nothi
   assert.equal(save.statusCode, 302);
   assert.equal(save.headers.location, '/login');
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowsave/late.html')), false);
+
+  // the social forms too: a follow still arriving after "log out everywhere" makes no follow
+  await member('slowtarget');
+  const fan = await member('slowfan');
+  const out = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowfan')").run();
+  const follow = await slowForm(fan, '/follow', { site: 'slowtarget' }, out);
+  assert.equal(follow.headers.location, '/login');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM follows WHERE follower_id = (SELECT id FROM users WHERE username = 'slowfan')").get().n, 0);
 });
 
 test('log in with the site name or the email address', async () => {

@@ -41,7 +41,9 @@ const STEPS = [
       // the newest 200 per Site back as lines, oldest first, so an older release still blocks them
       const back = db.prepare('UPDATE users SET gb_ips = ? WHERE id = ?');
       for (const { user_id } of db.prepare('SELECT DISTINCT user_id FROM guestbook_blocks').all()) {
-        const ips = db.prepare('SELECT ip FROM guestbook_blocks WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 200').all(user_id).map((r) => r.ip);
+        // not the expired ones the hourly sweep hasn't reached yet: an older release would keep them for good
+        const ips = db.prepare('SELECT ip FROM guestbook_blocks WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 200')
+          .all(user_id, Date.now() - 90 * 86400000).map((r) => r.ip);
         back.run(ips.reverse().join('\n'), user_id);
       }
       db.exec('DELETE FROM guestbook_blocks'); // a later upgrade copies the lines again, unblocks made meanwhile included

@@ -114,6 +114,10 @@ test('check says why a card is the Stock card, and lists only the failing art', 
   db.prepare("UPDATE card_styles SET css = NULL, error = 'Position fixed is not allowed.' WHERE user_id = ?").run(site.id);
   assert.deepEqual(cards.check(site), { css: '', why: 'Position fixed is not allowed', failing: [] });
   assert.equal(cards.of(site).error, 'Position fixed is not allowed.');
+
+  // a style with nothing left once sanitized, like a lone comment, has no rules, not broken art
+  cards.save(site, '/* soon */');
+  assert.deepEqual(cards.check(site), { css: '', why: 'it has no rules', failing: [] });
 });
 
 test('an admin clear leaves a note until the member\'s next save, even an empty one; a rejected save keeps it', () => {
