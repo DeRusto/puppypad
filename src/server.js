@@ -232,7 +232,7 @@ site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }
   res.redirect(`/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`);
 });
 
-site.use((req, res) => {
+site.use(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return res.status(405).type('text').send('Method not allowed');
   if (bwToday(req.owner) >= cfg.BANDWIDTH_MB * 1048576) {
     return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
@@ -271,7 +271,7 @@ site.use((req, res) => {
   if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
     return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
   }
-  const r = resolve(root, rel);
+  const r = await resolve(root, rel);
   if (!r) return notFound();
   if (r.redirect) return res.redirect(301, req.path + '/');
   const full = r.file;

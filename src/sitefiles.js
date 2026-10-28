@@ -23,22 +23,23 @@ function resolveIn(site, rel) {
 // The file urlPath (decoded, starting with /) serves from root, the way the site router serves it: { file },
 // { redirect } for a folder asked for without its trailing slash, or null. A folder serves its index.html, and a path
 // without an extension or trailing slash falls back to .html. Dot segments, .. and NUL never resolve.
-function resolve(root, urlPath) {
+// Async, so a slow disk never holds up other visitors' requests.
+async function resolve(root, urlPath) {
   if (urlPath.includes('\0') || urlPath.split('/').some((s) => s === '..' || s.startsWith('.'))) return null;
   const full = path.join(root, urlPath);
   if (!full.startsWith(root)) return null;
   const slash = urlPath.endsWith('/');
-  const st = statOf(full);
+  const st = await statOf(full);
   if (st && st.isDirectory()) {
     if (!slash) return { redirect: `${urlPath}/` };
-    return statOf(path.join(full, 'index.html'))?.isFile() ? { file: path.join(full, 'index.html') } : null;
+    return (await statOf(path.join(full, 'index.html')))?.isFile() ? { file: path.join(full, 'index.html') } : null;
   }
   if (st) return !slash && st.isFile() ? { file: full } : null;
   // clean URLs: /about serves about.html when nothing called "about" exists
   if (slash || path.extname(full)) return null;
-  return statOf(`${full}.html`)?.isFile() ? { file: `${full}.html` } : null;
+  return (await statOf(`${full}.html`))?.isFile() ? { file: `${full}.html` } : null;
 }
-const statOf = (full) => { try { return fs.statSync(full); } catch { return null; } };
+const statOf = (full) => fs.promises.stat(full).catch(() => null);
 // every file under dir as a slash-separated path relative to it, read off the main thread
 async function listFiles(dir) {
   const out = [];
@@ -275,7 +276,7 @@ function createSiteFiles({ cfg, limitsFor, sendMail }) {
   // href and src values in a site's pages that point at its own files that don't exist, through resolve like the router
   async function brokenLinks(site) {
     const root = siteDir(site.username);
-    const served = (url) => { const r = resolve(root, url); return !!r && (!!r.file || !!resolve(root, r.redirect)); };
+    const served = async (url) => { const r = await resolve(root, url); return !!r && (!!r.file || !!(await resolve(root, r.redirect))); };
     const broken = [];
     for (const file of (await list(site)).filter((f) => /\.html?$/i.test(f))) {
       let html = await fs.promises.readFile(path.join(root, file), 'utf8');
@@ -294,7 +295,7 @@ function createSiteFiles({ cfg, limitsFor, sendMail }) {
           if (u.host !== 'x') continue; // the base points at another site
           p = decodeURIComponent(u.pathname);
         } catch { /* malformed: reported below */ }
-        if (p !== null && (p === '/_hw' || p.startsWith('/_hw/') || served(p))) continue;
+        if (p !== null && (p === '/_hw' || p.startsWith('/_hw/') || (await served(p)))) continue;
         broken.push({ file, link });
       }
     }

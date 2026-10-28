@@ -206,7 +206,7 @@ test('resolve: which file a URL path serves, the one rule the router and the lin
     ['/.env', null],
     ['/pics/.hidden', null],
     ['/a\0b', null],
-  ]) assert.deepEqual(resolve(root, url), want, url);
+  ]) assert.deepEqual(await resolve(root, url), want, url);
 });
 
 test('brokenLinks lists links and images that point at missing files, resolved like the router', async () => {
