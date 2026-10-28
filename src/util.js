@@ -78,54 +78,6 @@ function dirSize(dir) {
   return { total, count };
 }
 
-// every file under dir as a slash-separated path relative to it, read off the main thread
-async function listFiles(dir) {
-  const out = [];
-  const walk = async (d, pre) => {
-    for (const e of await fs.promises.readdir(d, { withFileTypes: true })) {
-      if (e.isDirectory()) await walk(path.join(d, e.name), `${pre}${e.name}/`);
-      else if (e.isFile()) out.push(pre + e.name);
-    }
-  };
-  if (fs.existsSync(dir)) await walk(dir, '');
-  return out;
-}
-
-// href and src values in a site's pages that point at its own files that don't exist, resolved the way the site router serves them
-const LINK_ATTR = /(?<![\w-])(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/gi;
-async function brokenLinks(root) {
-  const files = await listFiles(root);
-  const have = new Set(files);
-  const dirs = new Set(files.flatMap((f) => f.split('/').slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join('/'))));
-  // like the router: a folder serves its index.html, and only a path without a trailing slash or extension falls back to .html
-  const served = (p, slash) => (!slash && have.has(p)) || ((p === '' || dirs.has(p)) && have.has(p ? `${p}/index.html` : 'index.html')) || (!slash && !path.posix.extname(p) && have.has(`${p}.html`));
-  const broken = [];
-  for (const file of files.filter((f) => /\.html?$/i.test(f))) {
-    let html = await fs.promises.readFile(path.join(root, file), 'utf8');
-    // a <base href> moves where the page's relative links point, as in the browser; it is no link itself
-    const baseTag = html.match(/<base\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/i);
-    let base = new URL(`http://x/${file}`);
-    try { if (baseTag) base = new URL((baseTag[1] ?? baseTag[2] ?? baseTag[3]).trim(), base); } catch { /* invalid: the browser ignores it too */ }
-    html = html.replace(/<base\b[^>]*>/gi, '');
-    for (const m of html.matchAll(LINK_ATTR)) {
-      const link = (m[1] ?? m[2] ?? m[3]).trim();
-      // other sites, mail and script links, in-page anchors and the /_hw/ widgets are not files to check
-      if (!link || link.startsWith('#') || link.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(link) || link.includes('{')) continue;
-      let p = null;
-      let slash = false;
-      try {
-        const u = new URL(link, base);
-        if (u.host !== 'x') continue; // the base points at another site
-        slash = u.pathname.length > 1 && u.pathname.endsWith('/');
-        p = decodeURIComponent(u.pathname).slice(1).replace(/\/$/, '');
-      } catch { /* malformed: reported below */ }
-      if (p !== null && (p === '_hw' || p.startsWith('_hw/') || served(p, slash))) continue;
-      broken.push({ file, link });
-    }
-  }
-  return broken;
-}
-
 // Shrink a JPEG, PNG or WebP on disk to at most SHRINK_PX on its longest side, in place, keeping its type.
 // Turns photos upright and drops their metadata (camera, GPS). Keeps the original when the result isn't smaller
 // or the file isn't a readable image. GIFs are left alone so animations survive. Resolves to the new size.
@@ -192,7 +144,17 @@ function totpStep(secret, code, t = Date.now()) {
   return [now - 1, now, now + 1].find((s) => totp(secret, s) === code) || 0;
 }
 
-const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+const DAY = 86400000;
+// the non-blank lines of a newline list (blocked words, recovery codes, a feed event's files), trimmed
+const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
+// lists that page show 50 at a time; page n of `total` rows, kept within the pages there are
+const PER_PAGE = 50;
+const pageOf = (total, n) => {
+  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
+  return { page: Math.min(pages, Math.max(1, parseInt(n, 10) || 1)), pages };
+};
+
+const fmtBytes =(n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 // Runs work one at a time per key: each call starts once the key's previous one has settled (returned or thrown) and
 // gets its own result or error. Keys with nothing waiting are dropped, so finished keys cost nothing.
@@ -208,4 +170,4 @@ function keyedQueue() {
   return { run, size: () => tails.size };
 }
 
-module.exports = { keyedQueue, esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, listFiles, brokenLinks, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };
+module.exports = { DAY, lines, PER_PAGE, pageOf, keyedQueue, esc, sha, newToken, hashPw, checkPw, validUsername, TEXT_EXT, ALLOWED_EXT, extOf, safeRel, dirSize, dirSizeAsync, SHRINK_PX, shrinkImage, limit, fmtBytes, phishSignals, B32, newTotpSecret, totp, totpStep };

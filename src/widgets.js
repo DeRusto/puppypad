@@ -1,4 +1,4 @@
-// Widgets: the /_hw/ handlers on member sites, the galleries members pick from, and the snippets /dashboard/widgets hands out.
+// Widgets: what the /_hw/ routes draw (src/server.js serves them), the galleries members pick from, and the snippets /dashboard/widgets hands out.
 // Every widget is a plain snippet the member pastes or inserts themselves; nothing is ever written into their pages for them.
 const fs = require('fs');
 const path = require('path');
@@ -78,21 +78,9 @@ function groups(cfg, user, supporter = false) {
 const snippet = (cfg, user, id, supporter) => groups(cfg, user, supporter).flatMap((g) => g.items).find((i) => i.id === id) || null;
 const effectSource = (id) => (EFFECTS.some((e) => e.id === id) ? fs.readFileSync(path.join(ASSETS, 'fx', `${id}.js`), 'utf8') : null);
 
-// the widget routes on member sites; req.owner is the site's owner
-function siteRoutes(site) {
-  site.get('/_hw/updated.svg', (req, res) => res.set('Cache-Control', 'public, max-age=300').type('image/svg+xml').send(updatedSvg(req.owner.updated_at)));
-  site.get('/_hw/status.svg', (req, res) => res.set('Cache-Control', 'public, max-age=60').type('image/svg+xml').send(statusSvg(req.owner.status)));
-}
-// the gallery files on the main site; member pages load them from here, so they cache for a long time
+// the gallery files under src/assets that /assets/<kind>/<file> serves; nothing else there is handed out
 const ASSET_FILES = new Set([
   ...BACKGROUNDS.map((b) => `bg/${b.id}.svg`), ...[...BUTTONS, ...STAMPS].map((b) => `buttons/${b.id}.svg`), ...EFFECTS.map((e) => `fx/${e.id}.js`),
 ]);
-function assetRoutes(main) {
-  main.get('/assets/:kind/:file', (req, res) => {
-    const rel = `${req.params.kind}/${req.params.file}`;
-    if (!ASSET_FILES.has(rel)) return res.sendStatus(404);
-    res.set('Cache-Control', 'public, max-age=2592000').type(path.extname(rel) === '.js' ? 'text/javascript' : 'image/svg+xml').sendFile(path.join(ASSETS, rel));
-  });
-}
 
-module.exports = { BACKGROUNDS, BUTTONS, STAMPS, EFFECTS, GB_THEMES, gbTheme, counterSvg, updatedSvg, statusSvg, cleanStatus, groups, snippet, effectSource, siteRoutes, assetRoutes };
+module.exports = { BACKGROUNDS, BUTTONS, STAMPS, EFFECTS, GB_THEMES, gbTheme, counterSvg, updatedSvg, statusSvg, cleanStatus, groups, snippet, effectSource, ASSET_FILES };

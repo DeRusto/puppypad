@@ -8,7 +8,7 @@ const path = require('path');
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-files-'));
 const { db } = require('../src/db');
 const H = require('../src/history');
-const { createSiteFiles, siteDir, shotPath } = require('../src/sitefiles');
+const { createSiteFiles, siteDir, shotPath, resolve } = require('../src/sitefiles');
 
 const free = { quotaMB: 1, fileMB: 0.5, anyType: false, historyDays: 30 };
 const limits = new Map(); // site id -> limits, free unless a test says otherwise
@@ -179,4 +179,50 @@ test('rename carries the folder, screenshot and totals; removeSite leaves nothin
   assert.equal(fs.existsSync(shotPath('renamed')), false);
   await H.remove(site.id); // waits in the site's queue behind the removal removeSite started
   assert.equal(H.exists(site.id), false);
+});
+
+test('resolve: which file a URL path serves, the one rule the router and the link check share', async () => {
+  const site = await newSite();
+  files.write(site, 'about.html', 'about');
+  files.write(site, 'pics/index.html', 'pics');
+  files.write(site, 'pics/cat.png', 'png');
+  files.write(site, 'empty/notes.txt', 'x');
+  const root = siteDir(site.username);
+  const at = (...p) => ({ file: path.join(root, ...p) });
+  for (const [url, want] of [
+    ['/', at('index.html')],
+    ['/about.html', at('about.html')],
+    ['/about', at('about.html')], // clean URL
+    ['/about/', null], // a trailing slash asks for a folder
+    ['/about.htm', null], // an extension never falls back
+    ['/pics/', at('pics', 'index.html')],
+    ['/pics', { redirect: '/pics/' }], // a folder without its slash
+    ['/pics/cat.png', at('pics', 'cat.png')],
+    ['/pics/cat.png/', null],
+    ['/empty/', null], // a folder without an index
+    ['/nothing', null],
+    ['/../puppypad.db', null],
+    ['/x/../../puppypad.db', null],
+    ['/.env', null],
+    ['/pics/.hidden', null],
+    ['/a\0b', null],
+    ['/pics\\..\\..\\puppypad.db', null], // backslashes are folders on Windows
+    ['/pics\\cat.png', null],
+  ]) assert.deepEqual(await resolve(root, url), want, url);
+});
+
+test('brokenLinks lists links and images that point at missing files, resolved like the router', async () => {
+  const site = await newSite();
+  files.write(site, 'about.html', '<p>about</p>');
+  files.write(site, 'cat.png', 'png');
+  files.write(site, 'index.html', `<a href="about.html">ok</a> <a href="/about">clean</a> <a href=about.html#top>anchor</a> <a href="./">home</a>
+<img src="cat.png"> <img data-src="lazy.png"> <img src='gone.png'> <a href="/nope/">dir</a> <a href="old.html?x=1">old</a>
+<a href="https://example.com/x.html">out</a> <a href="mailto:a@b.c">mail</a> <a href="#top">top</a> <img src="/_hw/counter.svg"> <a href="/about/">slash</a>`);
+  // <base href> moves where relative links point, as in the browser
+  files.write(site, 'pics/cat.png.txt', 'x');
+  files.write(site, 'page.html', '<base href="/pics/"><a href="cat.png.txt">ok</a> <a href="dog.txt">gone</a> <a href="/pics">folder</a>');
+  files.write(site, 'away.html', '<base href="https://elsewhere.example/"><img src="x.png">');
+  const broken = (await files.brokenLinks(site)).map((b) => `${b.file} ${b.link}`).sort();
+  assert.deepEqual(broken, ['index.html /about/', 'index.html /nope/', 'index.html gone.png', 'index.html old.html?x=1', 'page.html /pics', 'page.html dog.txt']);
+  assert.deepEqual((await files.list(site)).sort(), ['about.html', 'away.html', 'cat.png', 'index.html', 'page.html', 'pics/cat.png.txt']);
 });

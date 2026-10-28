@@ -1,11 +1,17 @@
-// Login: the account a member signs in with. A supporter's extra sites are their own users rows pointing at the
+// Login: what a member signs in with. A supporter's extra sites are their own users rows pointing at the
 // login's row through login_id; email, password, two-factor login, supporter status and admin rights live on the
 // login's row only. Every function here takes any site row, a login's own or an extra one, and answers for its
 // login, so no caller has to remember which row a fact lives on.
 const { db } = require('./db');
 
-// cfg for the admin list and limits; removeSite(site) deletes a site's folder, screenshot and history (Site files)
-function createLogins({ cfg, removeSite }) {
+// Taken down (users.banned): UP is not taken down, ALONE was taken down on its own, WITH_LOGIN only along with its login
+const UP = 0;
+const ALONE = 1;
+const WITH_LOGIN = 2;
+
+// cfg for the admin list and limits; removeSite(site) deletes a site's folder, screenshot and history (Site files);
+// dropShot(site) deletes its screenshot; holdName(name) holds a deleted Site's name (src/names.js)
+function createLogins({ cfg, removeSite, dropShot, holdName }) {
   const byId = db.prepare('SELECT * FROM users WHERE id = ?');
   const idOf = (site) => site.login_id || site.id;
   const loginOf = (site) => (site.login_id ? byId.get(site.login_id) : site);
@@ -29,31 +35,47 @@ function createLogins({ cfg, removeSite }) {
     };
   };
 
-  // every session of the login and its sites but `except`, and its logins still waiting on their second step
-  function endSessions(site, { except } = {}) {
-    const id = idOf(site);
-    if (except) db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE id = ? OR login_id = ?) AND token_hash != ?').run(id, id, except);
-    else db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE id = ? OR login_id = ?)').run(id, id);
-    db.prepare("DELETE FROM tokens WHERE user_id = ? AND kind = 'login2fa'").run(id);
-  }
-  const revokeApiKeys = (site) => db.prepare("UPDATE users SET api_key = '' WHERE id = ? OR login_id = ?").run(idOf(site), idOf(site));
-
-  // An extra site goes alone; a login takes its extra sites along. Deleted names stay unclaimable for a while
-  // (released_names), except a never-confirmed account's, which was never online. inTransaction(site) commits with the rows.
-  function remove(site, { inTransaction } = {}) {
+  // An extra site goes alone; a login takes its extra sites along. Deleted names are held (src/names.js), except a
+  // never-confirmed Site's, which was never online, and with hold: false, the rollback of a Site whose making
+  // failed, whose name was never served. inTransaction(site) commits with the rows.
+  function remove(site, { inTransaction, hold = true } = {}) {
     const extra = db.prepare('SELECT * FROM users WHERE login_id = ?').all(site.id);
     db.transaction(() => {
-      const hold = db.prepare('INSERT OR REPLACE INTO released_names (name, released_at) VALUES (?, ?)');
-      for (const s of extra) hold.run(s.username, Date.now());
+      if (hold) for (const s of extra) holdName(s.username);
       db.prepare('DELETE FROM users WHERE id = ?').run(site.id);
-      if (site.verified) hold.run(site.username, Date.now());
+      if (hold && site.verified) holdName(site.username);
       if (inTransaction) inTransaction(site);
     })();
     for (const s of extra) removeSite(s);
     removeSite(site);
   }
 
-  return { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor, endSessions, revokeApiKeys, remove };
+  // A login's take-down covers its Online extra sites (as WITH_LOGIN); an extra site's covers only itself.
+  // inTransaction(sites) commits with the rows; the shots go after.
+  function takeDown(site, reason, { inTransaction } = {}) {
+    const sites = isLogin(site) ? sitesOf(site).filter((s) => s.id === site.id || s.banned === UP) : [site];
+    db.transaction(() => {
+      for (const s of sites) {
+        db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(s.id === site.id ? ALONE : WITH_LOGIN, reason, s.id);
+        db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
+      }
+      if (inTransaction) inTransaction(sites);
+    })();
+    for (const s of sites) dropShot(s);
+  }
+  // Brings back the site, and for a login the extra sites marked WITH_LOGIN, never one taken down on its own (ALONE).
+  // 'login-down', changing nothing, for an extra site whose login is taken down: no Online Site under a taken-down login
+  function restore(site, { inTransaction } = {}) {
+    if (!isLogin(site) && loginOf(site).banned) return 'login-down';
+    const sites = isLogin(site) ? sitesOf(site).filter((s) => s.id === site.id || s.banned === WITH_LOGIN) : [site];
+    db.transaction(() => {
+      for (const s of sites) db.prepare('UPDATE users SET banned = ?, ban_reason = NULL, shot_dirty = 1 WHERE id = ?').run(UP, s.id);
+      if (inTransaction) inTransaction(sites);
+    })();
+    return 'ok';
+  }
+
+  return { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor, remove, takeDown, restore };
 }
 
 module.exports = { createLogins };

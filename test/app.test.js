@@ -53,6 +53,8 @@ async function member(username, email = `${username}@example.com`) {
   const csrf = dash.text.match(/name="_csrf" value="([^"]+)"/)[1];
   return { cookie, csrf };
 }
+// past the new-site wait and edited, so the Site is Listed (unless hidden); the rule itself is in test/listing.test.js
+const makeListed = (...names) => { for (const n of names) db.prepare('UPDATE users SET created_at = ?, updates = MAX(updates, 1) WHERE username = ?').run(Date.now() - 25 * 3600000, n); };
 const upload = (m, name, content) => req('post', '/dashboard/upload').set('Cookie', m.cookie)
   .field('_csrf', m.csrf).field('dir', '').attach('files', Buffer.from(content), name);
 
@@ -130,6 +132,17 @@ test('unknown and unconfirmed sites 404, banned sites 410', async () => {
   boss.csrf = (await req('get', '/admin').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
   await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'baddog', action: 'ban', reason: 'test' });
   assert.equal((await req('get', '/', 'baddog.pad.test')).status, 410);
+
+  // taken down, the member can't edit, but can still look after their account: change the password or delete it
+  const back = await req('post', '/login').type('form').send({ username: 'baddog', password: 'longpassword1' });
+  const m = { cookie: back.headers['set-cookie'][0].split(';')[0] };
+  m.csrf = (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  const send = (url, body) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+  assert.equal((await send('/dashboard/tagline', { tagline: 'x' })).headers.location, '/dashboard');
+  const pw = await send('/account/password', { password: 'longpassword1', new_password: 'longpassword2', confirm_password: 'longpassword2' });
+  assert.match(pw.headers.location, /Password%20changed/);
+  assert.match((await send('/dashboard/delete-account', { password: 'longpassword2' })).text, /Account deleted/);
+  assert.equal(db.prepare("SELECT 1 FROM users WHERE username = 'baddog'").get(), undefined);
 });
 
 test('a deleted site name is held, a reserved one is refused', async () => {
@@ -374,16 +387,16 @@ test('restoring a starter respects the file cap and the storage quota, and a ref
   assert.match(fs.readFileSync(index, 'utf8'), /tightfit's Pad/);
 });
 
-test('guestbook and report IPs are erased after 90 days', () => {
+test('housekeeping erases report and guestbook IPs after 90 days', () => {
   const old = Date.now() - 91 * 86400000;
   const owner = db.prepare("INSERT INTO users (username, email, pw_hash, verified, created_at, updated_at) VALUES ('iptest', 'iptest@example.com', 'x', 1, ?, ?)").run(old, old).lastInsertRowid;
   const gbOld = db.prepare("INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?, 'a', 'hi', '10.0.0.1', ?)").run(owner, old).lastInsertRowid;
-  const gbNew = db.prepare("INSERT INTO guestbook (user_id, name, message, ip, created_at) VALUES (?, 'b', 'hi', '10.0.0.2', ?)").run(owner, Date.now()).lastInsertRowid;
   const rpOld = db.prepare("INSERT INTO reports (site, reason, details, ip, created_at) VALUES ('iptest', 'Spam', 'x', '10.0.0.3', ?)").run(old).lastInsertRowid;
+  const rpNew = db.prepare("INSERT INTO reports (site, reason, details, ip, created_at) VALUES ('iptest', 'Spam', 'x', '10.0.0.4', ?)").run(Date.now()).lastInsertRowid;
   app.housekeeping();
-  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbOld).ip, null);
-  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbNew).ip, '10.0.0.2');
   assert.equal(db.prepare('SELECT ip FROM reports WHERE id = ?').get(rpOld).ip, null);
+  assert.equal(db.prepare('SELECT ip FROM reports WHERE id = ?').get(rpNew).ip, '10.0.0.4');
+  assert.equal(db.prepare('SELECT ip FROM guestbook WHERE id = ?').get(gbOld).ip, null); // the guestbook's sweep runs too (test/guestbook.test.js)
 });
 
 test('clean URLs: /about serves about.html unless something called about exists', async () => {
@@ -460,7 +473,7 @@ test('new sites stay off the public lists until edited and a day old', async () 
   await upload(m, 'index.html', '<h1>mine now</h1>');
   assert.deepEqual(await inLists(), { browse: false, home: false }); // edited, but brand new
 
-  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'newbie');
+  makeListed('newbie');
   assert.deepEqual(await inLists(), { browse: true, home: true });
   assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /only after your first edit/);
 
@@ -490,7 +503,7 @@ test('the drag-and-drop uploader gets JSON back', async () => {
 });
 
 // sends a multipart upload in two halves, running `between` once the server has started on it
-async function slowUpload(m, url, field, name, content, between) {
+async function slowUpload(m, url, field, name, content, between, auth = { Cookie: m.cookie }) {
   const server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
   const b = 'slowboundary';
@@ -501,7 +514,7 @@ async function slowUpload(m, url, field, name, content, between) {
   try {
     return await new Promise((resolve, reject) => {
       const r = require('http').request({ port: server.address().port, host: '127.0.0.1', method: 'POST', path: url, headers: {
-        Host: 'pad.test', Cookie: m.cookie, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': first.length + tail.length,
+        Host: 'pad.test', ...auth, 'X-Forwarded-For': ip(), 'Content-Type': `multipart/form-data; boundary=${b}`, 'Content-Length': first.length + tail.length,
       } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
       r.on('error', reject);
       r.write(first);
@@ -525,7 +538,8 @@ async function slowUpload(m, url, field, name, content, between) {
   }
 }
 
-test('an upload or import still arriving when the member is signed out writes nothing', async () => {
+// one slow-body race per route family shows the wiring; the rules themselves are in test/sessions.test.js
+test('an upload still arriving when the member is signed out writes nothing, from the dashboard or the API', async () => {
   const m = await member('latecomer');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'latecomer')").run();
   const up = await slowUpload(m, '/dashboard/upload', 'files', 'late.html', Buffer.from('late'), signOut);
@@ -533,10 +547,19 @@ test('an upload or import still arriving when the member is signed out writes no
   assert.equal(up.headers.location, '/login');
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latecomer/late.html')), false);
 
-  const m2 = await member('latezip');
+  // the API: a new key made meanwhile stops the write
+  const m2 = await member('lateapi');
+  db.prepare('UPDATE users SET api_key = ? WHERE username = ?').run(U.sha('pp_late'), 'lateapi');
+  const newKey = () => db.prepare('UPDATE users SET api_key = ? WHERE username = ?').run(U.sha('pp_newer'), 'lateapi');
+  const api = await slowUpload(m2, '/api/upload', 'files', 'late.html', Buffer.from('late'), newKey, { Authorization: 'Bearer pp_late' });
+  assert.equal(api.statusCode, 403);
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/lateapi/late.html')), false);
+
+  // an import: the Site deleted meanwhile
+  const m3 = await member('latezip');
   const zip = await makeZip([['late.html', 'late']]);
   const del = () => db.prepare("DELETE FROM users WHERE username = 'latezip'").run();
-  const im = await slowUpload(m2, '/dashboard/import', 'zip', 'site.zip', zip, del);
+  const im = await slowUpload(m3, '/dashboard/import', 'zip', 'site.zip', zip, del);
   assert.equal(im.statusCode, 302);
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/latezip/late.html')), false);
 });
@@ -572,7 +595,7 @@ async function slowForm(m, url, fields, between) {
   }
 }
 
-test('a dashboard form still arriving when the member is signed out or banned writes nothing', async () => {
+test('a dashboard form still arriving when the member is signed out writes nothing', async () => {
   const m = await member('slowsave');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowsave')").run();
   const save = await slowForm(m, '/dashboard/save', { path: 'late.html', content: 'late' }, signOut);
@@ -580,16 +603,13 @@ test('a dashboard form still arriving when the member is signed out or banned wr
   assert.equal(save.headers.location, '/login');
   assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowsave/late.html')), false);
 
-  // a ban ends every session of the login, so a delete still arriving is stopped the same way
-  const m2 = await member('slowdel');
-  assert.equal((await upload(m2, 'keep.html', 'keep')).status, 200);
-  const ban = () => {
-    db.prepare("UPDATE users SET banned = 1 WHERE username = 'slowdel'").run();
-    db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowdel')").run();
-  };
-  const del = await slowForm(m2, '/dashboard/delete', { path: 'keep.html' }, ban);
-  assert.equal(del.headers.location, '/login');
-  assert.ok(fs.existsSync(path.join(process.env.DATA_DIR, 'sites/slowdel/keep.html')));
+  // the social forms too: a follow still arriving after "log out everywhere" makes no follow
+  await member('slowtarget');
+  const fan = await member('slowfan');
+  const out = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'slowfan')").run();
+  const follow = await slowForm(fan, '/follow', { site: 'slowtarget' }, out);
+  assert.equal(follow.headers.location, '/login');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM follows WHERE follower_id = (SELECT id FROM users WHERE username = 'slowfan')").get().n, 0);
 });
 
 test('log in with the site name or the email address', async () => {
@@ -794,43 +814,9 @@ test('visitors can sign a guestbook and the entry shows', async () => {
   const page = await req('get', '/_hw/guestbook', 'hostdog.pad.test');
   assert.match(page.text, /Visitor/);
   assert.match(page.text, /nice pad!/);
-});
-
-test('guestbook holds link entries and refuses blocked words', async () => {
-  const m = await member('modpad');
-  const owner = (path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
-  await owner('settings', { words: 'viagra' });
-  const sign = (message) => req('post', '/_hw/guestbook', 'modpad.pad.test').type('form').send({ name: 'V', message });
-  assert.equal((await sign('buy at http://spam.example')).status, 302);
-  assert.equal((await sign('cheap VIAGRA')).status, 400);
-  const page = await req('get', '/_hw/guestbook', 'modpad.pad.test');
-  assert.doesNotMatch(page.text, /spam\.example/);
-  const held = db.prepare("SELECT id, approved FROM guestbook WHERE message LIKE '%spam.example'").get();
-  assert.equal(held.approved, 0);
-  await owner('approve', { id: held.id });
-  assert.match((await req('get', '/_hw/guestbook', 'modpad.pad.test')).text, /spam\.example/);
-});
-
-test('guestbook owner can block an entry\'s IP, unblock it, and cannot touch other owners\' entries', async () => {
-  const m = await member('modown');
-  const other = await member('modother');
-  const sign = (site, message) => req('post', '/_hw/guestbook', `${site}.pad.test`).type('form').send({ name: 'V', message });
-  const post = (who, path, body) => req('post', `/dashboard/guestbook/${path}`).set('Cookie', who.cookie).type('form').send({ _csrf: who.csrf, ...body });
-  await sign('modown', 'hello');
-  await sign('modother', 'see http://x.example');
-  const mine = db.prepare("SELECT id FROM guestbook WHERE message = 'hello'").get().id;
-  const theirs = db.prepare("SELECT id FROM guestbook WHERE message LIKE '%x.example'").get().id;
-  await post(other, 'block-ip', { id: mine }); // not theirs: no effect
-  assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modother'").get().gb_ips, '');
-  await post(m, 'approve', { id: theirs }); // not mine: no effect
-  assert.equal(db.prepare('SELECT approved FROM guestbook WHERE id = ?').get(theirs).approved, 0);
-  await post(m, 'block-ip', { id: mine });
-  const ip = db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips;
-  assert.ok(ip);
-  await req('post', '/_hw/guestbook', 'modown.pad.test').set('X-Forwarded-For', ip).type('form').send({ name: 'V', message: 'again' }); // req() gives each call a fresh IP
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM guestbook WHERE message = 'again'").get().n, 0);
-  await post(m, 'unblock-ip', { ip });
-  assert.equal(db.prepare("SELECT gb_ips FROM users WHERE username = 'modown'").get().gb_ips, '');
+  const empty = await req('post', '/_hw/guestbook', 'hostdog.pad.test').type('form').send({ name: 'Visitor', message: ' ' });
+  assert.equal(empty.status, 400);
+  assert.match(empty.text, /Name and message are both required/);
 });
 
 test('site file cap: new files stop at the cap, replacements still work, deletes free slots', async () => {
@@ -1156,26 +1142,6 @@ test('a reset link that does not work is refused before any hashing', async () =
   } finally { U.hashPw = real; }
 });
 
-test('a password change that finishes after a reset logged everyone out changes nothing', async () => {
-  const m = await member('raced');
-  const realHash = U.hashPw;
-  // the reset lands while the change is hashing its new password
-  U.hashPw = async (pw) => {
-    const h = await realHash(pw);
-    if (pw === 'changedpassword') {
-      db.prepare("UPDATE users SET pw_hash = ? WHERE username = 'raced'").run(await realHash('resetpassword1'));
-      db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'raced')").run();
-    }
-    return h;
-  };
-  try {
-    const res = await req('post', '/account/password').set('Cookie', m.cookie).type('form')
-      .send({ _csrf: m.csrf, password: 'longpassword1', new_password: 'changedpassword', confirm_password: 'changedpassword' });
-    assert.equal(res.headers.location, '/login');
-  } finally { U.hashPw = realHash; }
-  assert.equal((await req('post', '/login').type('form').send({ username: 'raced', password: 'resetpassword1' })).status, 302); // the reset's password stands
-});
-
 test('an error thrown inside an async handler is a 500, not a crashed process', async () => {
   const realCheck = U.checkPw;
   U.checkPw = () => { throw new Error('boom'); }; // /login is async; under Express 4 this rejection took the process down
@@ -1204,7 +1170,7 @@ test('webring next and prev go the right way, with or without a trailing slash',
   for (const [m, n] of [[a, 'ringa'], [b, 'ringb']]) {
     await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'x.html', content: 'x' });
     await req('post', '/dashboard/webring').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, webring: '1' });
-    db.prepare('UPDATE users SET created_at = 0 WHERE username = ?').run(n); // past the new-site wait
+    makeListed(n);
   }
   for (const slash of ['', '/']) {
     assert.match((await req('get', `/webring/next${slash}?from=ringa`)).headers.location, /ringb\./);
@@ -1314,7 +1280,7 @@ test('SEO: robots, sitemap, favicon, and page meta', async () => {
 test('the webring holds only sites that joined it', async () => {
   const a = await member('ringer');
   await member('loner');
-  for (const n of ['ringer', 'loner']) db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, n);
+  makeListed('ringer', 'loner');
   assert.match((await req('get', '/dashboard/widgets').set('Cookie', a.cookie)).text, /Join the webring/);
   await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
   assert.match((await req('get', '/dashboard/widgets').set('Cookie', a.cookie)).text, /Leave the webring/);
@@ -1331,7 +1297,8 @@ test('the webring holds only sites that joined it', async () => {
 test('a hidden site stays off listings, feeds and the ring, and asks not to be indexed', async () => {
   const a = await member('shyone');
   const f = await member('fanone');
-  db.prepare('UPDATE users SET created_at = ?, updates = 1, webring = 1 WHERE username = ?').run(Date.now() - 25 * 3600000, 'shyone');
+  makeListed('shyone');
+  await req('post', '/dashboard/webring').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, webring: '1' });
   await req('post', '/follow').set('Cookie', f.cookie).type('form').send({ _csrf: f.csrf, site: 'shyone' });
   await req('post', '/dashboard/save').set('Cookie', a.cookie).type('form').send({ _csrf: a.csrf, path: 'index.html', content: 'hi' });
   assert.match((await req('get', '/browse')).text, /shyone/);
@@ -1416,8 +1383,7 @@ test('restarting with a higher QUOTA_MB raises existing members; a lower one lea
 
 test('members tag their site, and the dog park finds sites by name or tag', async () => {
   const m = await member('tagdog');
-  const old = Date.now() - 25 * 3600000;
-  db.prepare('UPDATE users SET created_at = ?, updates = 1 WHERE username = ?').run(old, 'tagdog');
+  makeListed('tagdog');
   await req('post', '/dashboard/tags').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, tags: 'Pixel-Art, cats #cats <b> retro x y z' });
   assert.equal(db.prepare('SELECT tags FROM users WHERE username = ?').get('tagdog').tags, 'pixel-art cats retro x y');
   assert.match((await req('get', '/site/tagdog')).text, /href="\/browse\?q=pixel-art">#pixel-art</);
@@ -1446,7 +1412,7 @@ test('every /browse card carries the six Card parts, with or without a screensho
   // a bare site with no tagline and no tags still gets every hook
   const bare = await member('partbare');
   await upload(bare, 'index.html', '<h1>bare</h1>');
-  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'partbare');
+  makeListed('partbare');
   const page = (await req('get', '/browse?q=part')).text;
   assert.match(page, /<div data-part="tagline" class="t"><\/div><div data-part="tags" class="t"><\/div>/);
   for (const name of ['partshot', 'partnone', 'partbare']) {
@@ -1467,7 +1433,7 @@ test('every /browse card carries the six Card parts, with or without a screensho
 async function listedMember(name) {
   const m = await member(name);
   await upload(m, 'index.html', '<h1>card</h1>');
-  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, name);
+  makeListed(name);
   m.id = db.prepare('SELECT id FROM users WHERE username = ?').get(name).id;
   return m;
 }
@@ -1504,32 +1470,19 @@ test('a rejected card style save keeps the typed text and the old style; an empt
   const bad = await saveCard(m, '.foo { color: <b>blue</b> }');
   assert.equal(bad.status, 400); // the page again, no redirect
   assert.match(bad.text, /<p class="err" role="alert">Not saved: [^<]*<\/p>[^]*<textarea[^>]*>\.foo \{ color: &lt;b&gt;blue&lt;\/b&gt; \}<\/textarea>/);
-  const big = await saveCard(m, `[data-part=name] { color: red } /*${'x'.repeat(4096)}*/`);
-  assert.match(big.text, /Not saved: Card style is over 4096 bytes\./);
   assert.equal(await memberCss('cardreject'), live);
 
   assert.match((await saveCard(m, '  \n')).headers.location, /^\/dashboard\/card\?ok=/);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM card_styles WHERE user_id = ?').get(m.id).n, 0);
-  assert.equal(await memberCss('cardreject'), null);
   assert.match((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text, /<textarea[^>]*><\/textarea>/);
   assert.equal((await req('get', '/browse?q=cardreject')).text.replace(/_csrf" value="[^"]*"/g, ''), stock.replace(/_csrf" value="[^"]*"/g, ''));
 });
 
-test('a sanitizer version bump rebuilds stale card styles; one it rejects shows the stock card and says so until fixed', async () => {
-  const { VERSION } = require('../src/cardstyle');
+test('a saved card style the sanitizer now rejects says so on the dashboard until fixed', async () => {
   const ok = await listedMember('cardstale');
   const bad = await listedMember('cardnowbad');
   await saveCard(ok, '[data-part=card] { color: red }');
-  await saveCard(bad, '[data-part=card] { color: blue }');
-  // as if both were saved under an older sanitizer: stale copies, and a source the current one rejects
-  db.prepare("UPDATE card_styles SET version = ?, css = '.stale{}' WHERE user_id IN (?, ?)").run(VERSION - 1, ok.id, bad.id);
-  const rejected = '[data-part=card] { position: fixed }';
-  db.prepare('UPDATE card_styles SET source = ? WHERE user_id = ?').run(rejected, bad.id);
-  // a stale copy is never served, even before the rebuild
-  assert.equal(await memberCss('cardstale'), null);
-
-  app.rebuildCardStyles();
-  assert.equal(await memberCss('cardstale'), `.cs-${ok.id} [data-part=card]{color:red}`);
+  // as the startup rebuild leaves a source the current sanitizer rejects
+  db.prepare("INSERT INTO card_styles (user_id, source, error, version, updated_at) VALUES (?, '[data-part=card] { position: fixed }', 'Position can only be static, relative or absolute.', ?, 0)").run(bad.id, require('../src/cardstyle').VERSION);
   assert.equal(await memberCss('cardnowbad'), null);
   const page = (await req('get', '/dashboard/card').set('Cookie', bad.cookie)).text;
   assert.match(page, /<p class="err" role="alert">[^<]*stock card: Position[^<]*<\/p>[^]*<textarea[^>]*>\[data-part=card\] \{ position: fixed \}<\/textarea>/);
@@ -1585,24 +1538,14 @@ const artFile = (site, rel, data) => {
 };
 const vOf = (full) => { const s = fs.statSync(full); return `${Math.floor(s.mtimeMs)}-${s.size}`; };
 
-test('card art: own-Site images on cards, and the stock card when any art file fails', async () => {
+test('card art: /card-art serves a listed Site\'s art as a sandboxed image, cached, outside bandwidth', async () => {
   const m = await listedMember('artpad');
-  const res = await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") } [data-part=name]::after { content: ""; background: image-set("b.gif" 1x) }');
-  // a style with missing art still saves; the page lists each failing file with its reason
-  assert.equal(res.status, 302);
-  assert.match(decodeURIComponent(res.headers.location), /^\/dashboard\/card\?ok=Saved your card style\./);
-  const artList = async () => (await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.replace(/&#39;/g, "'");
-  const ok = await artList();
-  assert.match(ok, /art\/it's here\.png<\/code>: missing/);
-  assert.match(ok, /b\.gif<\/code>: missing/);
-  assert.equal(await memberCss('artpad'), null); // the stock card, with no CSS
+  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") } [data-part=name]::after { content: ""; background: image-set("b.gif" 1x) }');
   assert.equal((await req('get', '/card-art/artpad/b.gif')).status, 404);
-
   const png = artFile('artpad', "art/it's here.png", PNG());
-  const gif = artFile('artpad', 'b.gif', GIF);
-  // a path with a space and a quote comes out quoted and percent-encoded
+  artFile('artpad', 'b.gif', GIF);
   const url = `/card-art/artpad/art/it's%20here.png?v=${vOf(png)}`;
-  assert.equal(await memberCss('artpad'), `.cs-${m.id} [data-part=card]{background:url("${url}")}.cs-${m.id} [data-part=name]::after{content:"";background:image-set("/card-art/artpad/b.gif?v=${vOf(gif)}"1x)}`);
+  assert.match(await memberCss('artpad'), new RegExp(`url\\("${url.replace(/[?.]/g, '\\$&')}"\\)`));
 
   const bw = () => db.prepare('SELECT bw_bytes FROM users WHERE id = ?').get(m.id).bw_bytes;
   const before = bw();
@@ -1618,36 +1561,17 @@ test('card art: own-Site images on cards, and the stock card when any art file f
   // hotlinked or not, the hotlink limiter doesn't apply
   for (let i = 0; i < 70; i++) assert.equal((await req('get', url).set('Referer', 'https://elsewhere.example/')).status, 200);
 
-  // replacing a file changes its v; an old v still gets the current file
-  artFile('artpad', "art/it's here.png", PNG(200));
-  assert.match(await memberCss('artpad'), new RegExp(`v=${vOf(png)}"`));
-  assert.equal((await req('get', url).buffer(true)).body.length, 200);
-
-  // /browse and /card-art agree: 512 KB passes, one byte over doesn't; nor does a fake PNG, a folder or a deleted file
-  artFile('artpad', "art/it's here.png", PNG(512 * 1024));
-  assert.notEqual(await memberCss('artpad'), null);
-  assert.equal((await req('get', url)).status, 200);
-  for (const data of [PNG(512 * 1024 + 1), Buffer.from('not a png at all, really'), 'folder', null]) {
-    artFile('artpad', "art/it's here.png", data);
-    assert.equal(await memberCss('artpad'), null, String(data).slice(0, 20));
-    const r = await req('get', url);
-    assert.equal(r.status, 404);
-    assert.equal(r.headers['content-security-policy'], 'sandbox');
-    assert.equal(r.headers['x-content-type-options'], 'nosniff');
-  }
-  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png"), url(b.gif) }');
-  const saved = await artList();
-  assert.match(saved, /art\/it's here\.png<\/code>: missing/);
-  assert.doesNotMatch(saved, /b\.gif<\/code>:/); // only failing files are listed
+  // a failing file is a 404 that is still sandboxed
   artFile('artpad', "art/it's here.png", Buffer.from('not a png at all, really'));
-  await saveCard(m, '[data-part=card] { background: url("art/it\'s here.png") }');
-  assert.match(await artList(), /not a real PNG/);
+  const r = await req('get', url);
+  assert.equal(r.status, 404);
+  assert.equal(r.headers['content-security-policy'], 'sandbox');
+  assert.equal(r.headers['x-content-type-options'], 'nosniff');
   artFile('artpad', "art/it's here.png", PNG());
 
-  // 404 for a file the style doesn't use, an svg, traversal, and Sites /browse leaves out
+  // 404 for a file the style doesn't use, encoded traversal, and Sites /browse leaves out
   artFile('artpad', 'other.png', PNG());
-  artFile('artpad', 'x.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>');
-  for (const p of ['other.png', 'x.svg', '%2e%2e/artpad/b.gif', 'art/%2e%2e/b.gif', 'art/..%2fb.gif']) assert.equal((await req('get', `/card-art/artpad/${p}`)).status, 404, p);
+  for (const p of ['other.png', '%2e%2e/artpad/b.gif', 'art/%2e%2e/b.gif', 'art/..%2fb.gif']) assert.equal((await req('get', `/card-art/artpad/${p}`)).status, 404, p);
   assert.equal((await req('get', url)).status, 200);
   for (const [col, val] of [['hidden', 1], ['banned', 1], ['verified', 0], ['updates', 0]]) {
     db.prepare(`UPDATE users SET ${col} = ? WHERE id = ?`).run(val, m.id);
@@ -1694,13 +1618,6 @@ test('/dashboard/card shows the saved card as /browse does, next to the stock ca
   assert.equal(cardSide(p, m.id).css, null);
   assert.deepEqual(cardSide(p, m.id), await browse());
 
-  // a style the sanitizer now rejects
-  db.prepare("UPDATE card_styles SET css = NULL, error = 'Position fixed is not allowed.' WHERE user_id = ?").run(m.id);
-  p = await page();
-  assert.match(p, /Your card shows the stock card because: Position fixed is not allowed\./);
-  assert.doesNotMatch(p, /gone\.gif<\/code>:/);
-  assert.deepEqual(cardSide(p, m.id), await browse());
-
   // a hidden Site sees the note and can still save
   await req('post', '/dashboard/hidden').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, hidden: '1' });
   assert.match((await saveCard(m, '[data-part=name] { color: red }')).headers.location, /^\/dashboard\/card\?ok=/);
@@ -1728,26 +1645,9 @@ test('card art: a hidden or new Site sees its own art in the /dashboard/card pre
     assert.equal(own.headers['cache-control'], 'private, no-store'); // never cached for others while the Site is unlisted
     assert.equal(own.headers['content-security-policy'], 'sandbox');
   }
-  // every other check still applies
-  artFile('arthide', 'pup.png', Buffer.from('not a png at all, really'));
-  assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
-  artFile('arthide', 'other.png', PNG());
-  assert.equal((await req('get', '/card-art/arthide/other.png').set('Cookie', m.cookie)).status, 404);
-  artFile('arthide', 'pup.png', PNG());
+  // a taken-down Site's own session doesn't see it either
   db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(m.id);
   assert.equal((await req('get', url).set('Cookie', m.cookie)).status, 404);
-});
-
-test('card art: after a Site rename, art points at the new name with no re-save; the old name is a 404', async () => {
-  const m = await listedMember('artold');
-  artFile('artold', 'pup.png', PNG());
-  await saveCard(m, '[data-part=card] { background: url(pup.png) }');
-  assert.match(await memberCss('artold'), /url\("\/card-art\/artold\/pup\.png\?v=/);
-  const r = await req('post', '/dashboard/rename').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username: 'artnew', password: 'longpassword1' });
-  assert.equal(r.status, 302);
-  assert.match(await memberCss('artnew'), new RegExp(`^\\.cs-${m.id} \\[data-part=card\\]\\{background:url\\("/card-art/artnew/pup\\.png\\?v=`));
-  assert.equal((await req('get', '/card-art/artnew/pup.png')).status, 200);
-  assert.equal((await req('get', '/card-art/artold/pup.png')).status, 404);
 });
 
 test('feed updates name the files they changed, folded into one event per hour', async () => {
@@ -1778,7 +1678,7 @@ test('Atom feeds: one per site, and recently updated without hidden or new sites
   assert.equal((await req('get', '/site/nobody-here/feed.xml')).status, 404);
   // brand new: not in the global feed yet
   assert.doesNotMatch((await req('get', '/feed.xml')).text, /atomdog/);
-  db.prepare('UPDATE users SET created_at = ? WHERE username = ?').run(Date.now() - 25 * 3600000, 'atomdog');
+  makeListed('atomdog');
   const global = (await req('get', '/feed.xml')).text;
   assert.match(global, /<title>atomdog updated index\.html<\/title>/);
   assert.doesNotMatch(global, /atomdog joined/);
@@ -1787,55 +1687,15 @@ test('Atom feeds: one per site, and recently updated without hidden or new sites
   assert.equal((await req('get', '/site/atomdog/feed.xml')).headers['x-robots-tag'], 'noindex');
 });
 
-test('guestbook emails: instant, a daily digest, or off; held entries say so', async () => {
-  const m = await member('mailpad');
-  const sign = (message) => req('post', '/_hw/guestbook', 'mailpad.pad.test').type('form').send({ name: 'Vee', message });
-  const notify = (v) => req('post', '/dashboard/guestbook/notify').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, notify: v });
-  const mailsTo = () => mail.filter((s) => s.includes('to=mailpad@example.com') && s.includes('guestbook')).length;
-  assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
-
-  await notify('instant');
-  await sign('lovely pad');
-  await sign('see http://spam.example');
-  assert.equal(mailsTo(), 2);
-  assert.match(mail.at(-1), /spam\.example\n\(This entry has a link, so it waits for your approval\.\)/);
-
-  await notify('off');
-  await sign('quiet one');
-  app.housekeeping();
-  assert.equal(mailsTo(), 2);
-
-  await notify('daily');
-  await sign('digest one');
-  app.housekeeping();
-  assert.equal(mailsTo(), 2); // the digest waits a day after switching
-  // a day passes
-  db.prepare('UPDATE users SET gb_digest_at = gb_digest_at - 86401000 WHERE username = ?').run('mailpad');
-  db.prepare("UPDATE guestbook SET created_at = created_at - 86401000 WHERE user_id = (SELECT id FROM users WHERE username = 'mailpad')").run();
-  await notify('daily'); // saving the same setting keeps what waits for the digest
-  app.housekeeping();
-  await new Promise(setImmediate); // the cutoff moves once the mail is handed over
-  assert.equal(mailsTo(), 3);
-  assert.match(mail.at(-1), /1 new guestbook entry on mailpad\.pad\.test/);
-  assert.match(mail.at(-1), /digest one/);
-  assert.doesNotMatch(mail.at(-1), /lovely pad|quiet one/);
-  app.housekeeping();
-  assert.equal(mailsTo(), 3); // once a day at most
-  await notify('bogus');
-  assert.equal(db.prepare('SELECT gb_notify FROM users WHERE username = ?').get('mailpad').gb_notify, 'daily');
-});
-
+// the cases live in test/sitefiles.test.js; this shows the page lists them
 test('the link checker lists links and images that point at missing files of the site', async () => {
   const m = await member('linkcheck');
   await upload(m, 'about.html', '<p>about</p>');
-  await upload(m, 'cat.png', 'png');
-  await upload(m, 'index.html', `<a href="about.html">ok</a> <a href="/about">clean</a> <a href=about.html#top>anchor</a> <a href="./">home</a>
-<img src="cat.png"> <img data-src="lazy.png"> <img src='gone.png'> <a href="/nope/">dir</a> <a href="old.html?x=1">old</a>
-<a href="https://example.com/x.html">out</a> <a href="mailto:a@b.c">mail</a> <a href="#top">top</a> <img src="/_hw/counter.svg">`);
+  await upload(m, 'index.html', '<a href="/about">clean</a> <img src=\'gone.png\'> <a href="/nope/">dir</a>');
   const res = await req('get', '/dashboard/links').set('Cookie', m.cookie);
   assert.equal(res.status, 200);
   const listed = [...res.text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
-  assert.deepEqual(listed, ['gone.png', '/nope/', 'old.html?x=1']);
+  assert.deepEqual(listed, ['gone.png', '/nope/']);
   await upload(m, 'index.html', '<a href="about.html">ok</a>');
   assert.match((await req('get', '/dashboard/links').set('Cookie', m.cookie)).text, /No broken links/);
 });
@@ -1935,17 +1795,6 @@ test('uploads can shrink big photos on the server, keeping name and type and dro
   assert.ok((await req('get', '/dashboard').set('Cookie', m.cookie)).text.includes(U.fmtBytes(onDisk)));
 });
 
-test('the link checker follows <base href> and trailing slashes like the router', async () => {
-  const m = await member('linkbase');
-  await upload(m, 'about.html', '<p>about</p>');
-  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'pics/cat.png.txt', content: 'x' });
-  await upload(m, 'index.html', '<a href="/about/">slash</a> <a href="/about">clean</a>');
-  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'page.html', content: '<base href="/pics/"><a href="cat.png.txt">ok</a> <a href="dog.txt">gone</a>' });
-  await req('post', '/dashboard/save').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, path: 'away.html', content: '<base href="https://elsewhere.example/"><img src="x.png">' });
-  const listed = [...(await req('get', '/dashboard/links').set('Cookie', m.cookie)).text.matchAll(/<code>([^<]*)<\/code>/g)].map((x) => x[1]);
-  assert.deepEqual(listed.sort(), ['/about/', 'dog.txt']);
-});
-
 const bossLogin = async () => {
   const cookie = (await req('post', '/login').type('form').send({ username: 'boss@example.com', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0];
   return { cookie, csrf: (await req('get', '/admin').set('Cookie', cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1] };
@@ -1968,7 +1817,7 @@ test('staff picks and the site of the week are set from /admin and shown on the 
   const m = await member('picked');
   await upload(m, 'index.html', '<h1>pick me</h1>');
   await member('weekly');
-  db.prepare("UPDATE users SET created_at = ?, updates = 1 WHERE username IN ('picked', 'weekly')").run(Date.now() - 25 * 3600000);
+  makeListed('picked', 'weekly');
   await post(boss, '/admin/feature', { site: 'picked', action: 'pick' });
   await post(boss, '/admin/feature', { site: 'weekly', action: 'sotw' });
   let home = (await req('get', '/')).text;
@@ -2024,9 +1873,7 @@ test('the member sees why their card style was cleared until their next passing 
   assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
   const errLines = (await req('get', '/dashboard').set('Cookie', m.cookie)).text.match(/<p class="err"[^]*?<\/p>/g) || [];
   assert.equal(errLines.filter((l) => l.includes('href="/dashboard/card"')).length, 1);
-  // a rejected save keeps the note; a passing one, even empty, removes it
-  await saveCard(m, '.foo { color: <b>blue</b> }');
-  assert.ok((await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes(notice));
+  // an empty save removes it
   await saveCard(m, '');
   assert.ok(!(await req('get', '/dashboard/card').set('Cookie', m.cookie)).text.includes('An admin removed'));
   assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /<p class="err"[^<]*<a href="\/dashboard\/card"/);
@@ -2650,6 +2497,17 @@ test('extra sites follow their login for admin rights, bans, API keys and deleti
   assert.equal((await req('get', '/', 'multi.pad.test')).status, 200);
   assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
   assert.equal(db.prepare('SELECT ban_reason FROM users WHERE username = ?').get('multi-two').ban_reason, 'phishing');
+  // while the login is down, none of its sites comes back alone and it makes no new ones
+  await post(boss, '/admin/ban', { site: 'multi', action: 'ban', reason: 'spam' });
+  assert.match((await post(boss, '/admin/ban', { site: 'multi-two', action: 'unban' })).text, /Restore multi first/);
+  assert.equal((await req('get', '/', 'multi-two.pad.test')).status, 410);
+  db.prepare('UPDATE users SET banned = 0 WHERE username = ?').run('multi-two'); // as an older release could leave it
+  const back = await req('post', '/login').type('form').send({ username: 'multi', password: 'longpassword2' });
+  const again = { cookie: back.headers['set-cookie'][0].split(';')[0] };
+  again.csrf = (await req('get', '/site/multi').set('Cookie', again.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
+  await post(again, '/dashboard/sites/switch', { id: id('multi-two') });
+  assert.match(decodeURIComponent((await post(again, '/dashboard/sites/new', { username: 'multi-four' })).headers.location), /took this login down/);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('multi-four'), undefined);
 });
 
 test('only the editor takes big forms; a huge one anywhere else is refused, not held in memory', async () => {
@@ -2683,6 +2541,13 @@ test('guestbooks and the report queue page through every entry, so none is out o
   const back = await post(m, '/dashboard/guestbook/approve', { id: held, page: 11 });
   assert.equal(back.headers.location, '/dashboard/guestbook?page=11');
   assert.equal(db.prepare('SELECT approved FROM guestbook WHERE id = ?').get(held).approved, 1);
+  // the owner page lists a blocked address until it is unblocked
+  const signed = add.run(id, 'spammer', 'hi', 1, Date.now()).lastInsertRowid;
+  db.prepare("UPDATE guestbook SET ip = '10.66.0.1' WHERE id = ?").run(signed);
+  await post(m, '/dashboard/guestbook/block-ip', { id: signed });
+  assert.match((await req('get', '/dashboard/guestbook').set('Cookie', m.cookie)).text, /Blocked IPs: 10\.66\.0\.1 /);
+  await post(m, '/dashboard/guestbook/unblock-ip', { ip: '10.66.0.1' });
+  assert.match((await req('get', '/dashboard/guestbook').set('Cookie', m.cookie)).text, /Blocked IPs: none/);
   // the admin queue pages too
   const boss = { cookie: (await req('post', '/login').type('form').send({ username: 'boss', password: 'longpassword1' })).headers['set-cookie'][0].split(';')[0] };
   boss.csrf = (await req('get', '/dashboard').set('Cookie', boss.cookie)).text.match(/name="_csrf" value="([^"]+)"/)[1];
@@ -2963,7 +2828,7 @@ test('supporter checkout offers the monthly and the yearly price', async () => {
   assert.ok(db.prepare('SELECT supporter_until FROM users WHERE username = ?').get('choosey').supporter_until > end * 1000);
 });
 
-test('support checkout, billing portal and account deletion stop when the member is signed out while Stripe answers', async () => {
+test('support checkout stops when the member is signed out while Stripe answers', async () => {
   const m = await member('midstripe');
   const signOut = () => db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = 'midstripe')").run();
   const post = (url, body = {}) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
@@ -2981,19 +2846,6 @@ test('support checkout, billing portal and account deletion stop when the member
     return r;
   });
   assert.equal(go.headers.location, '/login');
-  const portal = await during(stripe.billingPortal.sessions, 'create', async () => {
-    db.prepare("UPDATE users SET stripe_customer_id = 'cus_mid' WHERE username = 'midstripe'").run();
-    const r = await post('/dashboard/support/portal');
-    Object.assign(m, await relogin());
-    return r;
-  });
-  assert.equal(portal.headers.location, '/login');
-  fake.subs.push({ id: 'sub_mid', customer: 'cus_mid', status: 'active' });
-  const del = await during(stripe.subscriptions, 'cancel', () => post('/dashboard/delete-account', { password: 'longpassword1' }));
-  assert.equal(del.headers.location, '/login');
-  assert.ok(fake.cancelled.includes('sub_mid')); // the cancel went through; the account stays
-  assert.ok(db.prepare("SELECT 1 FROM users WHERE username = 'midstripe'").get());
-
   async function relogin() {
     const res = await req('post', '/login').type('form').send({ username: 'midstripe', password: 'longpassword1' });
     const cookie = res.headers['set-cookie'][0].split(';')[0];

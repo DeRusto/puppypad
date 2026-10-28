@@ -12,12 +12,17 @@ const V = require('./views');
 const { readZip, writeZip } = require('./zip');
 const starters = require('./starters');
 const style = require('./style');
-const cardstyle = require('./cardstyle');
+const { createCardStyles } = require('./cardstyle');
 const upgrade = require('./upgrade');
 const W = require('./widgets');
 const H = require('./history');
-const { createSiteFiles, siteDir, shotPath, resolveIn, MAX_FILES } = require('./sitefiles');
+const { createSiteFiles, siteDir, shotPath, resolveIn, resolve, MAX_FILES } = require('./sitefiles');
 const { createLogins } = require('./logins');
+const { createSessions } = require('./sessions');
+const { createListing } = require('./listing');
+const { createNames } = require('./names');
+const { createSocial, WITH_FOLLOWERS, NOTE_KINDS } = require('./social');
+const { createGuestbook } = require('./guestbook');
 const { createBilling, BadSignature } = require('./billing');
 
 // ---------- config ----------
@@ -56,10 +61,9 @@ const cfg = {
   siteUrl: (name) => `${base.protocol}//${name}.${base.host}`,
 };
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
-const DAY = 86400000;
-const NAME_HOLD = 90 * DAY; // a deleted site's name stays unclaimable this long, so nobody can take over a known address
+const { DAY, lines, PER_PAGE } = U;
 const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
-const IP_KEEP = 90 * DAY; // guestbook and report IPs are erased after this; the privacy page promises it
+const IP_KEEP = 90 * DAY; // report IPs are erased after this (src/guestbook.js keeps its own); the privacy page promises it
 const now = () => Date.now();
 const today = () => new Date().toISOString().slice(0, 10); // UTC
 const bwToday = (u) => (u.bw_day === today() ? u.bw_bytes : 0);
@@ -124,57 +128,33 @@ const tempBudget = (most) => (req, res, next) => {
   next();
 };
 const dropTemp = (files) => { for (const f of files) if (f && f.path) fs.rmSync(f.path, { force: true }); };
-const LIVE = 'verified = 1 AND banned = 0';
-// live, unhidden sites shown on the home page, the dog park, the sitemap and /random; the webring takes only those that joined it (profiles and addresses work for every live site)
-const listedSince = () => Math.floor(now() - cfg.NEW_SITE_HOURS * 3600000);
-const listed = () => `${LIVE} AND hidden = 0 AND updates > 0 AND created_at <= ${listedSince()}`;
-const isListed = (u) => !!(u.verified && !u.banned && !u.hidden && u.updates > 0 && u.created_at <= listedSince());
+// Online, not hidden and Listed (src/listing.js); the webring takes only Listed Sites that joined it (profiles and addresses work for every Online Site)
+const listing = createListing({ cfg });
+const { ONLINE, listedWhere } = listing;
 // Each member keeps the largest QUOTA_MB they have had: raising it in .env grows every site, lowering it only affects new signups
 db.prepare('UPDATE users SET quota_mb = ? WHERE quota_mb < ?').run(cfg.QUOTA_MB, cfg.QUOTA_MB);
 
-// the current name of the site that gave up `name` in a rename, while that name is still held
-const renamedTo = (name) => db.prepare(`SELECT u.username FROM released_names r JOIN users u ON u.id = r.user_id WHERE r.name = ? AND r.released_at > ? AND ${LIVE}`).get(String(name), now() - NAME_HOLD)?.username;
-
-function makeToken(userId, kind, ttl) {
-  const t = U.newToken();
-  db.prepare('DELETE FROM tokens WHERE user_id = ? AND kind = ?').run(userId, kind);
-  db.prepare('INSERT INTO tokens (token_hash, user_id, kind, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, kind, now() + ttl);
-  return t;
-}
-function useToken(t, kind) {
-  const row = db.prepare('SELECT * FROM tokens WHERE token_hash = ? AND kind = ?').get(U.sha(String(t || '')), kind);
-  if (!row || row.expires < now()) return null;
-  db.prepare('DELETE FROM tokens WHERE token_hash = ?').run(row.token_hash);
-  return q.userById.get(row.user_id);
-}
-// is this token live? without spending it, so a costly step can be skipped for links that would fail anyway
-const tokenLive = (t, kind) => {
-  const row = db.prepare('SELECT expires FROM tokens WHERE token_hash = ? AND kind = ?').get(U.sha(String(t || '')), kind);
-  return !!row && row.expires >= now();
-};
-// Password hashing yields to other requests, so by the time it finishes a reset may have replaced the password
-// and logged every session out. Signed-in actions check that nothing like that happened before they act.
-// A rename meanwhile counts too (renamed_at changes with every one): the request would act on the old name's folder.
-const stillCurrent = (req, user) => {
-  const cur = q.userById.get(user.id);
-  return !!cur && cur.pw_hash === user.pw_hash && cur.renamed_at === user.renamed_at &&
-    (!req.sessionHash || !!db.prepare('SELECT 1 FROM sessions WHERE token_hash = ?').get(req.sessionHash));
-};
 const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 200;
-function startSession(res, userId) {
-  const t = U.newToken();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?,?,?,?)').run(U.sha(t), userId, U.newToken(), now() + 30 * DAY);
-  res.cookie(COOKIE, t, { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: 30 * DAY });
-}
 const MAX_SITES = 5;
 // what belongs to a site's login, from any of its sites (src/logins.js)
-const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site) });
+const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site), dropShot: (site) => fs.rmSync(shotPath(site.username), { force: true }), holdName: (name) => names.hold(name) });
 const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
+// signed-in visits, tokens and two-factor codes, and whether a Session is still good (src/sessions.js)
+const sessions = createSessions({ logins });
+const { makeToken, useToken, peekToken, useCode } = sessions;
+const startSession = (res, userId) => res.cookie(COOKIE, sessions.start(userId), { httpOnly: true, sameSite: 'lax', secure: cfg.SECURE, path: '/', maxAge: sessions.SESSION_TTL });
+const clearSession = (res) => res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+// what a route answers when its Session stopped being current while it waited
+const signedOut = (req, res) => (req.accepts(['html', 'json']) === 'json' ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login'));
 // the supporter tier's rules (src/billing.js), only while it is switched on; app.setStripe swaps the Stripe client for tests
 const makeBilling = (stripe) => createBilling({ cfg, logins, stripe, webhookSecret: env.STRIPE_WEBHOOK_SECRET });
 let billing = cfg.SUPPORT_ON ? makeBilling(new Stripe(env.STRIPE_SECRET_KEY)) : null;
 // every change to a site's folder goes through here (src/sitefiles.js)
 const files = createSiteFiles({ cfg, limitsFor, sendMail });
+// which names are taken, Held names and renames (src/names.js)
+const names = createNames({ files });
+// follows, comments, likes, Blocks, notifications and the follow feed (src/social.js)
+const social = createSocial({ cfg, logins, listing, sendMail });
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
 const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
@@ -218,7 +198,7 @@ function withOgImage(buf, name) {
 site.use((req, res, next) => {
   const owner = q.userByName.get(req.siteName);
   if (!owner || !owner.verified) {
-    const to = renamedTo(req.siteName);
+    const to = names.renamedTo(req.siteName);
     // a day's cache, not forever: once the hold ends someone else may take the old name
     if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, cfg.siteUrl(to) + req.originalUrl);
     return res.status(404).send(V.sitePages.empty(cfg, req.siteName));
@@ -237,42 +217,22 @@ site.get('/_hw/counter.svg', (req, res) => {
   }
   res.set('Cache-Control', 'no-store').type('image/svg+xml').send(W.counterSvg(hits));
 });
-W.siteRoutes(site);
+site.get('/_hw/updated.svg', (req, res) => res.set('Cache-Control', 'public, max-age=300').type('image/svg+xml').send(W.updatedSvg(req.owner.updated_at)));
+site.get('/_hw/status.svg', (req, res) => res.set('Cache-Control', 'public, max-age=60').type('image/svg+xml').send(W.statusSvg(req.owner.status)));
 
-const lines = (t) => String(t || '').split('\n').map((l) => l.trim()).filter(Boolean);
-const GB_LINK = /https?:|www\.|[a-z0-9-]+\.(com|net|org|io|co|me|ru|xyz|info|biz|top|click|link)\b/i; // shortcut: a TLD list, not a URL parser
-const gbEntryText = (e) => `${e.name} wrote:\n${e.message}${e.approved ? '' : '\n(This entry has a link, so it waits for your approval.)'}`;
-const gbMailFooter = `Approve or delete entries, or change how often we email you about them: ${cfg.BASE_URL}/dashboard/guestbook`;
-const GB_NOTIFY = ['instant', 'daily', 'off'];
-// one page of a guestbook, newest first: the approved entries visitors see, or all of them for the owner
-function gbPage(req, id, all = false) {
-  const from = `FROM guestbook WHERE user_id = ?${all ? '' : ' AND approved = 1'}`;
-  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${from}`).get(id).n);
-  return { rows: db.prepare(`SELECT * ${from} ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(id), page, pages };
-}
-site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(gbPage(req, req.owner.id), '', W.gbTheme(req.query.theme))));
+// signing, spam rules, owner tools and mail (src/guestbook.js); the routes here read forms and render
+const guestbook = createGuestbook({ cfg, logins, sendMail, listing });
+site.get('/_hw/guestbook', (req, res) => res.set('Cache-Control', 'no-store').send(V.guestbook(guestbook.page(req.owner, req.query.page), '', W.gbTheme(req.query.theme))));
 site.post('/_hw/guestbook', express.urlencoded({ extended: false, limit: '8kb' }), bodyDefault, (req, res) => {
-  const name = String(req.body.name || '').trim().slice(0, 40);
-  const message = String(req.body.message || '').trim().slice(0, 500);
   const theme = W.gbTheme(req.query.theme);
-  const back = `/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`;
-  const fail = (code, err) => res.status(code).send(V.guestbook(gbPage(req, req.owner.id), err, theme));
-  if (req.body.website) return res.redirect(back); // bot filled the hidden field
-  if (!name || !message) return fail(400, 'Name and message are both required.');
-  if (!U.limit(`gb:${req.ip}`, 3, 600000)) return fail(429, 'Too many entries from you. Try again in ten minutes.');
-  if (lines(req.owner.gb_ips).includes(req.ip)) return res.redirect(back); // blocked: look like success
-  const text = `${name} ${message}`.toLowerCase();
-  if (lines(req.owner.gb_words).some((w) => text.includes(w.toLowerCase()))) return fail(400, 'Your entry contains a word the owner has blocked.');
-  const approved = GB_LINK.test(text) ? 0 : 1; // entries with links wait for the owner
-  db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(req.owner.id, name, message, req.ip, approved, now());
-  // capped so a spam wave from many addresses can't flood the owner's inbox
-  if (req.owner.gb_notify === 'instant' && U.limit(`gbmail:${req.owner.id}`, 10, 3600000)) {
-    sendMail(loginOf(req.owner).email, `New guestbook entry on ${req.owner.username}.${cfg.BASE_HOST}`, `${gbEntryText({ name, message, approved })}\n\n${gbMailFooter}`);
-  }
-  res.redirect(back);
+  // website is the hidden field only bots fill
+  const result = guestbook.sign(req.owner, { name: req.body.name, message: req.body.message, ip: req.ip, bot: !!req.body.website });
+  const fail = { missing: [400, 'Name and message are both required.'], limited: [429, 'Too many entries from you. Try again in ten minutes.'], word: [400, 'Your entry contains a word the owner has blocked.'] }[result];
+  if (fail) return res.status(fail[0]).send(V.guestbook(guestbook.page(req.owner, req.query.page), fail[1], theme));
+  res.redirect(`/_hw/guestbook${theme === 'classic' ? '' : `?theme=${theme}`}`);
 });
 
-site.use((req, res) => {
+site.use(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return res.status(405).type('text').send('Method not allowed');
   if (bwToday(req.owner) >= cfg.BANDWIDTH_MB * 1048576) {
     return res.status(429).set('Retry-After', String(Math.ceil((Date.parse(today()) + DAY - now()) / 1000)))
@@ -311,25 +271,16 @@ site.use((req, res) => {
   if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
     return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
   }
-  if (rel.includes('\0') || rel.split('/').some((s) => s === '..' || s.startsWith('.'))) return notFound();
-  let full = path.join(root, rel);
-  if (!full.startsWith(root)) return notFound();
-  fs.stat(full, (err, st) => {
-    if (!err && st.isDirectory()) {
-      if (!req.path.endsWith('/')) return res.redirect(301, req.path + '/');
-      full = path.join(full, 'index.html');
-    } else if (err) {
-      // clean URLs: /about serves about.html when nothing called "about" exists
-      if (req.path.endsWith('/') || path.extname(full)) return notFound();
-      full += '.html';
-    }
-    page = /\.html?$/i.test(full);
-    res.set('Cache-Control', 'public, max-age=60');
-    if (page && fs.existsSync(shotPath(req.owner.username))) {
-      return fs.readFile(full, (e, buf) => (e ? notFound() : res.type('html').send(withOgImage(buf, req.owner.username))));
-    }
-    res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
-  });
+  const r = await resolve(root, rel);
+  if (!r) return notFound();
+  if (r.redirect) return res.redirect(301, req.path + '/');
+  const full = r.file;
+  page = /\.html?$/i.test(full);
+  res.set('Cache-Control', 'public, max-age=60');
+  if (page && fs.existsSync(shotPath(req.owner.username))) {
+    return fs.readFile(full, (e, buf) => (e ? notFound() : res.type('html').send(withOgImage(buf, req.owner.username))));
+  }
+  res.sendFile(full, { dotfiles: 'deny' }, (e) => { if (e && !res.headersSent) notFound(); });
 });
 
 // ================= main site =================
@@ -366,7 +317,7 @@ const shotAuth = (req, res, next) => {
 };
 main.get('/internal/shots/next', shotAuth, (req, res) => {
   // wait 20s after the last save so a burst of edits makes one screenshot
-  const u = db.prepare(`SELECT username FROM users WHERE ${LIVE} AND shot_dirty = 1 AND updated_at < ? ORDER BY updated_at LIMIT 1`).get(now() - 20000);
+  const u = db.prepare(`SELECT username FROM users WHERE ${ONLINE} AND shot_dirty = 1 AND updated_at < ? ORDER BY updated_at LIMIT 1`).get(now() - 20000);
   res.json(u ? { name: u.username, url: cfg.siteUrl(u.username) + '/' } : {});
 });
 main.post('/internal/shots/:name', shotAuth, express.raw({ type: '*/*', limit: '2mb' }), (req, res) => {
@@ -416,17 +367,11 @@ main.use('/api', api);
 // session
 main.use((req, res, next) => {
   const m = (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).find(([k]) => k === COOKIE);
-  req.ctx = withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce, path: req.path });
-  if (m && m[1]) {
-    const s = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(U.sha(m[1]));
-    if (s && s.expires > now()) {
-      const user = q.userById.get(s.user_id);
-      if (user) {
-        req.ctx = withFlair({ cfg, user, login: loginOf(user), csrf: s.csrf, isAdmin: isAdmin(user), nonce: res.locals.nonce, unread: notes(user, 'COUNT(*) n', user.notes_seen_at).get().n, path: req.path });
-        req.sessionHash = s.token_hash;
-      }
-    }
-  }
+  const s = sessions.lookup(m && m[1]);
+  req.session = s;
+  req.ctx = s
+    ? withFlair({ cfg, user: s.user, login: s.login, csrf: s.csrf, isAdmin: isAdmin(s.user), nonce: res.locals.nonce, unread: social.unread(s.user), path: req.path })
+    : withFlair({ cfg, user: null, csrf: '', isAdmin: false, nonce: res.locals.nonce, path: req.path });
   next();
 });
 // the editor posts whole files, and percent-escaping can triple a byte, so its cap tracks the member's file limit with room for that;
@@ -439,21 +384,25 @@ main.use(express.urlencoded({ extended: false })); // skips a body already parse
 main.use(bodyDefault);
 
 // CSRF: every POST must come from this origin; logged-in POSTs also need the session token
-const csrfOk = (req) => !req.ctx.user || (req.body && req.body._csrf === req.ctx.csrf);
+const csrfOk = (req) => !req.session || req.session.csrfOk(req.body);
 main.use((req, res, next) => {
   if (req.method !== 'POST') return next();
   const origin = req.headers.origin;
   if (origin && origin !== cfg.BASE_URL) return res.status(403).type('text').send('Cross-site request blocked');
-  // multipart bodies are not parsed yet here, so their token cannot be checked yet:
-  // every multipart route MUST call csrfOk itself after multer runs (upload and import do)
+  // multipart bodies are not parsed yet here, so their token is checked by bodyCheck once multer has run
   if (!req.is('multipart/form-data') && !csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
   next();
 });
+// after multer, for every multipart route (upload, import, the API's upload): the body's CSRF token, then whether the
+// Session is still good, since the body can take long to arrive. 'csrf', 'signedOut' or 'ok'
+const bodyCheck = (req) => (!csrfOk(req) ? 'csrf' : !req.session.current() ? 'signedOut' : 'ok');
 const auth = (req, res, next) => (req.ctx.user ? next() : res.redirect('/login'));
 // a form's body has arrived by now and can take a long time to; a ban, reset or deletion meanwhile must stop the write
-// (multipart bodies arrive later, so upload and import check again themselves)
+// (multipart bodies arrive later, so they go through bodyCheck too)
 const canEdit = (req, res, next) => (req.ctx.user.banned ? res.redirect('/dashboard')
-  : req.method === 'POST' && !stillCurrent(req, req.ctx.user) ? res.redirect('/login') : next());
+  : req.method === 'POST' && !req.session.current() ? res.redirect('/login') : next());
+// the social forms are open to taken-down members too (src/social.js turns their actions away), so only the sign-out half
+main.post(['/follow', '/comment', '/comment/delete', '/like', '/block'], (req, res, next) => (req.session && !req.session.current({ takenDown: true }) ? res.redirect('/login') : next()));
 const adminOnly = (req, res, next) => (req.ctx.isAdmin ? next() : res.status(404).send(V.notices.noSuchPage(req.ctx)));
 
 // ----- SEO: robots, sitemap, brand assets -----
@@ -471,14 +420,19 @@ main.get('/img/pup-hero.webp', asset('pup-hero.webp', 'image/webp'));
 main.get('/img/pup-coder.webp', asset('pup-coder.webp', 'image/webp'));
 main.get('/img/pup-accident.webp', asset('pup-accident.webp', 'image/webp'));
 main.get('/img/pup-guestbook.webp', asset('pup-guestbook.webp', 'image/webp'));
-W.assetRoutes(main); // backgrounds, buttons and effects member pages load from here
+// backgrounds, buttons and effects member pages load from here, so they cache for a long time
+main.get('/assets/:kind/:file', (req, res) => {
+  const rel = `${req.params.kind}/${req.params.file}`;
+  if (!W.ASSET_FILES.has(rel)) return res.sendStatus(404);
+  res.set('Cache-Control', 'public, max-age=2592000').type(path.extname(rel) === '.js' ? 'text/javascript' : 'image/svg+xml').sendFile(path.join(ASSETS_DIR, rel));
+});
 main.get('/robots.txt', (req, res) => res.type('text/plain').send(
   // /login, /signup, /forgot, /reset and /feed stay crawlable on purpose: they carry noindex tags,
   // which a crawler can only read if robots.txt lets it in. Only the auth-gated areas are disallowed.
   `User-agent: *\nAllow: /\nDisallow: /dashboard\nDisallow: /admin\nDisallow: /internal/\n\nSitemap: ${cfg.BASE_URL}/sitemap.xml\n`));
 main.get('/sitemap.xml', (req, res) => {
   const urls = [['/', null], ['/browse', null], ['/rules', null], ['/privacy', null],
-    ...db.prepare(`SELECT username, updated_at FROM users WHERE ${listed()} ORDER BY updated_at DESC`).all()
+    ...db.prepare(`SELECT username, updated_at FROM users WHERE ${listedWhere()} ORDER BY updated_at DESC`).all()
       .map((u) => [`/site/${u.username}`, new Date(u.updated_at).toISOString().slice(0, 10)])];
   res.set('Cache-Control', 'public, max-age=3600').type('application/xml').send(
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(([loc, mod]) => `<url><loc>${cfg.BASE_URL}${loc}</loc>${mod ? `<lastmod>${mod}</lastmod>` : ''}</url>`).join('\n')}\n</urlset>\n`);
@@ -486,87 +440,58 @@ main.get('/sitemap.xml', (req, res) => {
 
 // ----- public pages -----
 main.get('/', (req, res) => res.send(V.home(req.ctx, {
-  sotw: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} AND u.sotw_at > 0`).all().map(hasShot)[0],
-  picks: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} AND u.staff_pick > 0 ORDER BY u.staff_pick DESC LIMIT 8`).all().map(hasShot),
-  recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listed()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
-  newest: db.prepare(`SELECT * FROM users WHERE ${listed()} ORDER BY id DESC LIMIT 10`).all(),
-  total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${LIVE}`).get().n,
+  sotw: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} AND u.sotw_at > 0`).all().map(hasShot)[0],
+  picks: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} AND u.staff_pick > 0 ORDER BY u.staff_pick DESC LIMIT 8`).all().map(hasShot),
+  recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
+  newest: db.prepare(`SELECT * FROM users WHERE ${listedWhere()} ORDER BY id DESC LIMIT 10`).all(),
+  total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${ONLINE}`).get().n,
   supporters: cfg.SUPPORT_ON ? db.prepare('SELECT COUNT(*) n FROM users WHERE supporter_until > ?').get(now()).n : 0,
 })));
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
-const WITH_FOLLOWERS = `SELECT u.*, (SELECT COUNT(*) FROM follows f WHERE f.followed_id = u.id) AS followers FROM users u`;
 const hasShot = (r) => ({ ...r, shot: fs.existsSync(shotPath(r.username)) });
-// a Site's card art, through the art check: [{ path, reason, v }], reason null for a file that passes
-const artOf = (username, art) => cardstyle.checkArt(siteDir(username), art);
-const artUrl = (username, f) => `/card-art/${username}/${f.path.split('/').map(encodeURIComponent).join('/')}?v=${f.v}`;
-// the card style CSS of every card on the page that has a current one, in card order, art filled in; '' when none.
-// A card with any failing art file adds nothing, so it shows as the Stock card. Checked every request, like hasShot.
-const cardCssFor = (rows) => {
-  if (!rows.length) return '';
-  const styles = new Map(db.prepare(`SELECT user_id, css, art FROM card_styles WHERE version = ? AND css IS NOT NULL AND user_id IN (${rows.map(() => '?').join(',')})`)
-    .all(cardstyle.VERSION, ...rows.map((r) => r.id)).map((s) => [s.user_id, s]));
-  return rows.map((r) => {
-    const s = styles.get(r.id);
-    if (!s) return '';
-    const art = artOf(r.username, JSON.parse(s.art));
-    return art.some((f) => f.reason) ? '' : cardstyle.fill(s.css, art.map((f) => artUrl(r.username, f)));
-  }).filter(Boolean).join('\n');
-};
+const cards = createCardStyles({ db, siteDir });
+cards.rebuild(); // before listening
 // Card art: a file of a style's art list, straight from the Site folder, for Sites /browse shows, and for the Site's own
 // session too, so the /dashboard/card preview of a hidden or new Site has its art. Never counts toward bandwidth
 // (that is counted on member hosts only). sandbox and nosniff keep it an image even if a browser opens it as a page.
 main.get('/card-art/:name/*path', (req, res) => {
   res.set('Content-Security-Policy', 'sandbox').set('X-Content-Type-Options', 'nosniff');
-  const rel = req.params.path.join('/');
-  const s = db.prepare(`SELECT u.username, c.art, ${listed()} AS shown FROM users u JOIN card_styles c ON c.user_id = u.id
-    WHERE u.username = ? AND (${listed()} OR (${LIVE} AND u.id = ?)) AND c.version = ? AND c.css IS NOT NULL`)
-    .get(req.params.name, req.ctx.user?.id ?? 0, cardstyle.VERSION);
-  const f = s && JSON.parse(s.art).includes(rel) && cardstyle.checkArt(siteDir(s.username), [rel], true)[0];
-  if (!f || f.reason) return res.status(404).type('text').send('Not found');
-  res.set('Cache-Control', s.shown ? 'public, max-age=86400' : 'private, no-store').type(f.type).send(f.buf);
+  const site = db.prepare(`SELECT *, ${listedWhere()} AS shown FROM users WHERE username = ? AND (${listedWhere()} OR (${ONLINE} AND id = ?))`)
+    .get(req.params.name, req.ctx.user?.id ?? 0);
+  const f = site && cards.art(site, req.params.path.join('/'));
+  if (!f) return res.status(404).type('text').send('Not found');
+  res.set('Cache-Control', site.shown ? 'public, max-age=86400' : 'private, no-store').type(f.type).send(f.buf);
 });
-// startup, in one pass: re-derive every copy made by an older sanitizer; a source it now rejects is kept, with css NULL and the reason
-const rebuildCardStyles = db.transaction(() => {
-  const set = db.prepare('UPDATE card_styles SET css = ?, error = ?, art = ?, version = ? WHERE user_id = ?');
-  for (const s of db.prepare('SELECT user_id, source FROM card_styles WHERE version <> ?').all(cardstyle.VERSION)) {
-    const r = cardstyle.sanitize(s.source, s.user_id);
-    set.run(r.css ?? null, r.error ?? null, JSON.stringify(r.art ?? []), cardstyle.VERSION, s.user_id);
-  }
-});
-rebuildCardStyles();
-// the reason the current sanitizer rejects this Site's saved card style, or undefined
-const cardError = (id) => db.prepare('SELECT error FROM card_styles WHERE user_id = ?').get(id)?.error ?? undefined;
 main.get('/browse', (req, res) => {
   const sort = SORTS[req.query.sort] ? req.query.sort : 'updated';
   const search = String(req.query.q || '').trim().toLowerCase().slice(0, 50);
   // part of a site name or tag; instr, not LIKE, so % and _ in the search are plain characters
-  const where = `${listed()}${search ? ' AND (instr(username, @search) OR instr(tags, @search))' : ''}`;
+  const where = `${listedWhere()}${search ? ' AND (instr(username, @search) OR instr(tags, @search))' : ''}`;
   const total = db.prepare(`SELECT COUNT(*) n FROM users WHERE ${where}`).get({ search }).n;
   const pages = Math.max(1, Math.ceil(total / 24));
   const page = Math.min(pages, Math.max(1, parseInt(req.query.page, 10) || 1));
   const rows = db.prepare(`${WITH_FOLLOWERS} WHERE ${where} ORDER BY ${SORTS[sort]} LIMIT 24 OFFSET @offset`).all({ offset: (page - 1) * 24, search }).map(hasShot);
   // member CSS changes whenever a card style is saved, so the page itself is never cached
-  res.set('Cache-Control', 'no-store').send(V.browse(req.ctx, { rows, page, pages, sort, q: search, cardCss: cardCssFor(rows) }));
+  res.set('Cache-Control', 'no-store').send(V.browse(req.ctx, { rows, page, pages, sort, q: search, cardCss: cards.cssFor(rows) }));
 });
 function showProfile(req, res, name, m, status = 200) {
-  const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${LIVE}`).get(String(name).toLowerCase());
+  const p = db.prepare(`${WITH_FOLLOWERS} WHERE u.username = ? AND ${ONLINE}`).get(String(name).toLowerCase());
   if (!p) {
-    const to = renamedTo(String(name).toLowerCase());
+    const to = names.renamedTo(String(name).toLowerCase());
     if (to) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}`);
     return res.status(404).send(V.notices.noSuchSite(req.ctx));
   }
   const me = req.ctx.user;
-  const viewer = me ? me.id : 0;
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
   res.status(status).send(V.profile(req.ctx, m, {
     p: hasShot(p),
-    following: !!(me && db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?').get(me.id, p.id)),
-    blocking: !!me && blocked(me.id, p.id),
+    following: social.isFollowing(me, p),
+    blocking: social.blocking(me, p),
     login: me && loginOf(me),
-    comments: commentPage(req, 'c.user_id = @owner AND c.event_id IS NULL', { owner: p.id, viewer }, 'cpage'),
-    events: withSocial(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), viewer),
-    followers: followPage(req, 'follower_id', 'followed_id', p.id, 'fpage'),
-    follows: followPage(req, 'followed_id', 'follower_id', p.id, 'gpage'),
+    comments: social.comments(me, { owner: p, ev: null }, req.query.cpage),
+    events: social.details(db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 15').all(p.id), me),
+    followers: social.follows(p, 'followers', req.query.fpage),
+    follows: social.follows(p, 'following', req.query.gpage),
   }));
 }
 // only the owner sees ?ok= notices, so a crafted link cannot show visitors a fake one
@@ -576,136 +501,61 @@ main.post('/follow', (req, res) => {
   const me = req.ctx.user;
   if (!me) return res.redirect('/login');
   const target = q.userByName.get(String(req.body.site || '').toLowerCase());
-  if (!target || !target.verified || target.banned || target.id === me.id || me.banned) return res.redirect('/browse');
-  if (req.body.action === 'unfollow') db.prepare('DELETE FROM follows WHERE follower_id = ? AND followed_id = ?').run(me.id, target.id);
-  else if (!blocked(target.id, me.id) && !blocked(me.id, target.id) && U.limit(`follow:${me.id}`, 60, 3600000)) {
-    if (db.prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at) VALUES (?,?,?)').run(me.id, target.id, now()).changes) notify(target, me, 'follow');
-  }
-  res.redirect(`/site/${target.username}`);
+  const r = target && (req.body.action === 'unfollow' ? social.unfollow(me, target) : social.follow(me, target));
+  res.redirect(!r || r === 'gone' ? '/browse' : `/site/${target.username}`);
 });
 
-// ----- comments, likes, blocks, notifications -----
-const blocked = (blocker, who) => !!db.prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?').get(blocker, who);
-// a comment or like is hidden when the member whose space it is, or the one looking (@viewer), blocked its author
-const unblocked = (col, owner) => `${col} NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = ${owner} OR blocker_id = @viewer)`;
-const PER_PAGE = 50;
+// ----- comments, likes, blocks, notifications (src/social.js) -----
 // the page asked for in ?<key>=, kept within the pages there are
-const pageOf = (req, total, key = 'page') => {
-  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
-  return { page: Math.min(pages, Math.max(1, parseInt(req.query[key], 10) || 1)), pages };
-};
-const COMMENTS = 'FROM comments c JOIN users u ON u.id = c.author_id WHERE';
-// one page of the comments matching `where`, newest first, without those from banned or blocked members
-function commentPage(req, where, at, key) {
-  const filter = `${where} AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}`;
-  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${COMMENTS} ${filter}`).get(at).n, key);
-  return { rows: db.prepare(`SELECT c.*, u.username ${COMMENTS} ${filter} ORDER BY c.id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(at), page, pages };
-}
-// one page of the members on the `who` side of a site's follows, newest first
-function followPage(req, who, side, id, key) {
-  const from = `FROM follows f JOIN users u ON u.id = f.${who} WHERE f.${side} = ? AND ${LIVE}`;
-  const { page, pages } = pageOf(req, db.prepare(`SELECT COUNT(*) n ${from}`).get(id).n, key);
-  return { rows: db.prepare(`SELECT u.username ${from} ORDER BY f.created_at DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(id), page, pages };
-}
-const PREVIEW = 5; // comments shown under each update on the feed and profile; the update's own page has them all
-// feed events with their newest comments and comment count, like count, and whether the viewer liked them
-function withSocial(events, viewer) {
-  const at = { ids: JSON.stringify(events.map((e) => e.id)), viewer };
-  const comments = db.prepare(`SELECT * FROM (SELECT c.*, u.username, ROW_NUMBER() OVER (PARTITION BY c.event_id ORDER BY c.id DESC) rn, COUNT(*) OVER (PARTITION BY c.event_id) total
-    ${COMMENTS} c.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('c.author_id', 'c.user_id')}) WHERE rn <= ${PREVIEW} ORDER BY id`).all(at);
-  const likes = db.prepare(`SELECT l.event_id, COUNT(*) n, MAX(l.user_id = @viewer) mine FROM likes l JOIN events e ON e.id = l.event_id JOIN users u ON u.id = l.user_id
-    WHERE l.event_id IN (SELECT value FROM json_each(@ids)) AND ${LIVE} AND ${unblocked('l.user_id', 'e.user_id')} GROUP BY l.event_id`).all(at);
-  return events.map((e) => {
-    const l = likes.find((x) => x.event_id === e.id);
-    const mine = comments.filter((c) => c.event_id === e.id);
-    return { ...e, comments: mine, commentCount: mine.length ? mine[0].total : 0, likes: l ? l.n : 0, liked: !!(l && l.mine) };
-  });
-}
-// a member's notifications, worked out from the follows, comments and likes themselves, so deletes and blocks apply at once
-const notes = (user, cols, since = 0, tail = '') => db.prepare(`SELECT ${cols} FROM (
-    SELECT 'follow' kind, follower_id actor, NULL event_id, NULL comment_id, '' body, created_at FROM follows WHERE followed_id = @me
-    UNION ALL SELECT 'comment', author_id, event_id, id, body, created_at FROM comments WHERE user_id = @me
-    UNION ALL SELECT 'like', l.user_id, l.event_id, NULL, '', l.created_at FROM likes l JOIN events e ON e.id = l.event_id WHERE e.user_id = @me
-  ) n JOIN users u ON u.id = n.actor
-  WHERE ${LIVE} AND n.actor != @me AND n.actor NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = @me) AND n.created_at > @since ${tail}`).bind({ me: user.id, since });
-const NOTE_KINDS = ['follow', 'comment', 'like'];
-const NOTE_TEXT = { follow: 'started following you', comment: 'commented on your site', like: 'liked your update' };
-// the optional email for one kind of notification; capped like guestbook mail so a burst can't flood the inbox
-function notify(owner, actor, kind, extra = '') {
-  if (owner.id === actor.id || !owner.note_mail.split(' ').includes(kind) || !U.limit(`notemail:${owner.id}`, 10, 3600000)) return;
-  sendMail(loginOf(owner).email, `${actor.username} ${NOTE_TEXT[kind]} on ${cfg.SITE_NAME}`,
-    `${actor.username} ${NOTE_TEXT[kind]}.${extra ? `\n\n${extra}` : ''}\n\nSee your notifications, or change which ones we email you about: ${cfg.BASE_URL}/notifications`);
-}
+const pageOf = (req, total, key = 'page') => U.pageOf(total, req.query[key]);
 // a comment or like lands back on the page of ours it was made from, never on another site
 const BACK = /^\/(feed|notifications|site\/[a-z0-9-]+(\/update\/\d+)?)$/;
 const backTo = (req, owner) => (BACK.test(String(req.body.back || '')) ? req.body.back : `/site/${owner.username}`);
-// the event a comment or like is about, with its site's owner; null unless both are live
-const eventOwner = (id) => {
-  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(Number(id) || 0);
-  const owner = ev && q.userById.get(ev.user_id);
-  return owner && owner.verified && !owner.banned ? { ev, owner } : null;
-};
 main.post('/comment', (req, res) => {
   const me = req.ctx.user;
   if (!me) return res.redirect('/login');
-  const on = req.body.event ? eventOwner(req.body.event) : null;
-  const owner = req.body.event ? on && on.owner : q.userByName.get(String(req.body.site || '').toLowerCase());
-  if (!owner || !owner.verified || owner.banned || me.banned) return res.redirect('/browse');
+  const on = social.target(req.body);
+  if (!on || me.banned) return res.redirect('/browse');
   const body = String(req.body.body || '').trim().slice(0, 500);
-  if (req.body.website || !body) return res.redirect(backTo(req, owner)); // bot filled the hidden field, or nothing written
-  if (!U.limit(`comment:${req.ip}`, 3, 600000)) return res.status(429).send(V.notices.tooManyComments(req.ctx));
-  if (!blocked(owner.id, me.id)) { // blocked: look like success
-    db.prepare('INSERT INTO comments (user_id, author_id, event_id, body, created_at) VALUES (?,?,?,?,?)').run(owner.id, me.id, on ? on.ev.id : null, body, now());
-    notify(owner, me, 'comment', body);
-  }
-  res.redirect(backTo(req, owner));
+  if (req.body.website || !body) return res.redirect(backTo(req, on.owner)); // bot filled the hidden field, or nothing written
+  if (social.comment(me, on, body, { ip: req.ip }) === 'limited') return res.status(429).send(V.notices.tooManyComments(req.ctx));
+  res.redirect(backTo(req, on.owner));
 });
-// the member whose profile or update it is can delete any comment there
 main.post('/comment/delete', auth, (req, res) => {
-  db.prepare('DELETE FROM comments WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  social.deleteComment(req.ctx.user, req.body.id);
   res.redirect(backTo(req, req.ctx.user));
 });
 main.post('/like', (req, res) => {
   const me = req.ctx.user;
   if (!me) return res.redirect('/login');
-  const on = eventOwner(req.body.event);
+  const on = social.target({ event: req.body.event || 0 });
   if (!on || me.banned) return res.redirect('/feed');
-  if (req.body.action === 'unlike') db.prepare('DELETE FROM likes WHERE event_id = ? AND user_id = ?').run(on.ev.id, me.id);
-  else if (!blocked(on.owner.id, me.id) && U.limit(`like:${me.id}`, 60, 3600000)) {
-    if (db.prepare('INSERT OR IGNORE INTO likes (event_id, user_id, created_at) VALUES (?,?,?)').run(on.ev.id, me.id, now()).changes) notify(on.owner, me, 'like');
-  }
+  if (req.body.action === 'unlike') social.unlike(me, on);
+  else social.like(me, on);
   res.redirect(backTo(req, on.owner));
 });
-// blocking hides the other member's comments and likes and stops new ones; follows between the two end
 main.post('/block', auth, (req, res) => {
   const me = req.ctx.user;
   const target = q.userByName.get(String(req.body.site || '').toLowerCase());
   if (!target || target.id === me.id) return res.redirect('/browse');
-  if (req.body.action === 'unblock') db.prepare('DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?').run(me.id, target.id);
-  else {
-    db.transaction(() => {
-      db.prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at) VALUES (?,?,?)').run(me.id, target.id, now());
-      db.prepare('DELETE FROM follows WHERE (follower_id = @a AND followed_id = @b) OR (follower_id = @b AND followed_id = @a)').run({ a: me.id, b: target.id });
-    })();
-  }
+  if (req.body.action === 'unblock') social.unblock(me, target);
+  else social.block(me, target);
   res.redirect(`/site/${target.username}`);
 });
 // one update with every comment on it, a page at a time
 main.get('/site/:name/update/:id', (req, res) => {
-  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${ONLINE}`).get(String(req.params.name).toLowerCase());
   const ev = p && db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(Number(req.params.id) || 0, p.id);
   if (!ev) return res.status(404).send(V.notices.updateGone(req.ctx));
-  const viewer = req.ctx.user ? req.ctx.user.id : 0;
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
-  res.send(V.update(req.ctx, { p, e: withSocial([ev], viewer)[0], comments: commentPage(req, 'c.event_id = @ev', { ev: ev.id, viewer }) }));
+  res.send(V.update(req.ctx, { p, e: social.details([ev], req.ctx.user)[0], comments: social.comments(req.ctx.user, { owner: p, ev }, req.query.page) }));
 });
 // the newest page marks everything read; older pages carry ?since= so they still show what was new on arrival
 main.get('/notifications', auth, (req, res) => {
   const user = req.ctx.user;
-  const { page, pages } = pageOf(req, notes(user, 'COUNT(*) n').get().n);
-  const rows = notes(user, 'n.*, u.username', 0, `ORDER BY n.created_at DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all();
+  const { rows, page, pages } = social.notifications(user, req.query.page);
   const seenAt = req.query.since !== undefined ? Number(req.query.since) || 0 : user.notes_seen_at;
-  if (page === 1) db.prepare('UPDATE users SET notes_seen_at = ? WHERE id = ?').run(now(), user.id);
+  if (page === 1) social.seen(user);
   res.send(V.notifications(page === 1 ? { ...req.ctx, unread: 0 } : req.ctx, { rows, page, pages, seenAt }));
 });
 main.post('/notifications/settings', auth, (req, res) => {
@@ -717,21 +567,20 @@ main.post('/notifications/settings', auth, (req, res) => {
 });
 main.get('/feed', (req, res) => {
   if (!req.ctx.user) return res.redirect('/login');
-  const events = db.prepare(`SELECT e.*, u.username, u.tagline FROM events e JOIN users u ON u.id = e.user_id
-    WHERE e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND u.verified = 1 AND u.banned = 0 AND u.hidden = 0 ORDER BY e.id DESC LIMIT 100`).all(req.ctx.user.id).map(hasShot);
-  res.send(V.feed(req.ctx, { events: withSocial(events, req.ctx.user.id), count: db.prepare('SELECT COUNT(*) n FROM follows WHERE follower_id = ?').get(req.ctx.user.id).n }));
+  const { events, count } = social.feed(req.ctx.user);
+  res.send(V.feed(req.ctx, { events: events.map(hasShot), count }));
 });
 // Atom feeds: one per site (hidden sites too, like their profile), and the recently updated list without hidden or new sites
 const atom = (res, feed) => res.set('Cache-Control', 'public, max-age=300').type('application/atom+xml').send(V.atom(cfg, feed));
 main.get('/feed.xml', (req, res) => atom(res, {
   title: `${cfg.SITE_NAME}: recently updated`, path: '/feed.xml', link: `${cfg.BASE_URL}/browse`,
   events: db.prepare(`SELECT e.*, u.username FROM events e JOIN users u ON u.id = e.user_id
-    WHERE e.kind = 'update' AND e.user_id IN (SELECT id FROM users WHERE ${listed()}) ORDER BY e.id DESC LIMIT 50`).all(),
+    WHERE e.kind = 'update' AND e.user_id IN (SELECT id FROM users WHERE ${listedWhere()}) ORDER BY e.id DESC LIMIT 50`).all(),
 }));
 main.get('/site/:name/feed.xml', (req, res) => {
-  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${LIVE}`).get(String(req.params.name).toLowerCase());
+  const p = db.prepare(`SELECT * FROM users WHERE username = ? AND ${ONLINE}`).get(String(req.params.name).toLowerCase());
   if (!p) {
-    const to = renamedTo(String(req.params.name).toLowerCase());
+    const to = names.renamedTo(String(req.params.name).toLowerCase());
     return to ? res.set('Cache-Control', 'public, max-age=86400').redirect(301, `/site/${to}/feed.xml`) : res.sendStatus(404);
   }
   if (p.hidden) res.set('X-Robots-Tag', 'noindex');
@@ -740,16 +589,16 @@ main.get('/site/:name/feed.xml', (req, res) => {
     events: db.prepare('SELECT *, ? AS username FROM events WHERE user_id = ? ORDER BY id DESC LIMIT 30').all(p.username, p.id),
   });
 });
-const inRing = () => `${listed()} AND webring = 1`;
+const inRing = () => `${listedWhere()} AND webring = 1`;
 const randomSite = (where) => (req, res) => {
   const r = db.prepare(`SELECT username FROM users WHERE ${where()} ORDER BY RANDOM() LIMIT 1`).get();
   res.redirect(r ? cfg.siteUrl(r.username) : '/');
 };
-main.get('/random', randomSite(listed));
+main.get('/random', randomSite(listedWhere));
 main.get('/webring/random', randomSite(inRing));
 const webring = (next) => (req, res) => {
   const fromName = String(req.query.from || '').toLowerCase();
-  const from = q.userByName.get(fromName) || q.userByName.get(renamedTo(fromName) || ''); // old webring snippets still name the site's old name
+  const from = q.userByName.get(fromName) || q.userByName.get(names.renamedTo(fromName) || ''); // old webring snippets still name the site's old name
   const id = from ? from.id : 0;
   const ring = inRing();
   const r = next
@@ -782,7 +631,7 @@ main.post('/signup', async (req, res) => {
   if (!validEmail(email)) return fail('That email address does not look right.');
   if (password.length < 10 || password.length > 200) return fail('Use a password with at least 10 characters.');
   if (!req.body.agree) return fail('You need to be 13 or older and accept the rules.');
-  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
+  if (names.taken(username)) return fail('That site name is taken.');
   if (q.userByEmail.get(email)) return fail('That email already has a site. Log in or reset your password.');
   if (!(await humanCheck(req))) return fail('The "are you human" check did not pass. Try again.');
   const pwHash = await U.hashPw(password);
@@ -800,7 +649,7 @@ main.post('/signup', async (req, res) => {
   try {
     await files.create(q.userById.get(id), starters.render(starter, username, cfg));
   } catch {
-    try { logins.remove(q.userById.get(id)); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
+    try { logins.remove(q.userById.get(id), { hold: false }); } catch { /* roll the row back, but a folder that refuses to delete must not crash the signup too */ }
     return fail('Something went wrong making your site. Try again.', 500);
   }
   await sendMail(email, `Confirm your ${cfg.SITE_NAME} site`,
@@ -844,19 +693,19 @@ main.post('/login', async (req, res) => {
 // the second login step: the password was right, and the token says for whom, until a code from their app or a recovery code matches
 main.post('/login/2fa', (req, res) => {
   const token = String(req.body.token || '');
-  const row = db.prepare("SELECT user_id FROM tokens WHERE token_hash = ? AND kind = 'login2fa' AND expires >= ?").get(U.sha(token), now());
-  if (!row) return res.status(400).send(V.notices.loginTimedOut(req.ctx));
-  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login2fa:${row.user_id}`, 10, 900000)) {
+  const user = peekToken(token, 'login2fa');
+  if (!user) return res.status(400).send(V.notices.loginTimedOut(req.ctx));
+  if (!U.limit(`login:${req.ip}`, 20, 900000) || !U.limit(`login2fa:${user.id}`, 10, 900000)) {
     return res.status(429).send(V.login2fa(req.ctx, { err: 'Too many attempts. Wait 15 minutes and try again.' }, token));
   }
-  if (!useCode(q.userById.get(row.user_id), req.body.code)) return res.status(401).send(V.login2fa(req.ctx, { err: 'That code is not right. Codes change every 30 seconds.' }, token));
+  if (!useCode(user, req.body.code)) return res.status(401).send(V.login2fa(req.ctx, { err: 'That code is not right. Codes change every 30 seconds.' }, token));
   if (!useToken(token, 'login2fa')) return res.redirect('/login');
-  startSession(res, row.user_id);
+  startSession(res, user.id);
   res.redirect('/dashboard');
 });
 main.post('/logout', (req, res) => {
-  if (req.sessionHash) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
-  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  if (req.session) sessions.end(req.session);
+  clearSession(res);
   res.redirect('/');
 });
 main.get('/forgot', (req, res) => res.send(V.forgot(req.ctx)));
@@ -873,13 +722,13 @@ main.post('/reset', async (req, res) => {
   if (password.length < 10 || password.length > 200) return res.status(400).send(V.reset(req.ctx, { err: 'Use a password with at least 10 characters.' }, String(req.body.token || '')));
   const expired = () => res.status(400).send(V.notices.resetLinkExpired(req.ctx));
   if (!U.limit(`reset:${req.ip}`, 10, 3600000)) return res.status(429).send(V.notices.tooManyResets(req.ctx));
-  if (!tokenLive(req.body.token, 'reset')) return expired(); // hashing costs real time, so only for a link that works
+  if (!peekToken(req.body.token, 'reset')) return expired(); // hashing costs real time, so only for a link that works
   const pwHash = await U.hashPw(password); // before the token is spent, so nothing else can run between spending it and using it
   const user = useToken(req.body.token, 'reset');
   if (!user) return expired();
   db.prepare("UPDATE users SET pw_hash = ?, verified = 1 WHERE id = ?").run(pwHash, user.id);
-  logins.revokeApiKeys(user); // a reset may follow a break-in, so the API keys of all its sites go too
-  logins.endSessions(user);
+  sessions.revokeApiKeys(user); // a reset may follow a break-in, so the API keys of all its sites go too
+  sessions.endSessions(user);
   // the reset link proves the email only; with two-factor on, logging in still takes a code
   if (user.totp_secret) return res.send(V.notices.passwordSaved(req.ctx));
   startSession(res, user.id);
@@ -895,7 +744,7 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cardError(user.id), cardCleared: !user.banned && !!cardNote(user.id), sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: listing.isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cards.of(user).error, cardCleared: !user.banned && !!cards.of(user).note, sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
 }
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -918,9 +767,9 @@ main.post('/dashboard/upload', auth, canEdit, uploadBudget, (req, res, next) => 
 async function handleUpload(req, res, err) {
   const json = req.accepts(['html', 'json']) === 'json';
   const fail = (msg, code) => (json ? res.status(code).json({ error: msg }) : showDashboard(req, res, { err: msg }, code));
-  if (!csrfOk(req)) return fail('Form expired. Reload the page and try again.', 403);
-  // the body can take a long time to arrive; a ban, reset or deletion meanwhile must stop the write
-  if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
+  const body = bodyCheck(req);
+  if (body === 'csrf') return fail('Form expired. Reload the page and try again.', 403);
+  if (body === 'signedOut') return signedOut(req, res);
   if (err) return fail(err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time.', 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
   if (dir === null) return fail('That folder name is not allowed.', 400);
@@ -928,7 +777,7 @@ async function handleUpload(req, res, err) {
   if (req.body.shrink === '1') {
     for (const f of ups) f.size = await U.shrinkImage(f.path, f.name);
     // the shrinking took a while; a ban, reset or deletion meanwhile must still stop the write
-    if (!stillCurrent(req, req.ctx.user)) return json ? res.status(403).json({ error: 'You were signed out. Sign in and try again.' }) : res.redirect('/login');
+    if (!req.session.current()) return signedOut(req, res);
   }
   const { saved, skipped } = files.writeMany(req.ctx.user, dir, ups);
   if (json) return res.json({ saved: saved.length, skipped });
@@ -939,7 +788,9 @@ async function handleUpload(req, res, err) {
 const zipUpload = multer({ storage: tmpStorage, limits: { fileSize: cfg.ZIP_MAX_MB * 1048576, files: 1 } }).single('zip');
 main.post('/dashboard/import', auth, canEdit, tempBudget((req) => (cfg.ZIP_MAX_MB + limitsFor(req.ctx.user).quotaMB) * 1048576), (req, res, next) => zipUpload(req, res, (err) => importZip(req, res, err).catch(next).finally(() => dropTemp([req.file]))));
 async function importZip(req, res, err) {
-  if (!csrfOk(req)) return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
+  const body = bodyCheck(req);
+  if (body === 'csrf') return res.status(403).type('text').send('Form expired. Go back, reload and try again.');
+  if (body === 'signedOut') return res.redirect('/login');
   if (err) return showDashboard(req, res, { err: err.code === 'LIMIT_FILE_SIZE' ? `Zip files can be at most ${cfg.ZIP_MAX_MB} MB.` : 'Import failed. Send one .zip file.' }, 400);
   if (!req.file) return showDashboard(req, res, { err: 'Choose a .zip file to import.' }, 400);
   const dir = U.safeRel(req.body.dir || '', { file: false });
@@ -953,7 +804,7 @@ async function importZip(req, res, err) {
     return showDashboard(req, res, { err: `That zip file could not be read (${e.message}). Nothing was imported.` }, 400);
   }
   try {
-    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out, banned or deleted while the zip arrived
+    if (!req.session.current()) return res.redirect('/login'); // signed out, banned or deleted while the zip unpacked
     const { saved, skipped } = files.writeMany(req.ctx.user, dir, zip.files);
     showDashboard(req, res, savedMsg(saved, [...zip.skipped, ...skipped], 'Imported'));
   } finally {
@@ -974,7 +825,7 @@ main.get('/dashboard/download', auth, (req, res) => {
 
 // the member's pictures for the editor's image picker
 const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
-const siteImages = async (user, rel) => (/\.html?$/i.test(rel) ? (await U.listFiles(siteDir(user.username))).filter((f) => IMAGE.test(f)).sort() : []);
+const siteImages = async (user, rel) => (/\.html?$/i.test(rel) ? (await files.list(user)).filter((f) => IMAGE.test(f)).sort() : []);
 main.get('/dashboard/edit', auth, canEdit, async (req, res) => {
   const rel = U.safeRel(req.query.path);
   const full = rel && U.TEXT_EXT.has(U.extOf(rel)) && resolveIn(req.ctx.user, rel);
@@ -1011,7 +862,7 @@ main.get('/dashboard/style', auth, canEdit, async (req, res) => {
     page: index ?? starters.render(user.starter, user.username, cfg),
     tail: style.tail(css),
     offerLink: css !== null && index !== null && !style.hasLink(index),
-    images: (await U.listFiles(root)).filter((f) => style.IMAGE.test(f)).sort(), // for "use my own" background
+    images: (await files.list(user)).filter((f) => style.IMAGE.test(f)).sort(), // for "use my own" background
   }));
 });
 main.post('/dashboard/style', auth, canEdit, (req, res) => {
@@ -1024,43 +875,26 @@ main.post('/dashboard/style', auth, canEdit, (req, res) => {
   if (err) return res.redirect(`/dashboard/style?err=${encodeURIComponent(`Not saved: ${err}.`)}`);
   res.redirect(`/dashboard/style?ok=${encodeURIComponent('Saved puppypad.css.')}`);
 });
-// card style: a little CSS for the current Site's card on /browse, kept as typed plus the sanitized copy /browse emits
-const cardSource = (id) => db.prepare('SELECT source FROM card_styles WHERE user_id = ?').get(id)?.source ?? '';
-const cardNote = (id) => db.prepare('SELECT reason, created_at FROM card_notes WHERE user_id = ?').get(id);
-// save-and-check: the Site's card exactly as /browse renders it (same row, same cardCssFor), and why it is the Stock card when it is
+// card style: a little CSS for the current Site's card on /browse.
+// save-and-check: the Site's card exactly as /browse renders it (same row, same cssFor), and why it is the Stock card when it is
 const cardCheck = (user) => {
   const row = hasShot(db.prepare(`${WITH_FOLLOWERS} WHERE u.id = ?`).get(user.id));
-  const css = cardCssFor([row]);
-  const s = db.prepare('SELECT error, art FROM card_styles WHERE user_id = ?').get(user.id);
-  const failing = s && !s.error ? artOf(user.username, JSON.parse(s.art)).filter((f) => f.reason) : [];
-  const why = css ? null
-    : !s ? "you haven't saved a card style"
-      : s.error ? s.error.replace(/\.$/, '')
-        : failing.length ? "some of its art files don't work"
-          : 'it is waiting to be checked again'; // a copy from an older sanitizer, until the startup rebuild
-  return { row, css, why, failing, listed: isListed(user) };
+  return { row, ...cards.check(row), listed: listing.isListed(user) };
 };
 main.get('/dashboard/card', auth, canEdit, (req, res) => {
-  const stored = cardError(req.ctx.user.id);
-  res.send(V.cardStyle(req.ctx, msgOf(req) || (stored && { err: `${V.CARD_FAILS}: ${stored}` }), cardSource(req.ctx.user.id), cardNote(req.ctx.user.id), cardCheck(req.ctx.user)));
+  const c = cards.of(req.ctx.user);
+  res.send(V.cardStyle(req.ctx, msgOf(req) || (c.error && { err: `${V.CARD_FAILS}: ${c.error}` }), c.source, c.note, cardCheck(req.ctx.user)));
 });
 main.post('/dashboard/card', auth, canEdit, (req, res) => {
   const user = req.ctx.user;
   const source = String(req.body.css ?? '');
   if (!source.trim()) {
-    db.prepare('DELETE FROM card_styles WHERE user_id = ?').run(user.id);
-    db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
+    cards.clear(user);
     return res.redirect(`/dashboard/card?ok=${encodeURIComponent('Card style removed. Your card is the stock card again.')}`);
   }
-  const r = cardstyle.sanitize(source, user.id);
+  const { error } = cards.save(user, source);
   // rejected: the page again, not a redirect, so the typed text stays; the saved style stays live
-  if (r.error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${r.error}` }, source, cardNote(user.id), cardCheck(user)));
-  db.transaction(() => {
-    db.prepare('DELETE FROM card_notes WHERE user_id = ?').run(user.id);
-    db.prepare(`INSERT INTO card_styles (user_id, source, css, art, version, updated_at) VALUES (?,?,?,?,?,?)
-      ON CONFLICT(user_id) DO UPDATE SET source = excluded.source, css = excluded.css, error = NULL, art = excluded.art, version = excluded.version, updated_at = excluded.updated_at`)
-      .run(user.id, source, r.css, JSON.stringify(r.art), r.version, now());
-  })();
+  if (error) return res.status(400).send(V.cardStyle(req.ctx, { err: `Not saved: ${error}` }, source, cards.of(user).note, cardCheck(user)));
   // bad art still saves; the page's status line and art list say so, and the card shows as the Stock card until it's fixed
   res.redirect(`/dashboard/card?ok=${encodeURIComponent('Saved your card style.')}`);
 });
@@ -1141,14 +975,14 @@ main.post('/dashboard/history/restore', auth, canEdit, async (req, res) => {
   const back = (kind, text) => res.redirect(`/dashboard/history/file?path=${encodeURIComponent(rel || '')}&${kind}=${encodeURIComponent(text)}`);
   const old = full && await H.show(user.id, siteDir(user.username), req.body.v, rel);
   if (!old) return back('err', 'That version is not kept any more.');
-  if (!stillCurrent(req, user)) return res.redirect('/login'); // H.show can wait behind other history work for this site
+  if (!req.session.current()) return res.redirect('/login'); // H.show can wait behind other history work for this site
   const err = files.write(user, rel, old);
   if (err) return back('err', `Not restored: ${err}.`);
   back('ok', `Restored ${rel}. The version it replaced is kept in this list too.`);
 });
 main.get('/dashboard/links', auth, async (req, res) => {
   if (!U.limit(`links:${req.ctx.user.id}`, 30, 3600000)) return showDashboard(req, res, { err: 'That is a lot of link checks. Try again in an hour.' }, 429);
-  res.send(V.links(req.ctx, await U.brokenLinks(siteDir(req.ctx.user.username))));
+  res.send(V.links(req.ctx, await files.brokenLinks(req.ctx.user)));
 });
 const statsSince = () => new Date(now() - (STATS_DAYS - 1) * DAY).toISOString().slice(0, 10);
 main.get('/dashboard/stats', auth, (req, res) => {
@@ -1179,10 +1013,11 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   const owner = loginOf(req.ctx.user);
   const username = String(req.body.username || '').trim().toLowerCase();
   const fail = (e) => res.redirect(`/dashboard?err=${encodeURIComponent(e)}`);
+  if (owner.banned) return fail('A moderator took this login down, so it cannot make new sites.');
   if (!isSupporter(owner)) return fail('Several sites under one login is for supporters.');
   if (sitesOf(owner).length >= MAX_SITES) return fail(`You can have up to ${MAX_SITES} sites.`);
   if (!U.validUsername(username)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
-  if (q.userByName.get(username) || db.prepare('SELECT 1 FROM released_names WHERE name = ? AND released_at > ?').get(username, now() - NAME_HOLD)) return fail('That site name is taken.');
+  if (names.taken(username)) return fail('That site name is taken.');
   const t = now();
   try {
     db.prepare("INSERT INTO users (username, email, pw_hash, verified, login_id, signup_ip, starter, quota_mb, created_at, updated_at) VALUES (?,?,'!',1,?,?,?,?,?,?)")
@@ -1191,15 +1026,14 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
   try {
     await files.create(q.userByName.get(username), starters.render(starters.DEFAULT, username, cfg));
   } catch {
-    db.prepare('DELETE FROM users WHERE username = ?').run(username);
-    fs.rmSync(siteDir(username), { recursive: true, force: true });
+    logins.remove(q.userByName.get(username), { hold: false }); // never served, so its name is not held
     return fail('Something went wrong making that site. Nothing was changed.');
   }
   res.redirect(`/dashboard?ok=${encodeURIComponent(`Made ${username}. Switch to it from the list at the top.`)}`);
 });
 main.post('/dashboard/sites/switch', auth, (req, res) => {
   const target = sitesOf(req.ctx.user).find((s) => s.id === Number(req.body.id));
-  if (target) db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(target.id, req.sessionHash);
+  if (target) sessions.move(req.session, target.id);
   res.redirect('/dashboard');
 });
 main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
@@ -1207,56 +1041,55 @@ main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET hidden = ? WHERE id = ?').run(hide ? 1 : 0, req.ctx.user.id);
   res.redirect(`/dashboard?ok=${encodeURIComponent(hide ? 'Your site is hidden from browsing.' : 'Your site is back in the listings.')}`);
 });
-main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null, gbPage(req, req.ctx.user.id, true), lines(req.ctx.user.gb_ips))));
+main.get('/dashboard/guestbook', auth, (req, res) => res.send(V.guestbookAdmin(req.ctx, null, guestbook.page(req.ctx.user, req.query.page, { all: true }), guestbook.blocked(req.ctx.user))));
 // an entry's buttons send the page they were on, so the owner lands back there
 const gbBack = (req) => `/dashboard/guestbook${Number(req.body.page) > 1 ? `?page=${Number(req.body.page)}` : ''}`;
 main.post('/dashboard/guestbook/approve', auth, (req, res) => {
-  db.prepare('UPDATE guestbook SET approved = 1 WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  guestbook.approve(req.ctx.user, req.body.id);
   res.redirect(gbBack(req));
 });
 main.post('/dashboard/guestbook/notify', auth, (req, res) => {
-  // the digest restarts from now, so switching from instant never repeats entries already mailed
-  // saving the same setting again keeps entries already waiting for the digest
-  if (GB_NOTIFY.includes(req.body.notify)) {
-    // one ms back, so an entry signed in the same millisecond as the switch still makes the digest (it counts entries after gb_digest_at)
-    db.prepare('UPDATE users SET gb_digest_at = CASE WHEN gb_notify = @v THEN gb_digest_at ELSE @t END, gb_notify = @v WHERE id = @id').run({ v: req.body.notify, t: now() - 1, id: req.ctx.user.id });
-  }
+  guestbook.settings(req.ctx.user, { notify: req.body.notify });
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/settings', auth, (req, res) => {
-  db.prepare('UPDATE users SET gb_words = ? WHERE id = ?').run(lines(req.body.words).slice(0, 100).map((l) => l.slice(0, 60)).join('\n'), req.ctx.user.id);
+  guestbook.settings(req.ctx.user, { words: req.body.words });
   res.redirect('/dashboard/guestbook');
 });
-const setIps = (id, ips) => db.prepare('UPDATE users SET gb_ips = ? WHERE id = ?').run(ips.slice(-200).join('\n'), id);
 main.post('/dashboard/guestbook/block-ip', auth, (req, res) => {
-  const e = db.prepare('SELECT ip FROM guestbook WHERE id = ? AND user_id = ?').get(Number(req.body.id) || 0, req.ctx.user.id);
-  const ips = lines(req.ctx.user.gb_ips);
-  if (e && e.ip && !ips.includes(e.ip)) setIps(req.ctx.user.id, [...ips, e.ip]);
+  guestbook.blockIp(req.ctx.user, req.body.id);
   res.redirect(gbBack(req));
 });
 main.post('/dashboard/guestbook/unblock-ip', auth, (req, res) => {
-  setIps(req.ctx.user.id, lines(req.ctx.user.gb_ips).filter((ip) => ip !== req.body.ip));
+  guestbook.unblockIp(req.ctx.user, req.body.ip);
   res.redirect('/dashboard/guestbook');
 });
 main.post('/dashboard/guestbook/delete', auth, (req, res) => {
-  db.prepare('DELETE FROM guestbook WHERE id = ? AND user_id = ?').run(Number(req.body.id) || 0, req.ctx.user.id);
+  guestbook.remove(req.ctx.user, req.body.id);
   res.redirect(gbBack(req));
 });
+// the password step of a signed-in action (sessions.confirmPassword); answers the request itself unless it passed
+async function confirmed(req, res, action, fail, wrong) {
+  const r = await sessions.confirmPassword(req.session, action, req.body.password);
+  if (r === 'signedOut') res.redirect('/login');
+  else if (r === 'limited') await fail(action === 'email' ? 'Too many attempts. Try again in an hour.' : 'Too many attempts. Wait 15 minutes and try again.', 429);
+  else if (r === 'wrong') await fail(wrong, 400);
+  return r === 'ok';
+}
 main.post('/account/password', auth, async (req, res) => {
   const user = loginOf(req.ctx.user); // an extra site has no password, email or 2FA of its own
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const password = String(req.body.new_password || '');
-  if (!U.limit(`pwchange:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your current password is wrong. Nothing was changed.');
+  if (!(await confirmed(req, res, 'password', fail, 'Your current password is wrong. Nothing was changed.'))) return;
   if (password.length < 10 || password.length > 200) return fail('Use a new password with at least 10 characters.');
   if (password !== String(req.body.confirm_password || '')) return fail('The two new passwords do not match.');
   if (await U.checkPw(password, user.pw_hash)) return fail('Your new password has to be different from the current one.');
   const pwHash = await U.hashPw(password);
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!req.session.current({ takenDown: true })) return res.redirect('/login');
   db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(pwHash, user.id);
   // log out everywhere else and switch off the API keys, in case the old password leaked
-  logins.revokeApiKeys(user);
-  logins.endSessions(user, { except: req.sessionHash });
+  sessions.revokeApiKeys(user);
+  sessions.endSessions(user, { except: req.session });
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Password changed. Other devices are logged out.')}`);
 });
 // a new email takes effect only once its owner clicks the link sent there; the old address hears about it either way
@@ -1264,9 +1097,7 @@ main.post('/account/email', auth, async (req, res) => {
   const user = loginOf(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
   const email = String(req.body.email || '').trim().toLowerCase();
-  if (!U.limit(`emailchange:${user.id}`, 5, 3600000)) return fail('Too many attempts. Try again in an hour.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Nothing was changed.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'email', fail, 'Your password is wrong. Nothing was changed.'))) return;
   if (!validEmail(email)) return fail('That email address does not look right.');
   if (email === user.email) return fail('That is already your email address.');
   if (q.userByEmail.get(email)) return fail('That email already has a site.');
@@ -1288,23 +1119,10 @@ main.get('/account/email/confirm', (req, res) => {
 });
 // every session of this member ends, this one too: for a login left open on a computer that isn't theirs
 main.post('/account/logout-all', auth, (req, res) => {
-  logins.endSessions(req.ctx.user);
-  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  sessions.endSessions(req.ctx.user);
+  clearSession(res);
   res.send(V.notices.loggedOutEverywhere(req.ctx));
 });
-// a code from the member's app, used at most once (its step must be newer than the last one used), or one of their recovery codes
-function useCode(user, raw) {
-  if (!user || !user.totp_secret) return false;
-  const code = String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (/^\d{6}$/.test(code)) {
-    const step = U.totpStep(user.totp_secret, code);
-    return !!step && db.prepare('UPDATE users SET totp_step = ? WHERE id = ? AND totp_step < ?').run(step, user.id, step).changes === 1;
-  }
-  const codes = lines(user.totp_codes);
-  const left = codes.filter((h) => h !== U.sha(code));
-  return code.length === 10 && left.length < codes.length &&
-    db.prepare('UPDATE users SET totp_codes = ? WHERE id = ? AND totp_codes = ?').run(left.join('\n'), user.id, user.totp_codes).changes === 1;
-}
 const otpauth = (user, secret) => `otpauth://totp/${encodeURIComponent(`${cfg.SITE_NAME}:${user.username}`)}?secret=${secret}&issuer=${encodeURIComponent(cfg.SITE_NAME)}`;
 // the setup page: the key as text, a link and a QR code, all for the same otpauth address
 const twoFactorPage = async (req, m, secret) => {
@@ -1321,11 +1139,9 @@ main.post('/account/2fa/on', auth, async (req, res) => {
   const secret = String(req.body.secret || '');
   if (!/^[A-Z2-7]{32}$/.test(secret)) return res.redirect('/account/2fa');
   const fail = async (err, code = 400) => res.status(code).set('Cache-Control', 'no-store').send(await twoFactorPage(req, { err }, secret));
-  if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still off.');
+  if (!(await confirmed(req, res, '2fa', fail, 'Your password is wrong. Two-factor login is still off.'))) return;
   const step = U.totpStep(secret, String(req.body.code || '').replace(/\D/g, ''));
   if (!step) return fail('That code is not right. Check the key in your app and try the newest code.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
   const codes = Array.from({ length: 10 }, () => U.newTotpSecret().slice(0, 10).toLowerCase());
   if (!db.prepare("UPDATE users SET totp_secret = ?, totp_step = ?, totp_codes = ? WHERE id = ? AND totp_secret = ''").run(secret, step, codes.map(U.sha).join('\n'), user.id).changes) {
     return res.redirect(`/site/${user.username}#security`); // already on, from another tab
@@ -1335,9 +1151,7 @@ main.post('/account/2fa/on', auth, async (req, res) => {
 main.post('/account/2fa/off', auth, async (req, res) => {
   const user = loginOf(req.ctx.user);
   const fail = (err, code = 400) => showProfile(req, res, user.username, { err }, code);
-  if (!U.limit(`2fa:${user.id}`, 10, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), user.pw_hash))) return fail('Your password is wrong. Two-factor login is still on.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, '2fa', fail, 'Your password is wrong. Two-factor login is still on.'))) return;
   if (!useCode(q.userById.get(user.id), req.body.code)) return fail('That code is not right. Two-factor login is still on.');
   db.prepare("UPDATE users SET totp_secret = '', totp_step = 0, totp_codes = '' WHERE id = ?").run(user.id);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent('Two-factor login is off.')}#security`);
@@ -1351,41 +1165,27 @@ main.post('/dashboard/rename', auth, canEdit, async (req, res) => {
   if (wait > 0) return fail(`You can rename your site again in ${Math.ceil(wait / DAY)} day${Math.ceil(wait / DAY) === 1 ? '' : 's'}.`);
   if (name === user.username) return fail('That is already your site name.');
   if (!U.validUsername(name)) return fail('That site name is not available. Use 3-30 lowercase letters, numbers or hyphens.');
-  if (!U.limit(`rename:${user.id}`, 5, 900000)) return fail('Too many attempts. Wait 15 minutes and try again.', 429);
-  if (!(await U.checkPw(String(req.body.password || ''), loginOf(user).pw_hash))) return fail('Wrong password. Nothing was changed.');
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'rename', fail, 'Wrong password. Nothing was changed.'))) return;
   // a member may take back a name they gave up themselves
-  const held = db.prepare('SELECT user_id FROM released_names WHERE name = ? AND released_at > ?').get(name, now() - NAME_HOLD);
-  if (q.userByName.get(name) || (held && held.user_id !== user.id)) return fail('That site name is taken.');
-  const t = now();
-  try {
-    db.transaction(() => {
-      db.prepare('UPDATE users SET username = ?, renamed_at = ?, shot_dirty = 1 WHERE id = ?').run(name, t, user.id);
-      db.prepare('DELETE FROM released_names WHERE name = ?').run(name);
-      db.prepare('INSERT OR REPLACE INTO released_names (name, released_at, user_id) VALUES (?, ?, ?)').run(user.username, t, user.id);
-      db.prepare('UPDATE reports SET site = ? WHERE site = ?').run(name, user.username);
-      files.rename(user.username, name); // last, so a failed move rolls the rows back
-    })();
-  } catch (err) {
-    if (String(err && err.code).includes('CONSTRAINT')) return fail('That site name is taken.'); // a signup took it meanwhile
+  let renamed;
+  try { renamed = names.rename(user, name); } catch (err) {
     console.error('rename failed:', err.message);
     return fail('Something went wrong renaming your site. Nothing was changed.', 500);
   }
+  if (renamed === 'taken') return fail('That site name is taken.');
   res.redirect(`/dashboard?ok=${encodeURIComponent(`Your site is now ${cfg.siteUrl(name)}. The old address redirects there for 90 days. Pages that spell out the old address or name need editing by hand.`)}`);
 });
 main.post('/dashboard/delete-account', auth, async (req, res) => {
-  if (!U.limit(`delacct:${req.ctx.user.id}`, 5, 900000)) return showDashboard(req, res, { err: 'Too many attempts. Wait 15 minutes and try again.' }, 429);
-  if (!(await U.checkPw(String(req.body.password || ''), loginOf(req.ctx.user).pw_hash))) return showDashboard(req, res, { err: 'Wrong password. Nothing was deleted.' }, 400);
-  if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'delete', (err, code) => showDashboard(req, res, { err }, code), 'Wrong password. Nothing was deleted.'))) return;
   if (!isLogin(req.ctx.user)) { // an extra site goes alone, and the session moves back to the login
-    db.prepare('UPDATE sessions SET user_id = ? WHERE token_hash = ?').run(loginOf(req.ctx.user).id, req.sessionHash);
+    sessions.move(req.session, loginOf(req.ctx.user).id);
     logins.remove(req.ctx.user);
     return res.redirect(`/dashboard?ok=${encodeURIComponent(`Deleted ${req.ctx.user.username} and its files.`)}`);
   }
   if (billing && !(await billing.cancel(req.ctx.user))) return showDashboard(req, res, { err: 'Stripe could not be reached to cancel your supporter payments, so nothing was deleted. Try again in a little while.' }, 502);
-  if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out or banned while Stripe answered
+  if (!req.session.current({ takenDown: true })) return res.redirect('/login'); // signed out while Stripe answered (a take-down ends every session too)
   logins.remove(req.ctx.user);
-  res.clearCookie(COOKIE, { path: '/', secure: cfg.SECURE });
+  clearSession(res);
   res.send(V.notices.accountDeleted(req.ctx));
 });
 
@@ -1403,7 +1203,7 @@ main.post('/dashboard/support', auth, async (req, res) => {
   if (supportLimited(req, res)) return;
   try {
     const go = await billing.checkout(req.ctx.login, req.body.plan);
-    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login'); // signed out or banned while Stripe answered
+    if (!req.session.current({ takenDown: true })) return res.redirect('/login'); // signed out while Stripe answered (a take-down ends every session too)
     if (go.already) return supportPage(req, res, { err: 'You already support us. Manage it with the billing button below.' }, 409);
     res.redirect(303, go.url);
   } catch (e) {
@@ -1417,7 +1217,7 @@ main.post('/dashboard/support/portal', auth, async (req, res) => {
   if (supportLimited(req, res)) return;
   try {
     const url = await billing.portal(req.ctx.login);
-    if (!stillCurrent(req, req.ctx.user)) return res.redirect('/login');
+    if (!req.session.current({ takenDown: true })) return res.redirect('/login');
     if (!url) return res.redirect('/dashboard/support');
     res.redirect(303, url);
   } catch (e) {
@@ -1429,7 +1229,7 @@ main.post('/dashboard/support/portal', auth, async (req, res) => {
 // ----- widgets -----
 main.get('/dashboard/widgets', auth, async (req, res) => res.send(V.widgets(req.ctx, msgOf(req), {
   groups: W.groups(cfg, req.ctx.user, isSupporter(req.ctx.login)),
-  pages: (await U.listFiles(siteDir(req.ctx.user.username))).filter((f) => /\.html?$/i.test(f)).sort(),
+  pages: (await files.list(req.ctx.user)).filter((f) => /\.html?$/i.test(f)).sort(),
 })));
 main.post('/dashboard/widgets/status', auth, canEdit, (req, res) => {
   db.prepare('UPDATE users SET status = ? WHERE id = ?').run(W.cleanStatus(req.body.status), req.ctx.user.id);
@@ -1460,10 +1260,8 @@ main.post('/dashboard/api', auth, async (req, res) => {
     return show({ ok: 'Your API key is switched off.' });
   }
   if (user.banned) return res.redirect('/dashboard');
-  if (!U.limit(`apikey:${user.id}`, 5, 900000)) return show({ err: 'Too many attempts. Wait 15 minutes and try again.' }, '', 429);
   // a key outlives the session, so making one takes the password, as a rename does
-  if (!(await U.checkPw(String(req.body.password || ''), loginOf(user).pw_hash))) return show({ err: 'Wrong password. No key was made.' }, '', 400);
-  if (!stillCurrent(req, user)) return res.redirect('/login');
+  if (!(await confirmed(req, res, 'apikey', (err, code) => show({ err }, '', code), 'Wrong password. No key was made.'))) return;
   const key = `pp_${U.newToken()}`;
   db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(U.sha(key), user.id);
   show(null, key);
@@ -1471,24 +1269,21 @@ main.post('/dashboard/api', auth, async (req, res) => {
 api.use((req, res, next) => {
   req.headers.accept = 'application/json'; // so shared steps like tempBudget answer in JSON
   const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
-  const user = m && db.prepare("SELECT * FROM users WHERE api_key = ? AND api_key != ''").get(U.sha(m[1]));
+  const s = sessions.forKey(m && m[1]);
+  const user = s && s.user;
   if (!user || !user.verified) return res.status(401).json({ error: 'Missing or unknown API key. Make one at /dashboard/api.' });
   if (user.banned) return res.status(403).json({ error: 'A moderator took this site down. Editing is disabled.' });
   if (!U.limit(`api:${user.id}`, 120, 60000)) return res.status(429).set('Retry-After', '60').json({ error: 'Too many requests. Wait a minute.' });
+  req.session = s;
   req.ctx = { cfg, user, csrf: '', isAdmin: false, nonce: '' };
   next();
 });
-// an upload can take a while to arrive; a new key, a ban or a rename meanwhile stops the write
-const apiCurrent = (user) => {
-  const cur = q.userById.get(user.id);
-  return !!cur && cur.api_key === user.api_key && !cur.banned && cur.renamed_at === user.renamed_at;
-};
 api.get('/site', (req, res) => {
   const u = req.ctx.user;
   const used = files.usage(u.username);
   const lim = limitsFor(u);
   res.json({
-    name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: isListed(u), hidden: !!u.hidden,
+    name: u.username, url: `${cfg.siteUrl(u.username)}/`, profile: `${cfg.BASE_URL}/site/${u.username}`, listed: listing.isListed(u), hidden: !!u.hidden,
     used_bytes: used.total, quota_bytes: lim.quotaMB * 1048576, files: used.count, max_files: MAX_FILES, max_file_bytes: lim.fileMB * 1048576,
     bandwidth_today_bytes: bwToday(u), bandwidth_cap_bytes: cfg.BANDWIDTH_MB * 1048576, hits: u.hits, updated_at: new Date(u.updated_at).toISOString(),
     allowed_types: [...U.ALLOWED_EXT], any_type: lim.anyType,
@@ -1496,24 +1291,25 @@ api.get('/site', (req, res) => {
 });
 api.get('/files', async (req, res) => {
   const root = siteDir(req.ctx.user.username);
-  const files = [];
-  for (const f of (await U.listFiles(root)).sort()) {
+  const list = [];
+  for (const f of (await files.list(req.ctx.user)).sort()) {
     try {
       const full = path.join(root, f);
       const st = await fs.promises.stat(full);
       // the CLI compares hashes to skip unchanged files; mtimes mean nothing after a git checkout
       // shortcut: hashes the whole site on every listing (500 MB at most); cache by size and mtime if listings get slow
       const sha256 = crypto.createHash('sha256').update(await fs.promises.readFile(full)).digest('hex');
-      files.push({ path: f, size: st.size, modified: st.mtime.toISOString(), sha256 });
+      list.push({ path: f, size: st.size, modified: st.mtime.toISOString(), sha256 });
     } catch { /* deleted meanwhile */ }
   }
-  res.json({ files });
+  res.json({ files: list });
 });
 // preservePath keeps the folders in a filename like pics/cat.png, so one request can upload a whole tree
 api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err) => {
   try {
     if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? `Files can be at most ${limitsFor(req.ctx.user).fileMB} MB each.` : 'Upload failed. Send at most 20 files at a time, in a field called "files".' });
-    if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the upload.' });
+    // an upload can take a while to arrive; a new key, a ban or a rename meanwhile stops the write
+    if (bodyCheck(req) !== 'ok') return res.status(403).json({ error: 'The API key changed or the site was taken down during the upload.' });
     if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files. Send them in a field called "files".' });
     const dir = U.safeRel(req.body?.dir || '', { file: false });
     if (dir === null) return res.status(400).json({ error: 'That folder name is not allowed.' });
@@ -1523,7 +1319,7 @@ api.post('/upload', uploadBudget, (req, res, next) => uploadFiles(req, res, (err
 }, true));
 // one file as { path }, or up to 100 as { paths: [...] } with one history entry for the lot
 api.post('/delete', express.urlencoded({ extended: false }), express.json(), (req, res) => {
-  if (!apiCurrent(req.ctx.user)) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
+  if (!req.session.current()) return res.status(403).json({ error: 'The API key changed or the site was taken down during the request.' });
   const user = req.ctx.user;
   if (req.body?.paths !== undefined) {
     const list = [req.body.paths].flat();
@@ -1662,8 +1458,7 @@ main.post('/admin/card-clear', auth, adminOnly, (req, res) => {
   const reason = String(req.body.reason || '').trim().slice(0, 200);
   if (!reason) return showAdmin(req, res, { err: 'Give a reason; the member sees it.' });
   const cleared = db.transaction(() => {
-    if (!db.prepare('DELETE FROM card_styles WHERE user_id = ?').run(target.id).changes) return false;
-    db.prepare('INSERT OR REPLACE INTO card_notes (user_id, reason, created_at) VALUES (?,?,?)').run(target.id, reason, now());
+    if (!cards.clear(target, reason)) return false;
     adminLog(req, 'clear card style', target.username, reason);
     return true;
   })();
@@ -1681,23 +1476,16 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
     logins.remove(target, { inTransaction: (u) => adminLog(req, 'delete', u.username, reason) });
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
   }
-  const ban = action === 'ban' ? 1 : 0;
-  // the state change and its log entry commit together, so no take-down or restore goes unrecorded
-  // a login's ban covers its extra sites; an extra site's ban covers only itself, but either ends every session of the login.
-  // banned = 2 marks an extra site taken down only along with its login, so restoring the login brings back those
-  // and never one a moderator took down on its own (banned = 1)
-  const sites = isLogin(target) ? sitesOf(target).filter((s) => s.id === target.id || s.banned === (ban ? 0 : 2)) : [target];
-  db.transaction(() => {
-    for (const s of sites) {
-      db.prepare('UPDATE users SET banned = ?, ban_reason = ? WHERE id = ?').run(ban && s.id !== target.id ? 2 : ban, ban ? reason : null, s.id);
-      if (ban) db.prepare("UPDATE reports SET status = 'closed' WHERE site = ?").run(s.username);
-      else db.prepare('UPDATE users SET shot_dirty = 1 WHERE id = ?').run(s.id);
-    }
-    adminLog(req, ban ? 'take down' : 'restore', target.username, ban ? reason : '');
-    if (ban) logins.endSessions(target);
-  })();
-  if (ban) for (const s of sites) fs.rmSync(shotPath(s.username), { force: true });
-  showAdmin(req, res, { ok: ban ? `${target.username} is offline.` : `${target.username} is back online.` });
+  // the state change and its log entry commit together, so no take-down or restore goes unrecorded;
+  // either take-down ends every session of the login
+  if (action === 'ban') {
+    logins.takeDown(target, reason, { inTransaction: () => { adminLog(req, 'take down', target.username, reason); sessions.endSessions(target); } });
+    return showAdmin(req, res, { ok: `${target.username} is offline.` });
+  }
+  if (logins.restore(target, { inTransaction: () => adminLog(req, 'restore', target.username) }) === 'login-down') {
+    return showAdmin(req, res, { err: `${loginOf(target).username} is taken down, so ${target.username} stays down with it. Restore ${loginOf(target).username} first.` });
+  }
+  showAdmin(req, res, { ok: `${target.username} is back online.` });
 });
 
 main.use((req, res) => res.status(404).send(V.notices.notFound(req.ctx)));
@@ -1714,33 +1502,20 @@ upgrade.ensureDir(DATA_DIR);
 const housekeeping = () => {
   // an error here must not kill the process: this runs from a timer with nobody watching
   try {
-    db.prepare('DELETE FROM sessions WHERE expires < ?').run(now());
-    db.prepare('DELETE FROM tokens WHERE expires < ?').run(now());
-    db.prepare('DELETE FROM released_names WHERE released_at < ?').run(now() - NAME_HOLD);
-    db.prepare('UPDATE guestbook SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
+    sessions.sweep();
+    names.sweep();
+    guestbook.sweep();
     db.prepare('UPDATE reports SET ip = NULL WHERE ip IS NOT NULL AND created_at < ?').run(now() - IP_KEEP);
     const statsFrom = statsSince();
     db.prepare('DELETE FROM page_views WHERE day < ?').run(statsFrom);
     db.prepare('DELETE FROM referrers WHERE day < ?').run(statsFrom);
     for (const u of db.prepare('SELECT * FROM users WHERE verified = 0 AND created_at < ?').all(now() - 3 * DAY)) logins.remove(u);
-    // daily guestbook digests: at most one a day per site, only when someone signed since the last
-    for (const u of db.prepare(`SELECT * FROM users WHERE gb_notify = 'daily' AND gb_digest_at < ? AND ${LIVE}`).all(now() - DAY)) {
-      const cutoff = now();
-      const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
-      if (!rows.length) continue;
-      const held = rows.filter((e) => !e.approved).length;
-      sendMail(loginOf(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
-        `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(gbEntryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${gbMailFooter}`)
-        // only a digest that went out moves the cutoff, so a failed one is retried at the next hourly run
-        .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); });
-    }
+    guestbook.sendDigests(); // a failed digest is retried at the next hourly run
     // weekly digests of updates from followed sites, for members who opted in; a quiet week sends nothing
-    for (const u of db.prepare(`SELECT * FROM users WHERE digest = 1 AND digest_at < ? AND ${LIVE}`).all(now() - 7 * DAY)) {
+    for (const u of db.prepare(`SELECT * FROM users WHERE digest = 1 AND digest_at < ? AND ${ONLINE}`).all(now() - 7 * DAY)) {
       const cutoff = now();
       const done = () => db.prepare('UPDATE users SET digest_at = ? WHERE id = ?').run(cutoff, u.id);
-      const rows = db.prepare(`SELECT e.*, s.username FROM events e JOIN users s ON s.id = e.user_id
-        WHERE e.kind = 'update' AND e.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?) AND s.verified = 1 AND s.banned = 0 AND s.hidden = 0
-        AND e.created_at > ? AND e.created_at <= ? ORDER BY e.id DESC`).all(u.id, u.digest_at, cutoff);
+      const rows = social.digestFor(u, u.digest_at, cutoff);
       if (!rows.length) { done(); continue; }
       sendMail(loginOf(u).email, `This week on ${cfg.SITE_NAME}: ${rows.length} update${rows.length === 1 ? '' : 's'} from sites you follow`,
         `${rows.slice(0, 100).map((e) => `${e.username} ${V.eventText(e, (f) => f)}\n${cfg.siteUrl(e.username)}/`).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\nStop these emails: ${cfg.BASE_URL}/notifications`)
@@ -1761,7 +1536,6 @@ setInterval(sweepHistory, DAY).unref();
 
 module.exports = app; // tests import the app without starting a server
 app.housekeeping = housekeeping;
-app.rebuildCardStyles = rebuildCardStyles; // tests stand in for a restart after a sanitizer version bump
 app.setStripe = (client) => { billing = makeBilling(client); }; // tests bring an in-memory Stripe (test/fake-stripe.js)
 app.forgetUsage = files.forgetUsage; // for tests that put files on disk behind the app's back
 app.refreshUsage = files.refreshUsage;

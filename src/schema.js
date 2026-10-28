@@ -22,6 +22,33 @@ const STEPS = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_users_owner ON users(owner_id)');
     },
   },
+  { // 2: a guestbook's blocked addresses move from users.gb_ips lines to rows that expire (src/guestbook.js)
+    up(db) {
+      // made here rather than in src/db.js, so the step runs on any database that reaches it
+      db.exec(`CREATE TABLE IF NOT EXISTS guestbook_blocks (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        ip TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, ip))`);
+      // blocked before the upgrade: the 90 days count from now
+      const put = db.prepare('INSERT OR IGNORE INTO guestbook_blocks (user_id, ip, created_at) VALUES (?, ?, ?)');
+      for (const u of db.prepare("SELECT id, gb_ips FROM users WHERE gb_ips != ''").all()) {
+        for (const ip of u.gb_ips.split('\n').map((l) => l.trim()).filter(Boolean)) put.run(u.id, ip, Date.now());
+      }
+      db.exec("UPDATE users SET gb_ips = ''");
+    },
+    down(db) {
+      // the newest 200 per Site back as lines, oldest first, so an older release still blocks them
+      const back = db.prepare('UPDATE users SET gb_ips = ? WHERE id = ?');
+      for (const { user_id } of db.prepare('SELECT DISTINCT user_id FROM guestbook_blocks').all()) {
+        // not the expired ones the hourly sweep hasn't reached yet: an older release would keep them for good
+        const ips = db.prepare('SELECT ip FROM guestbook_blocks WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 200')
+          .all(user_id, Date.now() - 90 * 86400000).map((r) => r.ip);
+        back.run(ips.reverse().join('\n'), user_id);
+      }
+      db.exec('DELETE FROM guestbook_blocks'); // a later upgrade copies the lines again, unblocks made meanwhile included
+    },
+  },
 ];
 const SCHEMA = STEPS.length;
 const version = (db) => db.pragma('user_version', { simple: true });

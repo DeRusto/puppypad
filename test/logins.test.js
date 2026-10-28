@@ -21,6 +21,7 @@ old.close();
 
 const { db } = require('../src/db'); // starts the way the app does
 const { createLogins } = require('../src/logins');
+const { createNames } = require('../src/names');
 
 const cols = () => db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
 const indexes = () => db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users'").all().map((r) => r.name);
@@ -28,10 +29,14 @@ const version = () => db.pragma('user_version', { simple: true });
 const schemaCli = (...args) => execFileSync(process.execPath, [path.join(__dirname, '../src/schema.js'), ...args], { env: { ...process.env }, encoding: 'utf8' });
 
 const removed = [];
+const dropped = [];
 const logins = createLogins({
   cfg: { ADMIN_EMAILS: new Set(['boss@x.test']), QUOTA_MB: 1, MAX_FILE_MB: 1, SUPPORTER_QUOTA_MB: 3, SUPPORTER_MAX_FILE_MB: 2, HISTORY_DAYS: 30, SUPPORTER_HISTORY_DAYS: 365 },
   removeSite: (site) => removed.push(site.username),
+  dropShot: (site) => dropped.push(site.username),
+  holdName: (name) => names.hold(name),
 });
+const names = createNames({ files: { rename: () => {} } });
 
 let n = 0;
 const add = (fields = {}) => {
@@ -41,15 +46,12 @@ const add = (fields = {}) => {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(lastInsertRowid);
 };
 const extra = (login) => add({ login_id: login.id, email: `x${n + 1}@sites.invalid`, pw_hash: '!' });
-const session = (site) => { const t = `s${Math.random()}`; db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires) VALUES (?, ?, ?, ?)').run(t, site.id, 'c', Date.now() + 1e6); return t; };
-const pending = (site) => db.prepare("INSERT INTO tokens (token_hash, user_id, kind, expires) VALUES (?, ?, 'login2fa', ?)").run(`t${Math.random()}`, site.id, Date.now() + 1e6);
-const sessionsOf = (...sites) => sites.map((s) => db.prepare('SELECT COUNT(*) n FROM sessions WHERE user_id = ?').get(s.id).n);
 const row = (site) => db.prepare('SELECT * FROM users WHERE id = ?').get(site.id);
 
 test('starting the new code renames owner_id to login_id on an older database, keeping its links', () => {
   assert.ok(cols().includes('login_id'));
   assert.ok(!cols().includes('owner_id'));
-  assert.equal(version(), 1);
+  assert.equal(version(), 2);
   assert.ok(indexes().includes('idx_users_login'));
   assert.ok(!indexes().includes('idx_users_owner'));
   const oldExtra = db.prepare('SELECT * FROM users WHERE id = 2').get();
@@ -79,31 +81,6 @@ test('an extra site answers with its login: login, sites, supporter, admin and l
   assert.equal(logins.isAdmin(add({ email: 'boss2@x.test' })), false);
   db.prepare('UPDATE users SET verified = 0 WHERE id = ?').run(boss.id);
   assert.equal(logins.isAdmin(bossSite), false); // an unconfirmed address isn't proof
-});
-
-test('endSessions ends every session of the login and its pending two-factor logins, except the one kept', () => {
-  const login = add();
-  const site = extra(login);
-  const other = add();
-  const keep = session(site);
-  session(login);
-  session(other);
-  pending(login);
-  logins.endSessions(site, { except: keep });
-  assert.deepEqual(sessionsOf(login, site, other), [0, 1, 1]);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM tokens WHERE user_id = ? AND kind = 'login2fa'").get(login.id).n, 0);
-  logins.endSessions(login);
-  assert.deepEqual(sessionsOf(login, site, other), [0, 0, 1]);
-});
-
-test('revokeApiKeys switches off the keys of every site of the login and no other', () => {
-  const login = add();
-  const site = extra(login);
-  const other = add();
-  for (const [s, k] of [[login, 'k1'], [site, 'k2'], [other, 'k3']]) db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(k + n, s.id);
-  logins.revokeApiKeys(site);
-  assert.deepEqual([row(login).api_key, row(site).api_key], ['', '']);
-  assert.notEqual(row(other).api_key, '');
 });
 
 test('remove: an extra site goes alone; a login takes its sites, holds their names, and commits inTransaction with the rows', () => {
@@ -137,12 +114,75 @@ test('remove: an extra site goes alone; a login takes its sites, holds their nam
   const unconfirmed = add({ verified: 0 });
   logins.remove(unconfirmed);
   assert.equal(db.prepare('SELECT 1 FROM released_names WHERE name = ?').get(unconfirmed.username), undefined);
+
+  // hold: false, the rollback of a Site whose making failed, holds no name, its extra sites' neither
+  const rolled = add();
+  const rolledExtra = extra(rolled);
+  logins.remove(rolled, { hold: false });
+  assert.equal(names.taken(rolled.username), false);
+  assert.equal(names.taken(rolledExtra.username), false);
+});
+
+const report = (site) => db.prepare("INSERT INTO reports (site, reason, details, created_at) VALUES (?, 'Spam', 'x', 0)").run(site.username).lastInsertRowid;
+const reportStatus = (id) => db.prepare('SELECT status FROM reports WHERE id = ?').get(id).status;
+const banned = (...sites) => sites.map((s) => row(s).banned);
+
+test('takeDown: a login takes its Online extra sites down with it, closes their reports and drops their shots after commit', () => {
+  const login = add();
+  const a = extra(login);
+  const b = extra(login);
+  const r = report(a);
+  dropped.length = 0;
+  const seen = [];
+  logins.takeDown(login, 'spam', { inTransaction: (sites) => seen.push(...sites.map((s) => s.username)) });
+  assert.deepEqual(banned(login, a, b), [1, 2, 2]);
+  assert.equal(row(login).ban_reason, 'spam');
+  assert.equal(reportStatus(r), 'closed');
+  assert.deepEqual(seen.sort(), [login.username, a.username, b.username].sort());
+  assert.deepEqual(dropped.sort(), seen);
+
+  // a failing inTransaction leaves everything up and drops no shot
+  const c = add();
+  dropped.length = 0;
+  assert.throws(() => logins.takeDown(c, 'x', { inTransaction: () => { throw new Error('log failed'); } }));
+  assert.deepEqual(banned(c), [0]);
+  assert.deepEqual(dropped, []);
+});
+
+test('restore: a login brings back the extra sites that went down with it, and leaves one taken down on its own', () => {
+  const login = add();
+  const alone = extra(login);
+  const along = extra(login);
+  logins.takeDown(alone, 'phishing');
+  logins.takeDown(login, 'spam');
+  assert.deepEqual(banned(login, alone, along), [1, 1, 2]);
+  db.prepare('UPDATE users SET shot_dirty = 0 WHERE id IN (?, ?)').run(login.id, along.id);
+  const seen = [];
+  assert.equal(logins.restore(login, { inTransaction: (sites) => seen.push(...sites.map((s) => s.username)) }), 'ok');
+  assert.deepEqual(banned(login, alone, along), [0, 1, 0]);
+  assert.equal(row(alone).ban_reason, 'phishing');
+  assert.deepEqual([row(login).shot_dirty, row(along).shot_dirty], [1, 1]);
+  assert.deepEqual(seen.sort(), [login.username, along.username].sort());
+});
+
+test('restore refuses an extra site on its own while its login is taken down, changing nothing', () => {
+  const login = add();
+  const site = extra(login);
+  logins.takeDown(login, 'spam');
+  let called = false;
+  assert.equal(logins.restore(site, { inTransaction: () => { called = true; } }), 'login-down');
+  assert.deepEqual(banned(login, site), [1, 2]);
+  assert.equal(called, false);
+  logins.restore(login);
+  logins.takeDown(site, 'phishing');
+  assert.equal(logins.restore(site), 'ok'); // with the login up, it comes back alone
+  assert.deepEqual(banned(login, site), [0, 0]);
 });
 
 test('schema down 0 puts owner_id back for an older release, does nothing twice, and the new code re-applies it', () => {
   const login = add();
   const site = extra(login);
-  assert.match(schemaCli('down', '0'), /database schema 1 -> 0/);
+  assert.match(schemaCli('down', '0'), /database schema 2 -> 0/);
   assert.ok(cols().includes('owner_id'));
   assert.ok(!cols().includes('login_id'));
   assert.equal(version(), 0);
@@ -159,12 +199,12 @@ test('schema down 0 puts owner_id back for an older release, does nothing twice,
   // the newer app starting again (its src/db.js) moves the database forward
   execFileSync(process.execPath, ['-e', "require('./src/db')"], { cwd: path.join(__dirname, '..'), env: { ...process.env } });
   assert.ok(cols().includes('login_id'));
-  assert.equal(version(), 1);
+  assert.equal(version(), 2);
   assert.deepEqual(logins.sitesOf(site).map((s) => s.id), [login.id, site.id]);
 });
 
 test('schema.js refuses anything but down <n> and version', () => {
   assert.throws(() => schemaCli('down'), /usage/);
   assert.throws(() => schemaCli('up', '1'), /usage/);
-  assert.equal(schemaCli('version').trim(), '1');
+  assert.equal(schemaCli('version').trim(), '2');
 });
