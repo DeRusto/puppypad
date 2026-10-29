@@ -3,7 +3,7 @@
 // Every check goes through `net`, so tests stub DNS and HTTPS: txt(name) the TXT strings, addrs(name) the A and AAAA
 // addresses (CNAMEs followed), https(host) true once an HTTPS request to the host through Caddy gets an answer.
 const crypto = require('crypto');
-const net = require('net');
+const { isIP } = require('net');
 const url = require('url');
 const { db } = require('./db');
 const { DAY } = require('./util');
@@ -25,36 +25,36 @@ function normalise(input, baseHost) {
   let h = String(input ?? '').trim().toLowerCase();
   if (h.endsWith('.')) h = h.slice(0, -1);
   const bad = { err: 'Type just the domain name, like example.com or www.example.com.' };
-  if (!h || /[^\p{L}\p{N}.-]/u.test(h) || net.isIP(h)) return bad; // a scheme, port, path, *, space or IPv6 literal
+  if (!h || /[^\p{L}\p{N}.-]/u.test(h) || isIP(h)) return bad; // a scheme, port, path, *, space or IPv6 literal
   const a = url.domainToASCII(h); // also turns IPv4 spellings like 0x7f.1 into 127.0.0.1
   const labels = a.split('.');
-  if (!a || net.isIP(a) || labels.length < 2 || a.length > 253 || labels.some((l) => !l || l.length > 63)) return bad;
+  if (!a || isIP(a) || labels.length < 2 || a.length > 253 || labels.some((l) => !l || l.length > 63)) return bad;
   if (a === baseHost || a.endsWith(`.${baseHost}`)) return { err: `Addresses on ${baseHost} are ours already; pick a domain you own.` };
   return { host: a };
 }
 
 // cfg for the flag, base host and mail wording; logins (src/logins.js) for who supports; sendMail(to, subject, text)
-function createDomains({ cfg, logins, sendMail, net: dns }) {
+function createDomains({ cfg, logins, sendMail, net }) {
   const on = () => cfg.CUSTOM_DOMAINS;
   const byId = db.prepare('SELECT * FROM custom_domains WHERE id = ?');
-  const of = (site) => db.prepare('SELECT * FROM custom_domains WHERE site_id = ?').get(site.id);
+  const claimOf = (site) => db.prepare('SELECT * FROM custom_domains WHERE site_id = ?').get(site.id);
   const siteOf = (c) => db.prepare('SELECT * FROM users WHERE id = ?').get(c.site_id);
   const update = (c, fields) => db.prepare(`UPDATE custom_domains SET ${Object.keys(fields).map((k) => `${k} = @${k}`).join(', ')} WHERE id = @id`).run({ ...fields, id: c.id });
   const sub = (site) => cfg.subdomainHost(site.username);
   const mailTo = (c, subject, text) => {
     const site = siteOf(c);
-    return sendMail(logins.loginOf(site).email, `${subject}`, `${text}\n\nYour domain settings: ${cfg.BASE_URL}/dashboard`);
+    return sendMail(logins.loginOf(site).email, subject, `${text}\n\nYour domain settings: ${cfg.BASE_URL}/dashboard`);
   };
   const end = (c, reason, fields = {}) => update(c, { state: 'ended', end_reason: reason, ended_at: Date.now(), misses: 0, ...fields });
 
   // BASE_HOST's addresses as last looked up: what every address of a claim must be one of, and what the dashboard shows
-  let ours = [];
-  const refreshOurs = async () => { ours = await dns.addrs(cfg.BASE_HOST); return ours; };
+  let baseAddrs = [];
+  const refreshBaseAddrs = async () => { baseAddrs = await net.addrs(cfg.BASE_HOST); return baseAddrs; };
 
   // when a login that stopped supporting loses its claims; 0 while it supports
   const graceEnd = (site) => {
     if (logins.isSupporter(site)) return 0;
-    const c = of(site);
+    const c = claimOf(site);
     return logins.supporterUntil(logins.loginOf(site)) + GRACE_DAYS * DAY + (c ? c.grace_shift : 0);
   };
 
@@ -62,8 +62,8 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   function add(site, input) {
     if (!on() || !logins.isSupporter(site)) return { err: 'Custom domains are for supporters.' };
     if (site.banned) return { err: 'A moderator took this site down, so it cannot add a domain.' };
-    const had = of(site);
-    if (had && had.state !== 'ended') return { err: `This site already has ${had.host}. Remove it first.` };
+    const existing = claimOf(site);
+    if (existing && existing.state !== 'ended') return { err: `This site already has ${existing.host}. Remove it first.` };
     const { host, err } = normalise(input, cfg.BASE_HOST);
     if (err) return { err };
     if (db.prepare(`SELECT 1 FROM custom_domains WHERE host = ? AND state IN ${inList(CERTIFIED)}`).get(host)) return { err: `Another site already uses ${host}.` };
@@ -75,11 +75,11 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   }
   const remove = (site) => db.prepare('DELETE FROM custom_domains WHERE site_id = ?').run(site.id).changes > 0;
 
-  // the two DNS proofs: the TXT with the claim's proof, and every address one of ours (at least one)
+  // the two DNS proofs: the TXT with the claim's proof, and every address one of BASE_HOST's (at least one)
   async function checkDns(c) {
-    const txt = (await dns.txt(`_puppypad.${c.host}`)).includes(`puppypad-verify=${c.proof}`);
-    const addrs = await dns.addrs(c.host);
-    const mine = ours.length ? ours : await refreshOurs();
+    const txt = (await net.txt(`_puppypad.${c.host}`)).includes(`puppypad-verify=${c.proof}`);
+    const addrs = await net.addrs(c.host);
+    const mine = baseAddrs.length ? baseAddrs : await refreshBaseAddrs();
     const elsewhere = addrs.filter((a) => !mine.includes(a));
     const points = addrs.length > 0 && !elsewhere.length;
     const error = !txt ? 'TXT record not found' : !addrs.length ? `${c.host} has no A or AAAA record` : !points ? `${c.host} points at ${elsewhere.join(', ')}` : '';
@@ -88,7 +88,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
 
   // the HTTPS request that makes Caddy issue (or renew) the certificate; a verified claim goes live once it works
   async function goLive(c) {
-    const ok = await dns.https(c.host);
+    const ok = await net.https(c.host);
     const now = byId.get(c.id);
     if (!now || now.state !== 'verified') return; // removed or ended meanwhile
     update(c, ok ? { state: 'live', live_at: Date.now(), misses: 0, last_error: '', checked_at: Date.now() } : { last_error: HTTPS_ERROR, checked_at: Date.now() });
@@ -118,7 +118,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   async function recheck(c) {
     const p = await checkDns(c);
     if (p.error) return { c, txt: p.txt, points: p.points, error: p.error };
-    const ok = await dns.https(c.host);
+    const ok = await net.https(c.host);
     return { c, txt: true, points: true, error: ok ? '' : HTTPS_ERROR, httpsFailed: !ok };
   }
   function applyRecheck({ c, txt, points, error }, { mail = true } = {}) {
@@ -141,7 +141,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   // Check now: { the claim after the check }. A verified claim retries HTTPS at most hourly (Let's Encrypt allows 5 failures an hour).
   // A live or failing claim that passes is live again; one that fails only shows why, since misses are the daily check's to count
   async function check(site) {
-    const c = of(site);
+    const c = claimOf(site);
     if (!on() || !c) return c;
     if (c.state === 'pending') await verify(c);
     else if (c.state === 'verified' && c.checked_at < Date.now() - HOUR) await goLive(c);
@@ -150,12 +150,12 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
       if (!r.error) applyRecheck(r);
       else if (RECHECKED.includes(byId.get(c.id)?.state)) update(c, { last_error: r.error, txt_ok: +r.txt, addrs_ok: +r.points });
     }
-    return of(site);
+    return claimOf(site);
   }
 
   // A moderator ends the claim; the member is told why. The claim, or null when there was none to end
   function detach(site, reason) {
-    const c = of(site);
+    const c = claimOf(site);
     if (!c || c.state === 'ended') return null;
     end(c, 'moderator', { last_error: reason });
     mailTo(c, `A moderator removed ${c.host}`, `A moderator removed ${c.host} from ${site.username}: ${reason}. Your site is back at ${sub(site)}.`);
@@ -176,7 +176,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
       }
       return;
     }
-    await refreshOurs().catch(() => {});
+    await refreshBaseAddrs().catch(() => {});
     const active = (where = '') => db.prepare(`SELECT * FROM custom_domains WHERE state != 'ended' ${where} ORDER BY id`).all();
     for (const c of active()) {
       const site = siteOf(c);
@@ -226,7 +226,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   const siteFor = (host) => hostIn(host, ['live'])?.username; // the Site a request to this host is served as
   const reportTarget = (host) => hostIn(host, HELD);
   // the hosts of these Sites' claims that are not ended: what deleting them stops
-  const hostsOf = (sites) => sites.map(of).filter((c) => c && c.state !== 'ended').map((c) => c.host);
+  const hostsOf = (sites) => sites.map(claimOf).filter((c) => c && c.state !== 'ended').map((c) => c.host);
   // for /admin: claims by state, and the failing ones with why
   const summary = () => ({
     counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
@@ -235,7 +235,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   // the live custom host of the Site with this name
   const liveHost = (name) => (on() ? db.prepare("SELECT c.host FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE u.username = ? AND c.state = 'live'").get(String(name))?.host : undefined);
 
-  return { of, add, remove, check, detach, housekeeping, ask, siteFor, reportTarget, liveHost, graceEnd, hostsOf, summary, ours: () => ours, refreshOurs };
+  return { claimOf, add, remove, check, detach, housekeeping, ask, siteFor, reportTarget, liveHost, graceEnd, hostsOf, summary, baseAddrs: () => baseAddrs, refreshBaseAddrs };
 }
 
 module.exports = { normalise, createDomains, PENDING_DAYS, FAILING_DAYS, GRACE_DAYS, MISSES, day };

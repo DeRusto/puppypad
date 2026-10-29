@@ -65,7 +65,7 @@ async function live(s = site(), host = newHost()) {
   const c = claim(s, host);
   point(c);
   assert.equal((await domains.check(s)).state, 'live');
-  return { s, c: domains.of(s) };
+  return { s, c: domains.claimOf(s) };
 }
 // the Site's row as it is now
 const fresh = (s) => db.prepare('SELECT * FROM users WHERE id = ?').get(s.id);
@@ -83,7 +83,7 @@ test('tls-check approves a host only while its claim is verified or live', async
   assert.equal(domains.ask(c.host.toUpperCase()), true);
   world.https.set(c.host, true);
   await domains.housekeeping(); // the hourly retry of the HTTPS request
-  assert.equal(domains.of(s).state, 'live');
+  assert.equal(domains.claimOf(s).state, 'live');
   assert.equal(domains.ask(c.host), true);
   for (const no of ['192.0.2.1', '2001:db8::7', BASE, `pup1.${BASE}`, `a.b.${BASE}`, 'unknown.example', '']) assert.equal(domains.ask(no), false, no);
   // the flag off: nothing is approved
@@ -101,7 +101,7 @@ test('a pending claim says which record is missing until both are right', async 
   assert.equal(after.txt_ok, 1);
   assert.match(after.last_error, /points at 198\.51\.100\.20$/);
   world.addrs.set(c.host, OURS);
-  assert.equal((await domains.housekeeping(), domains.of(s).state), 'live'); // the hourly run checks pending claims too
+  assert.equal((await domains.housekeeping(), domains.claimOf(s).state), 'live'); // the hourly run checks pending claims too
 });
 
 test('three missed daily checks make a live claim failing, with an email at the first and the third; one pass makes it live', async () => {
@@ -111,33 +111,33 @@ test('three missed daily checks make a live claim failing, with an email at the 
   for (let i = 1; i <= 3; i++) {
     dueRecheck(c);
     await domains.housekeeping();
-    assert.equal(domains.of(s).misses, i);
-    assert.equal(domains.of(s).state, i < 3 ? 'live' : 'failing');
+    assert.equal(domains.claimOf(s).misses, i);
+    assert.equal(domains.claimOf(s).state, i < 3 ? 'live' : 'failing');
     assert.equal(domains.ask(c.host), i < 3);
   }
-  assert.match(domains.of(s).last_error, /points at 198\.51\.100\.20/);
+  assert.match(domains.claimOf(s).last_error, /points at 198\.51\.100\.20/);
   const mails = mail.slice(sent).filter((m) => m.to === s.email);
   assert.equal(mails.length, 2);
   assert.match(mails[0].text, /still live/);
   assert.match(mails[1].subject, /stopped working/);
   // checked today already: the next hourly run leaves it alone
   await domains.housekeeping();
-  assert.equal(domains.of(s).misses, 3);
+  assert.equal(domains.claimOf(s).misses, 3);
   world.addrs.set(c.host, OURS);
   assert.equal((await domains.check(s)).state, 'live');
-  assert.equal(domains.of(s).misses, 0);
+  assert.equal(domains.claimOf(s).misses, 0);
 });
 
 test('Check now on a live claim shows the result but counts no daily miss; a pass still brings a failing claim back', async () => {
   const { s, c } = await live();
   const sent = mail.length;
-  const checked = domains.of(s).checked_at;
+  const checked = domains.claimOf(s).checked_at;
   world.addrs.set(c.host, ['198.51.100.20']);
   for (let i = 0; i < 3; i++) await domains.check(s);
-  assert.equal(domains.of(s).state, 'live');
-  assert.equal(domains.of(s).misses, 0);
-  assert.match(domains.of(s).last_error, /points at 198\.51\.100\.20/);
-  assert.equal(domains.of(s).checked_at, checked); // the daily check still comes round
+  assert.equal(domains.claimOf(s).state, 'live');
+  assert.equal(domains.claimOf(s).misses, 0);
+  assert.match(domains.claimOf(s).last_error, /points at 198\.51\.100\.20/);
+  assert.equal(domains.claimOf(s).checked_at, checked); // the daily check still comes round
   assert.equal(mail.length, sent);
   set(c, { state: 'failing', misses: 3, failing_since: Date.now() });
   world.addrs.set(c.host, OURS);
@@ -149,8 +149,8 @@ test('a pending claim not live after 7 days expires; a failing one ends after 30
   const c = claim(s);
   set(c, { created_at: Date.now() - 8 * DAY });
   await domains.housekeeping();
-  assert.equal(domains.of(s).state, 'ended');
-  assert.equal(domains.of(s).end_reason, 'expired');
+  assert.equal(domains.claimOf(s).state, 'ended');
+  assert.equal(domains.claimOf(s).end_reason, 'expired');
   assert.equal(domains.ask(c.host), false);
   // an ended row reserves nothing, and adding again replaces it with a new proof
   const again = claim(s, c.host);
@@ -159,7 +159,7 @@ test('a pending claim not live after 7 days expires; a failing one ends after 30
   const f = await live();
   set(f.c, { state: 'failing', misses: 3, failing_since: Date.now() - 31 * DAY, checked_at: Date.now() });
   await domains.housekeeping();
-  assert.equal(domains.of(f.s).end_reason, 'abandoned');
+  assert.equal(domains.claimOf(f.s).end_reason, 'abandoned');
   assert.match(mail.at(-1).subject, /was removed/);
 });
 
@@ -170,8 +170,8 @@ test('a pending claim that proves a failing host takes it over; the old member h
   const c = claim(s, old.c.host);
   world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]);
   assert.equal((await domains.check(s)).state, 'live');
-  assert.equal(domains.of(old.s).state, 'ended');
-  assert.equal(domains.of(old.s).end_reason, 'moved');
+  assert.equal(domains.claimOf(old.s).state, 'ended');
+  assert.equal(domains.claimOf(old.s).end_reason, 'moved');
   assert.ok(mail.some((m) => m.to === old.s.email && /another site/i.test(m.text) && m.text.includes(`${old.s.username}.${BASE}`)));
   // nobody can add a host that is live on another site
   assert.match(domains.add(site(), c.host).err, /Another site/);
@@ -187,8 +187,8 @@ test('of two pending claims on one host, the first to verify wins', async () => 
   point(cb);
   assert.equal((await domains.check(b)).state, 'live');
   await domains.housekeeping();
-  assert.equal(domains.of(a).state, 'pending');
-  assert.match(domains.of(a).last_error, /another site/);
+  assert.equal(domains.claimOf(a).state, 'pending');
+  assert.match(domains.claimOf(a).last_error, /another site/);
 });
 
 test('when every HTTPS check of a run fails, none counts: no member email, one to the abuse address', async () => {
@@ -200,8 +200,8 @@ test('when every HTTPS check of a run fails, none counts: no member email, one t
   dueRecheck(dnsBroken.c);
   const sent = mail.length;
   await domains.housekeeping();
-  for (const { s } of all) assert.equal(domains.of(s).misses, 0);
-  assert.equal(domains.of(dnsBroken.s).misses, 1);
+  for (const { s } of all) assert.equal(domains.claimOf(s).misses, 0);
+  assert.equal(domains.claimOf(dnsBroken.s).misses, 1);
   assert.deepEqual(mail.slice(sent).map((m) => m.to), [cfg.ABUSE_EMAIL]);
   world.addrs.set(dnsBroken.c.host, OURS);
   // one failing on its own is that member's miss
@@ -209,9 +209,9 @@ test('when every HTTPS check of a run fails, none counts: no member email, one t
   world.https.set(all[0].c.host, false);
   for (const { c } of all) dueRecheck(c);
   await domains.housekeeping();
-  assert.equal(domains.of(all[0].s).misses, 1);
-  assert.match(domains.of(all[0].s).last_error, /CAA/);
-  assert.equal(domains.of(all[1].s).misses, 0);
+  assert.equal(domains.claimOf(all[0].s).misses, 1);
+  assert.match(domains.claimOf(all[0].s).last_error, /CAA/);
+  assert.equal(domains.claimOf(all[1].s).misses, 0);
   world.https.set(all[0].c.host, true);
 });
 
@@ -227,12 +227,12 @@ test('liveHost gives the custom host only while the claim is live', async () => 
 test('removing a domain frees it at once; a moderator detach ends it with the reason and an email', async () => {
   const { s, c } = await live();
   assert.equal(domains.remove(s), true);
-  assert.equal(domains.of(s), undefined);
+  assert.equal(domains.claimOf(s), undefined);
   assert.ok(domains.add(site(), c.host).claim);
   const m = await live();
   assert.equal(domains.detach(m.s, 'phishing').host, m.c.host);
-  assert.equal(domains.of(m.s).end_reason, 'moderator');
-  assert.equal(domains.of(m.s).last_error, 'phishing');
+  assert.equal(domains.claimOf(m.s).end_reason, 'moderator');
+  assert.equal(domains.claimOf(m.s).last_error, 'phishing');
   assert.ok(mail.at(-1).text.includes('phishing'));
   assert.equal(domains.detach(m.s, 'again'), null);
   // a deleted Site takes its claim with it, and the host is free at once
@@ -250,7 +250,7 @@ test('a lapsed supporter keeps their domains for 30 days, adds none, and loses t
   const until = Date.now() - DAY;
   db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(until, login.id);
   await domains.housekeeping();
-  assert.equal(domains.of(extra).state, 'live');
+  assert.equal(domains.claimOf(extra).state, 'live');
   assert.equal(domains.ask(c.host), true);
   assert.equal(domains.graceEnd(extra), until + 30 * DAY);
   assert.match(domains.add(fresh(login), newHost()).err, /supporters/);
@@ -267,7 +267,7 @@ test('a lapsed supporter keeps their domains for 30 days, adds none, and loses t
   // day 30
   db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 30 * DAY - 1000, login.id);
   await domains.housekeeping();
-  assert.equal(domains.of(extra).end_reason, 'lapsed');
+  assert.equal(domains.claimOf(extra).end_reason, 'lapsed');
   assert.match(mails().at(-1).subject, /was removed/);
 });
 
@@ -279,8 +279,8 @@ test('support back within the grace changes nothing', async () => {
   db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() + 30 * DAY, s.id);
   await domains.housekeeping();
   assert.equal(domains.graceEnd(fresh(s)), 0);
-  assert.equal(domains.of(s).state, 'live');
-  assert.equal(domains.of(s).mailed, '');
+  assert.equal(domains.claimOf(s).state, 'live');
+  assert.equal(domains.claimOf(s).mailed, '');
   assert.equal(domains.liveHost(s.username), c.host);
 });
 
@@ -290,7 +290,7 @@ test('daily re-checks spread over the hourly runs: each run takes the longest-un
   db.prepare("UPDATE custom_domains SET checked_at = ? WHERE state IN ('live', 'failing')").run(Date.now());
   many.forEach(({ c }, i) => set(c, { checked_at: Date.now() - (40 - i) * 3600000 })); // all due, the first oldest
   await domains.housekeeping();
-  const done = () => many.filter(({ s }) => domains.of(s).checked_at > Date.now() - 60000).map((m) => many.indexOf(m));
+  const done = () => many.filter(({ s }) => domains.claimOf(s).checked_at > Date.now() - 60000).map((m) => many.indexOf(m));
   assert.deepEqual(done(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   await domains.housekeeping();
   assert.equal(done().length, 12);
@@ -304,7 +304,7 @@ test('while the flag is off, claims sleep: no checks, and their clocks stand sti
   const t = Date.now();
   await off.housekeeping(t);
   await off.housekeeping(t + 5 * DAY);
-  assert.equal(off.of(s).state, 'pending');
-  assert.equal(off.of(s).created_at, c.created_at + 5 * DAY);
+  assert.equal(off.claimOf(s).state, 'pending');
+  assert.equal(off.claimOf(s).created_at, c.created_at + 5 * DAY);
   assert.equal(off.add(site(), newHost()).err, 'Custom domains are for supporters.');
 });

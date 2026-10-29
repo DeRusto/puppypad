@@ -782,7 +782,7 @@ function showDashboard(req, res, m, status = 200) {
 }
 // what the dashboard's Custom domain fold needs; null while the flag is off
 const domainView = (user) => cfg.CUSTOM_DOMAINS && {
-  claim: domains.of(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), ours: domains.ours(),
+  claim: domains.claimOf(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), baseAddrs: domains.baseAddrs(),
   // what deleting this site, or the whole login, stops
   doomed: domains.hostsOf(isLogin(user) ? sitesOf(user) : [user]),
 };
@@ -1090,7 +1090,7 @@ main.post('/dashboard/domain/check', auth, async (req, res) => {
   domainBack(res, c.last_error ? 'err' : 'ok', c.last_error ? `Checked ${c.host}: ${c.last_error}.` : c.state === 'live' ? `${c.host} is live.` : `Checked ${c.host}.`);
 });
 main.post('/dashboard/domain/remove', auth, (req, res) => {
-  const c = domains.of(req.ctx.user);
+  const c = domains.claimOf(req.ctx.user);
   if (domains.remove(req.ctx.user) && c.state !== 'ended') return domainBack(res, 'ok', `Removed ${c.host}. Your site is back at its own address.`);
   res.redirect('/dashboard');
 });
@@ -1442,7 +1442,7 @@ const showAdmin = (req, res, m) => {
     site: String(req.query.site || '').trim().slice(0, 100), // fills the site boxes after "act" on a report or member
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: cfg.CUSTOM_DOMAINS && domains.of(u) })),
+    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: cfg.CUSTOM_DOMAINS && domains.claimOf(u) })),
     // Custom domains by state, and the failing ones with why; null while the flag is off
     domains: cfg.CUSTOM_DOMAINS && domains.summary(),
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
@@ -1539,7 +1539,7 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const reason = String(req.body.reason || '').slice(0, 200);
   if (action === 'detach') {
     if (!reason.trim()) return showAdmin(req, res, { err: 'Give a reason; the member sees it.' });
-    const c = domains.of(target);
+    const c = domains.claimOf(target);
     if (!c || c.state === 'ended') return showAdmin(req, res, { err: `${target.username} has no custom domain.` });
     db.transaction(() => { domains.detach(target, reason); adminLog(req, 'detach domain', target.username, `${c.host}: ${reason}`); })();
     return showAdmin(req, res, { ok: `Detached ${c.host} from ${target.username}.` });
@@ -1625,5 +1625,5 @@ if (require.main === module) {
   app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
   refreshAll(); // so the first /admin view after a restart reads stored totals
   sweepHistory();
-  if (cfg.CUSTOM_DOMAINS) domains.refreshOurs().catch(() => {}); // the dashboard's records table shows them
+  if (cfg.CUSTOM_DOMAINS) domains.refreshBaseAddrs().catch(() => {}); // the dashboard's records table shows them
 }

@@ -309,12 +309,12 @@ for f in $added; do rm -f "$f"; done
 set_env PUPPYPAD_VERSION "$(prev_env 1)"
 set_images "$(prev_env 2)" "$(prev_env 3)" "$(prev_env 4)"
 rm -f "$prevenv" # back on the last working state, so the next attempt starts from here
-up=0; docker compose up -d --remove-orphans || up=1
+up_failed=0; docker compose up -d --remove-orphans || up_failed=1
 # the database is as the new release left it, less any schema steps undone above; new tables and columns need
 # no step, since older code ignores them. backups/latest still holds the database from before the upgrade.
 # the last line is what /admin shows, so it says which of these happened
 if ! healthy; then echo "went back to ${old:-the git checkout}, but it is not healthy either; check docker compose logs app"
-elif [ "$up" = 1 ] || ! all_running; then echo "went back to ${old:-the git checkout}, but not every service is staying up; check docker compose ps and docker compose logs"
+elif [ "$up_failed" = 1 ] || ! all_running; then echo "went back to ${old:-the git checkout}, but not every service is staying up; check docker compose ps and docker compose logs"
 else echo "$target failed its health check; went back to ${old:-the git checkout}"; fi
 exit 1
 }

@@ -130,7 +130,7 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   let page = await dash(m);
   assert.match(page, /Your domain: <code>www\.dash\.example<\/code> <b class="note">\[waiting for DNS\]<\/b>/);
   assert.match(page, /<details open><summary>Custom domain settings<\/summary>/);
-  const c = app.domains.of(row('dashdog'));
+  const c = app.domains.claimOf(row('dashdog'));
   assert.ok(page.includes(`puppypad-verify=${c.proof}`));
   assert.ok(page.includes('<code>_puppypad.www.dash.example</code>'));
   for (const a of OURS) assert.ok(page.includes(`<code>${a}</code>`), a);
@@ -145,7 +145,7 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   assert.match(page, /\[live\]/);
   assert.match(page, /is live\. Visitors to dashdog\.pad\.test are sent there/);
   assert.equal((await post(m, '/dashboard/domain/remove')).status, 302);
-  assert.equal(app.domains.of(row('dashdog')), undefined);
+  assert.equal(app.domains.claimOf(row('dashdog')), undefined);
   assert.equal((await req('get', '/', 'www.dash.example')).status, 404);
 });
 
@@ -153,7 +153,7 @@ test('a member who does not support gets no domain form, and cannot add one', as
   const m = await member('freedog', { supporter: false });
   assert.doesNotMatch(await dash(m), /Use your own domain/);
   assert.match((await post(m, '/dashboard/domain', { host: 'free.example' })).headers.location, /supporters/);
-  assert.equal(app.domains.of(row('freedog')), undefined);
+  assert.equal(app.domains.claimOf(row('freedog')), undefined);
 });
 
 test('the dashboard says what happened to an ended claim', async () => {
@@ -203,7 +203,7 @@ test('/admin finds sites by custom host, counts claims, and detaches a domain wi
   assert.match(page, /sick\.example<\/td><td>sickdog<\/td><td>TXT record not found/);
   const r = await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'admdog', action: 'detach', reason: 'phishing pages' });
   assert.equal(r.status, 200);
-  assert.equal(app.domains.of(row('admdog')).end_reason, 'moderator');
+  assert.equal(app.domains.claimOf(row('admdog')).end_reason, 'moderator');
   const logged = db.prepare('SELECT * FROM admin_log ORDER BY id DESC').get();
   assert.equal(logged.action, 'detach domain');
   assert.equal(logged.site, 'admdog');
@@ -224,7 +224,7 @@ test('revoking a grant starts the 30-day grace now, not from the paid time', asy
   assert.equal((await app.domains.check(row('granted'))).state, 'live');
   await post(boss, '/admin/supporter', { site: 'granted', days: '0' });
   await app.domains.housekeeping();
-  assert.equal(app.domains.of(row('granted')).state, 'live');
+  assert.equal(app.domains.claimOf(row('granted')).state, 'live');
   const left = app.domains.graceEnd(row('granted')) - Date.now();
   assert.ok(left > 29 * 86400000 && left <= 30 * 86400000, `grace ends in ${left} ms`);
   assert.match(await dash(m), /keeps working until/);
