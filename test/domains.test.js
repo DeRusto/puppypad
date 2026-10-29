@@ -67,6 +67,8 @@ async function live(s = site(), host = newHost()) {
   assert.equal((await domains.check(s)).state, 'live');
   return { s, c: domains.of(s) };
 }
+// the Site's row as it is now
+const fresh = (s) => db.prepare('SELECT * FROM users WHERE id = ?').get(s.id);
 // past the next daily re-check
 const dueRecheck = (c) => set(c, { checked_at: Date.now() - DAY });
 
@@ -211,4 +213,59 @@ test('removing a domain frees it at once; a moderator detach ends it with the re
   assert.equal(domains.of(m.s).last_error, 'phishing');
   assert.ok(mail.at(-1).text.includes('phishing'));
   assert.equal(domains.detach(m.s, 'again'), null);
+});
+
+test('a lapsed supporter keeps their domains for 30 days, adds none, and loses them at the end', async () => {
+  const login = site();
+  const extra = site({ login_id: login.id });
+  const { c } = await live(extra);
+  const sent = mail.length;
+  const until = Date.now() - DAY;
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(until, login.id);
+  await domains.housekeeping();
+  assert.equal(domains.of(extra).state, 'live');
+  assert.equal(domains.ask(c.host), true);
+  assert.equal(domains.graceEnd(extra), until + 30 * DAY);
+  assert.match(domains.add(fresh(login), newHost()).err, /supporters/);
+  await domains.housekeeping(); // the lapse email goes once
+  const mails = () => mail.slice(sent).filter((m) => m.to === login.email);
+  assert.equal(mails().length, 1);
+  assert.match(mails()[0].subject, /keeps working until/);
+  // 7 days before the end
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 24 * DAY, login.id);
+  await domains.housekeeping();
+  await domains.housekeeping();
+  assert.match(mails().at(-1).subject, /in a week/);
+  assert.equal(mails().length, 2); // once
+  // day 30
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 30 * DAY - 1000, login.id);
+  await domains.housekeeping();
+  assert.equal(domains.of(extra).end_reason, 'lapsed');
+  assert.match(mails().at(-1).subject, /was removed/);
+});
+
+test('support back within the grace changes nothing', async () => {
+  const { s, c } = await live();
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 10 * DAY, s.id);
+  await domains.housekeeping();
+  assert.ok(domains.graceEnd(fresh(s)) > Date.now());
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() + 30 * DAY, s.id);
+  await domains.housekeeping();
+  assert.equal(domains.graceEnd(fresh(s)), 0);
+  assert.equal(domains.of(s).state, 'live');
+  assert.equal(domains.of(s).mailed, '');
+  assert.equal(domains.liveHost(s.username), c.host);
+});
+
+test('while the flag is off, claims sleep: no checks, and their clocks stand still', async () => {
+  const s = site();
+  const c = claim(s);
+  point(c);
+  const off = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
+  const t = Date.now();
+  await off.housekeeping(t);
+  await off.housekeeping(t + 5 * DAY);
+  assert.equal(off.of(s).state, 'pending');
+  assert.equal(off.of(s).created_at, c.created_at + 5 * DAY);
+  assert.equal(off.add(site(), newHost()).err, 'Custom domains are for supporters.');
 });
