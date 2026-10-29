@@ -14,6 +14,8 @@ const FAILING_DAYS = 30; // a failing claim nobody fixes ends as abandoned
 const GRACE_DAYS = 30; // a lapsed supporter's claims keep working this long
 const MISSES = 3; // daily checks in a row that fail before a live claim is failing
 const HTTPS_ERROR = "the certificate couldn't be issued; check for a CAA record that leaves out Let's Encrypt";
+const HELD = ['verified', 'live', 'failing']; // one Site at a time holds a host in these (idx_domains_held in src/db.js)
+const CERTIFIED = ['verified', 'live']; // Caddy may get a certificate, and nobody else may add the host
 const RECHECKED = ['live', 'failing']; // the states the daily re-check covers
 const inList = (states) => `(${states.map((s) => `'${s}'`).join(', ')})`; // for SQL; the states are ours, never input
 const day = (t) => new Date(t).toISOString().slice(0, 10);
@@ -64,7 +66,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     if (had && had.state !== 'ended') return { err: `This site already has ${had.host}. Remove it first.` };
     const { host, err } = normalise(input, cfg.BASE_HOST);
     if (err) return { err };
-    if (db.prepare("SELECT 1 FROM custom_domains WHERE host = ? AND state IN ('verified', 'live')").get(host)) return { err: `Another site already uses ${host}.` };
+    if (db.prepare(`SELECT 1 FROM custom_domains WHERE host = ? AND state IN ${inList(CERTIFIED)}`).get(host)) return { err: `Another site already uses ${host}.` };
     const id = db.transaction(() => {
       db.prepare('DELETE FROM custom_domains WHERE site_id = ?').run(site.id); // an ended claim reserves nothing
       return db.prepare('INSERT INTO custom_domains (site_id, host, proof, created_at) VALUES (?, ?, ?, ?)').run(site.id, host, crypto.randomBytes(16).toString('hex'), Date.now()).lastInsertRowid;
@@ -99,7 +101,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     update(c, { txt_ok: +p.txt, addrs_ok: +p.points, last_error: p.error, checked_at: Date.now() });
     if (p.error) return;
     const moved = db.transaction(() => {
-      const holder = db.prepare("SELECT * FROM custom_domains WHERE host = ? AND state IN ('verified', 'live', 'failing')").get(c.host);
+      const holder = db.prepare(`SELECT * FROM custom_domains WHERE host = ? AND state IN ${inList(HELD)}`).get(c.host);
       if (holder && holder.state !== 'failing') { update(c, { last_error: `another site proved it owns ${c.host} first` }); return false; }
       if (holder) end(holder, 'moved');
       update(c, { state: 'verified', verified_at: Date.now(), last_error: '' });
@@ -220,9 +222,9 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     const { host } = normalise(name, cfg.BASE_HOST);
     return on() && host ? db.prepare(`SELECT c.*, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.host = ? AND c.state IN ${inList(states)}`).get(host) : undefined;
   };
-  const ask = (name) => !!hostIn(name, ['verified', 'live']);
+  const ask = (name) => !!hostIn(name, CERTIFIED);
   const siteFor = (host) => hostIn(host, ['live'])?.username; // the Site a request to this host is served as
-  const reportTarget = (host) => hostIn(host, ['verified', 'live', 'failing']);
+  const reportTarget = (host) => hostIn(host, HELD);
   // the live custom host of the Site with this name
   const liveHost = (name) => (on() ? db.prepare("SELECT c.host FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE u.username = ? AND c.state = 'live'").get(String(name))?.host : undefined);
 
