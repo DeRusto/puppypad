@@ -170,8 +170,10 @@ const domainNet = {
   addrs: async (name) => [...await dnsp.resolve4(name).catch(() => []), ...await dnsp.resolve6(name).catch(() => [])],
   https: (host) => new Promise((done) => {
     const r = https.get({ host: 'caddy', port: 443, servername: host, headers: { host }, path: '/', timeout: 60000 }, (res) => { res.resume(); done(true); });
-    r.on('timeout', () => r.destroy());
+    // a promise settles once, so these only count when no answer came: a timeout, an error, or a close with neither
+    r.on('timeout', () => { r.destroy(); done(false); });
     r.on('error', () => done(false));
+    r.on('close', () => done(false));
   }),
 };
 const domains = createDomains({ cfg, logins, sendMail, net: domainNet });
