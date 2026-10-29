@@ -15,6 +15,7 @@ const GRACE_DAYS = 30; // a lapsed supporter's claims keep working this long
 const MISSES = 3; // daily checks in a row that fail before a live claim is failing
 const HTTPS_ERROR = "the certificate couldn't be issued; check for a CAA record that leaves out Let's Encrypt";
 const RECHECKED = ['live', 'failing']; // the states the daily re-check covers
+const inList = (states) => `(${states.map((s) => `'${s}'`).join(', ')})`; // for SQL; the states are ours, never input
 const day = (t) => new Date(t).toISOString().slice(0, 10);
 
 // { host } as stored, matched and shown (the A-label), or { err } saying why it's refused
@@ -199,9 +200,12 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     const verifiedNow = new Set(); // already had this run's HTTPS request
     for (const c of active("AND state = 'pending'")) { await verify(c); verifiedNow.add(c.id); }
     for (const c of active("AND state = 'verified'")) if (!verifiedNow.has(c.id)) await goLive(c);
-    // each claim's check comes round a day after its last, so they spread over the hourly runs
+    // a day after its last check a claim is due; each run takes the longest-waiting 1/24th, so checks spread over the hours.
+    // At least 10, so the outage guard below has enough to go on
+    const checked = db.prepare(`SELECT COUNT(*) n FROM custom_domains WHERE state IN ${inList(RECHECKED)}`).get().n;
+    const due = db.prepare(`SELECT * FROM custom_domains WHERE state IN ${inList(RECHECKED)} AND checked_at <= ? ORDER BY checked_at LIMIT ?`).all(t - 23 * HOUR, Math.max(10, Math.ceil(checked / 24)));
     const results = [];
-    for (const c of active(`AND state IN ('live', 'failing') AND checked_at <= ${t - 23 * HOUR}`)) results.push(await recheck(c));
+    for (const c of due) results.push(await recheck(c));
     const https = results.filter((r) => r.httpsFailed !== undefined);
     // every HTTPS request failing at once is us (Caddy down, or Let's Encrypt), not the members
     const outage = https.length >= 3 && https.every((r) => r.httpsFailed);
@@ -214,7 +218,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   // lookups for serving, Caddy's ask and reports; all of them nothing while the flag is off
   const hostIn = (name, states) => {
     const { host } = normalise(name, cfg.BASE_HOST);
-    return on() && host ? db.prepare(`SELECT c.*, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.host = ? AND c.state IN (${states.map((s) => `'${s}'`).join(', ')})`).get(host) : undefined;
+    return on() && host ? db.prepare(`SELECT c.*, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.host = ? AND c.state IN ${inList(states)}`).get(host) : undefined;
   };
   const ask = (name) => !!hostIn(name, ['verified', 'live']);
   const siteFor = (host) => hostIn(host, ['live'])?.username; // the Site a request to this host is served as

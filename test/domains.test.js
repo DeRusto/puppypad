@@ -284,6 +284,18 @@ test('support back within the grace changes nothing', async () => {
   assert.equal(domains.liveHost(s.username), c.host);
 });
 
+test('daily re-checks spread over the hourly runs: each run takes the longest-unchecked ten (with fewer than 240 claims)', async () => {
+  const many = [];
+  for (let i = 0; i < 12; i++) many.push(await live());
+  db.prepare("UPDATE custom_domains SET checked_at = ? WHERE state IN ('live', 'failing')").run(Date.now());
+  many.forEach(({ c }, i) => set(c, { checked_at: Date.now() - (40 - i) * 3600000 })); // all due, the first oldest
+  await domains.housekeeping();
+  const done = () => many.filter(({ s }) => domains.of(s).checked_at > Date.now() - 60000).map((m) => many.indexOf(m));
+  assert.deepEqual(done(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  await domains.housekeeping();
+  assert.equal(done().length, 12);
+});
+
 test('while the flag is off, claims sleep: no checks, and their clocks stand still', async () => {
   const s = site();
   const c = claim(s);
