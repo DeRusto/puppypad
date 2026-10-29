@@ -213,6 +213,11 @@ test('removing a domain frees it at once; a moderator detach ends it with the re
   assert.equal(domains.of(m.s).last_error, 'phishing');
   assert.ok(mail.at(-1).text.includes('phishing'));
   assert.equal(domains.detach(m.s, 'again'), null);
+  // a deleted Site takes its claim with it, and the host is free at once
+  const d = await live();
+  db.prepare('DELETE FROM users WHERE id = ?').run(d.s.id);
+  assert.equal(domains.ask(d.c.host), false);
+  assert.ok(domains.add(site(), d.c.host).claim);
 });
 
 test('a lapsed supporter keeps their domains for 30 days, adds none, and loses them at the end', async () => {
