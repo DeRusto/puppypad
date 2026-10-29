@@ -442,6 +442,7 @@ function domainFold(ctx, user, d) {
     return (d.claim ? line(domainStatus(ctx, user, d.claim, d)) : '') +
       (ctx.cfg.SUPPORT_ON ? `<p class="note">Supporters can show this site at a domain they own, like <code>www.example.com</code>. <a href="/dashboard/support">Become a supporter</a>.</p>` : '');
   }
+  if (!c && user.banned) return (d.claim ? line(domainStatus(ctx, user, d.claim, d)) : '') + `<p class="note">A taken-down site can't add a domain.</p>`;
   if (!c) {
     return `<details${d.claim ? ' open' : ''}><summary>Use your own domain</summary>${line(domainStatus(ctx, user, d.claim, d))}
 <form class="stack" method="post" action="/dashboard/domain">${csrfField(ctx)}<label for="cdhost">Your domain, like <code>example.com</code> or <code>www.example.com</code></label>

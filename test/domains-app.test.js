@@ -156,6 +156,14 @@ test('a member who does not support gets no domain form, and cannot add one', as
   assert.equal(app.domains.claimOf(row('freedog')), undefined);
 });
 
+test('a taken-down site gets no domain form, and is told why', async () => {
+  const m = await member('bandog');
+  db.prepare('UPDATE users SET banned = 1 WHERE username = ?').run('bandog');
+  const page = await dash(m);
+  assert.doesNotMatch(page, /<form[^>]*action="\/dashboard\/domain"/);
+  assert.match(page, /taken-down site can.t add a domain/);
+});
+
 test('the dashboard says what happened to an ended claim', async () => {
   const m = await liveAt('enddog', 'end.example');
   app.domains.detach(row('enddog'), 'it hosted phishing');
