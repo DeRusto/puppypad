@@ -6,8 +6,8 @@ const crypto = require('crypto');
 const net = require('net');
 const url = require('url');
 const { db } = require('./db');
+const { DAY } = require('./util');
 
-const DAY = 86400000;
 const HOUR = 3600000;
 const PENDING_DAYS = 7; // a claim not live this long after it was added ends as expired
 const FAILING_DAYS = 30; // a failing claim nobody fixes ends as abandoned
@@ -226,7 +226,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   // the live custom host of the Site with this name
   const liveHost = (name) => (on() ? db.prepare("SELECT c.host FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE u.username = ? AND c.state = 'live'").get(String(name))?.host : undefined);
 
-  return { of, add, remove, check, detach, housekeeping, ask, siteFor, reportTarget, liveHost, graceEnd, ours: () => ours, refreshOurs, PENDING_DAYS, FAILING_DAYS, MISSES };
+  return { of, add, remove, check, detach, housekeeping, ask, siteFor, reportTarget, liveHost, graceEnd, ours: () => ours, refreshOurs };
 }
 
-module.exports = { normalise, createDomains };
+module.exports = { normalise, createDomains, PENDING_DAYS, FAILING_DAYS, GRACE_DAYS, MISSES, day };

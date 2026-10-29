@@ -781,7 +781,7 @@ function showDashboard(req, res, m, status = 200) {
 }
 // what the dashboard's Custom domain fold needs; null while the flag is off
 const domainView = (user) => cfg.CUSTOM_DOMAINS && {
-  claim: domains.of(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), ours: domains.ours(), MISSES: domains.MISSES,
+  claim: domains.of(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), ours: domains.ours(),
   // what deleting this site, or the whole login, stops
   doomed: (isLogin(user) ? sitesOf(user) : [user]).map((s) => domains.of(s)).filter((c) => c && c.state !== 'ended').map((c) => c.host),
 };
