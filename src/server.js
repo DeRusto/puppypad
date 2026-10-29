@@ -1537,7 +1537,6 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
-  // there's no blocklist: a repeat offender gets their site taken down instead
   if (action === 'detach') {
     if (!reason.trim()) return showAdmin(req, res, { err: 'Give a reason; the member sees it.' });
     const c = domains.of(target);
@@ -1553,7 +1552,8 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
   }
   // the state change and its log entry commit together, so no take-down or restore goes unrecorded;
-  // either take-down ends every session of the login
+  // either take-down ends every session of the login.
+  // A detached domain goes on no blocklist: a repeat offender gets their site taken down instead
   if (action === 'ban') {
     logins.takeDown(target, reason, { inTransaction: () => { adminLog(req, 'take down', target.username, reason); sessions.endSessions(target); } });
     return showAdmin(req, res, { ok: `${target.username} is offline.` });
