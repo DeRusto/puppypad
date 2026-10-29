@@ -86,11 +86,11 @@ Let's Encrypt caps new certificates per registered domain per week, so a signup 
 sites. **Done:** `caddy/Dockerfile` builds Caddy with `caddy-dns/cloudflare`, and the Caddyfile gets
 every certificate through a DNS-01 challenge using `CF_API_TOKEN`. On-demand TLS and the app's
 `/internal/tls-check` endpoint are removed; custom domains (§3) would bring them back. Keep the
-Cloudflare records **DNS only** (grey cloud).
+Cloudflare records **DNS only** (grey cloud). Turning on the proxy makes every visitor appear as a
+Cloudflare IP until the app reads `CF-Connecting-IP`.
 Custom domains (`CUSTOM_DOMAINS=on`) brought on-demand TLS back for supporters' own hosts only: the wildcard
 and apex keep `tls { dns }`, and a catch-all `https://` block asks `/internal/tls-check`. It needs ports 80
-and 443 reachable from the internet and `BASE_DOMAIN` not proxied, since a claim must point at its addresses. Turning on the proxy makes every visitor appear as a
-Cloudflare IP until the app reads `CF-Connecting-IP`.
+and 443 reachable from the internet and `BASE_DOMAIN` not proxied, since a claim must point at its addresses.
 
 ### 2.4 🟡 Submit `puppypad.org` to the Public Suffix List — your step
 Browsers then treat each `name.puppypad.org` as its own site. This stops cookie-tossing between
