@@ -461,7 +461,7 @@ function domainFold(ctx, user, d) {
   const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.proof}`, c.txt_ok],
     ...orPlaceholder(v4, 'IPv4').map((a) => ['A', c.host, a]), ...orPlaceholder(v6, 'IPv6').map((a) => ['AAAA', c.host, a]),
     ['CNAME', c.host, ctx.cfg.BASE_HOST]];
-  const open = c.state === 'pending' || c.state === 'failing' || (c.state === 'live' && c.misses) ? ' open' : '';
+  const open = c.state === 'pending' || c.state === 'failing' || (c.state === 'live' && c.misses) || d.graceEnd ? ' open' : '';
   return `<p>Your domain: <code>${esc(c.host)}</code> <b class="${chip[0]}">[${esc(chip[1])}]</b></p>
 <details${open}><summary>Custom domain settings</summary>${line(domainStatus(ctx, user, c, d))}${grace}
 <div class="scroll"><table><tr><th>Type</th><th>Name</th><th>Value</th>${seen ? '<th>Found?</th>' : ''}</tr>

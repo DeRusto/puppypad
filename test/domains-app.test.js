@@ -241,5 +241,7 @@ test('revoking a grant starts the 30-day grace now, not from the paid time', asy
   assert.equal(app.domains.claimOf(row('granted')).state, 'live');
   const left = app.domains.graceEnd(row('granted')) - Date.now();
   assert.ok(left > 29 * 86400000 && left <= 30 * 86400000, `grace ends in ${left} ms`);
-  assert.match(await dash(m), /keeps working until/);
+  const page = await dash(m);
+  assert.match(page, /keeps working until/);
+  assert.match(page, /<details open><summary>Custom domain settings<\/summary>/); // so the grace end and renew link show
 });
