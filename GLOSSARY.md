@@ -24,6 +24,10 @@ _Avoid_: banned, suspended
 A name a Site gave up, by being deleted or renamed, that nobody else can claim for 90 days. A renamed Site's old held name sends visitors to its new address, and its own login may take that name back.
 _Avoid_: released name, reserved name (reserved names are the ones no Site may ever take)
 
+**Custom domain**:
+A hostname a supporter owns and serves one of their Sites at, proved by a TXT record and pointed at `BASE_DOMAIN`. While it is live, the Site's subdomain sends visitors there. A Site has at most one; a claim on it is pending, verified, live, failing, or ended.
+_Avoid_: vanity domain, own domain
+
 **Login**:
 What a member signs in with. It owns one site (up to five for supporters) and holds the email, password, two-factor login, supporter status and admin rights for all of them.
 _Avoid_: account, owner, user

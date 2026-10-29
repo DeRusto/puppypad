@@ -400,6 +400,74 @@ Other files are left alone.</p>
 <p><a href="/dashboard">No, keep my page</a> | <a href="/starters/${esc(s.id)}" target="_blank">Peek at ${esc(s.name)}</a></p></section>`);
 };
 
+// ---- the dashboard's Custom domain fold (src/domains.js) ----
+const ymd = (t) => new Date(t).toISOString().slice(0, 10);
+const DAY_MS = 86400000;
+// one line saying where the claim stands: [tone, html]
+function domainStatus(ctx, user, c, d) {
+  const sub = `${esc(user.username)}.${esc(ctx.cfg.BASE_HOST)}`;
+  if (!c) return ['note', 'Show this site at a domain you own. You keep the domain at your registrar; we only need two DNS records.'];
+  const h = `<b>${esc(c.host)}</b>`;
+  if (c.state === 'ended') {
+    return ['note', {
+      expired: `${h} was never verified, so we dropped the claim on ${ymd(c.ended_at)}. Add it again to get a new TXT record.`,
+      lapsed: `${h} was removed on ${ymd(c.ended_at)} because support ended 30 days before. Your site is at ${sub}.`,
+      abandoned: `${h} was removed on ${ymd(c.ended_at)} after 30 days of failing checks. Your site is at ${sub}.`,
+      moved: `Another site proved it owns ${h} on ${ymd(c.ended_at)}. Your site is back at ${sub}.`,
+      moderator: `A moderator removed ${h}: ${esc(c.last_error)}.`,
+    }[c.end_reason]];
+  }
+  if (user.banned) return ['err', `This site was taken down, so ${h} shows the takedown notice too. It comes back if the takedown is lifted.`];
+  if (c.state === 'pending') {
+    const lapses = `This claim lapses on ${ymd(c.created_at + 7 * DAY_MS)} if it isn't verified.`;
+    if (c.txt_ok && !c.addrs_ok) return ['err', `Waiting for ${h}. The TXT record is in place, but ${esc(c.last_error)}, not at us. Fix the record below and check again. ${lapses}`];
+    if (c.last_error && c.txt_ok) return ['err', `Waiting for ${h}: ${esc(c.last_error)}. ${lapses}`];
+    return ['err', `Waiting for ${h}. We can't find the TXT record yet. DNS changes can take a few hours. We check every hour, or press Check now. ${lapses}`];
+  }
+  if (c.state === 'verified') return ['note', `${h} is yours and points at us. We're getting its HTTPS certificate now, which usually takes under a minute.${c.last_error ? ` The last try failed: ${esc(c.last_error)}. We try again every hour.` : ''}`];
+  if (c.state === 'live' && c.misses) {
+    const left = d.MISSES - c.misses;
+    return ['err', `${h} is still live, but today's check failed: ${esc(c.last_error)}. Leave the records below in place. After ${left} more failed daily check${left === 1 ? '' : 's'}, visitors stop being sent there.`];
+  }
+  if (c.state === 'live') return ['ok', `${h} is live. Visitors to ${sub} are sent there.`];
+  return ['err', `${h} stopped working on ${ymd(c.failing_since)}: ${esc(c.last_error)}. Your site is back at ${sub}. Put the records back and press Check now. If nothing changes, we let go of ${h} on ${ymd(c.failing_since + 30 * DAY_MS)}, and another site could claim it before then.`];
+}
+function domainFold(ctx, user, d) {
+  if (!d) return '';
+  const c = d.claim && d.claim.state !== 'ended' ? d.claim : null;
+  const line = ([tone, html]) => `<p class="${tone}" role="status">${html}</p>`;
+  const base = esc(ctx.cfg.BASE_HOST);
+  const grace = c && d.graceEnd ? line(['err', `Your support ended on ${ymd(d.graceEnd - 30 * DAY_MS)}. ${esc(c.host)} keeps working until ${ymd(d.graceEnd)}, then your site goes back to its own address. <a href="/dashboard/support">Renew support</a> to keep it.`]) : '';
+  if (!c && !d.supporter) {
+    return ctx.cfg.SUPPORT_ON ? `<p class="note">Supporters can show this site at a domain they own, like <code>www.example.com</code>. <a href="/dashboard/support">Become a supporter</a>.</p>` : '';
+  }
+  if (!c) {
+    return `<details${d.claim ? ' open' : ''}><summary>Use your own domain</summary>${line(domainStatus(ctx, user, d.claim, d))}
+<form class="stack" method="post" action="/dashboard/domain">${csrfField(ctx)}<label for="cdhost">Your domain, like <code>example.com</code> or <code>www.example.com</code></label>
+<div class="row"><input type="text" id="cdhost" name="host" required maxlength="253"><button>Add domain</button></div></form>
+<p class="note">One name per site. To use both <code>example.com</code> and <code>www.example.com</code>, add one here and forward the other to it at your registrar.</p></details>`;
+  }
+  const chip = user.banned ? ['err', 'taken down'] : d.graceEnd ? ['err', `until ${ymd(d.graceEnd)}`]
+    : { pending: ['note', 'waiting for DNS'], verified: ['note', 'getting HTTPS'], live: c.misses ? ['err', 'check failed'] : ['ok', 'live'], failing: ['err', 'failing'] }[c.state];
+  const seen = c.checked_at > 0;
+  const tick = (ok) => (!seen ? '' : `<td>${ok ? '<b class="ok">yes</b>' : '<b class="err">no</b>'}</td>`);
+  const v4 = d.ours.filter((a) => !a.includes(':'));
+  const v6 = d.ours.filter((a) => a.includes(':'));
+  const ours = (list, kind) => (list.length ? list : [`the ${kind} address of ${ctx.cfg.BASE_HOST}`]);
+  const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.token}`, c.txt_ok],
+    ...ours(v4, 'IPv4').map((a) => ['A', c.host, a, c.addrs_ok]), ...ours(v6, 'IPv6').map((a) => ['AAAA', c.host, a, c.addrs_ok]),
+    ['CNAME', c.host, ctx.cfg.BASE_HOST, c.addrs_ok]];
+  const open = c.state === 'pending' || c.state === 'failing' || (c.state === 'live' && c.misses) ? ' open' : '';
+  return `<p>Your domain: <code>${esc(c.host)}</code> <b class="${chip[0]}">[${esc(chip[1])}]</b></p>
+<details${open}><summary>Custom domain settings</summary>${line(domainStatus(ctx, user, c, d))}${grace}
+<div class="scroll"><table><tr><th>Type</th><th>Name</th><th>Value</th>${seen ? '<th>Found?</th>' : ''}</tr>
+${rows.map(([t, n, v, ok]) => `<tr><td>${t}</td><td><code>${esc(n)}</code></td><td><code>${esc(v)}</code></td>${tick(ok)}</tr>`).join('')}</table></div>
+<p class="note">The TXT record proves the domain is yours. Then point it at us one of two ways: the A and AAAA records, or one CNAME to <code>${base}</code> (a bare domain like <code>example.com</code> usually can't take a CNAME, but ALIAS, ANAME or CNAME flattening to <code>${base}</code> works). Some DNS hosts want the name without your domain on the end. Remove any other A or AAAA records on ${esc(c.host)}: every address must be ours. Leave the records in place for as long as you use the domain; we check them every day.</p>
+<form class="inline" method="post" action="/dashboard/domain/check">${csrfField(ctx)}<button>Check now</button></form>
+<details class="mt"><summary>Remove ${esc(c.host)}</summary><p>Your site goes back to its own address at once, and the domain is free for anyone to claim. Adding it again later needs a new TXT record.</p>
+<form method="post" action="/dashboard/domain/remove">${csrfField(ctx)}<button class="danger">Remove ${esc(c.host)}</button></form></details></details>`;
+}
+
 function dashboard(ctx, m, d) {
   const { cfg, user } = ctx;
   const url = cfg.siteUrl(user.username);
@@ -422,7 +490,8 @@ ${d.sites.length > 1 ? `<p>Your sites: ${d.sites.map((x) => (x.id === user.id ? 
 ${user.banned ? `<p class="err">This site was taken down by a moderator${user.ban_reason ? `: ${esc(user.ban_reason)}` : '.'} Editing is disabled. Contact ${esc(cfg.ABUSE_EMAIL)} to appeal.</p>` : ''}
 ${d.cardCleared ? '<p class="err">An admin removed your card style. <a href="/dashboard/card">See why</a></p>' : ''}
 ${d.cardError ? `<p class="err">${CARD_FAILS}. <a href="/dashboard/card">Fix it.</a></p>` : ''}
-<a class="addr" href="${esc(url)}" target="_blank">${esc(url)}</a>
+<a class="addr" href="${esc(cfg.subdomainUrl(user.username))}" target="_blank">${esc(cfg.subdomainUrl(user.username))}</a>
+${domainFold(ctx, user, d.domain)}
 <div class="status">${meter('Space used', fmtBytes(d.used.total), `of ${d.quota} MB in ${d.used.count} file${d.used.count === 1 ? '' : 's'}`, d.used.total / (d.quota * 1048576))}
 ${meter('Bandwidth today', fmtBytes(d.bandwidth), `of ${cfg.BANDWIDTH_MB} MB`, d.bandwidth / (cfg.BANDWIDTH_MB * 1048576))}
 ${meter('Hits', user.hits)}</div>
@@ -478,6 +547,7 @@ ${user.renamed_at + cfg.RENAME_DAYS * 86400000 > Date.now()
 <input type="text" id="newname" name="username" required maxlength="30">
 <label for="renamepw">Confirm with your password</label><input type="password" id="renamepw" name="password" required autocomplete="current-password"><button>Rename my site</button></form>`}</details>`}
 <details><summary>${user.login_id ? 'Delete this site' : 'Delete my account'}</summary>${user.login_id ? '<p>This removes this site, its files and guestbook for good. Your login and other sites stay.</p>' : '<p>This removes your site, files and guestbook for good.</p>'}
+${d.domain ? d.domain.doomed.map((h) => `<p class="err">Your custom domain ${esc(h)} will stop working.</p>`).join('') : ''}
 <form class="stack" method="post" action="/dashboard/delete-account">${csrfField(ctx)}<label for="delpw">Confirm with your password</label>
 <input type="password" id="delpw" name="password" required autocomplete="current-password"><button class="danger">Delete everything</button></form></details></section>
 </div></div>`);
@@ -646,6 +716,7 @@ const perks = (c) => `<ul>
 <li>Any type of file, not just the usual web ones. They are still checked for phishing and never run as anything but what they are.</li>
 <li>File history kept for ${c.SUPPORTER_HISTORY_DAYS} days instead of ${c.HISTORY_DAYS}.</li>
 <li>Up to 5 sites under one login.</li>
+${c.CUSTOM_DOMAINS ? '<li>Your own domain for a site, like <code>www.example.com</code>, with HTTPS.</li>' : ''}
 <li>A rainbow frame around your screenshot and a little star next to your name across ${esc(c.SITE_NAME)}.</li>
 <li>A first look at new widgets before everyone gets them.</li></ul>`;
 const support = (ctx, m, { until, customer, limits }) => {
@@ -895,13 +966,15 @@ ${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll"
 
 // moderation first: counts, then reports and members on the left, and the tools on the right.
 // "act" on a report or member row reloads with ?site= so every tool below already holds that name.
-const admin = (ctx, m, { q, site, reports, users, signups, stats, log, upgrade, sotw, picks }) => {
+const admin = (ctx, m, { q, site, reports, users, signups, stats, log, upgrade, sotw, picks, domains }) => {
   const act = (name) => `<a href="/admin?site=${encodeURIComponent(name)}${q ? `&amp;q=${encodeURIComponent(q)}` : ''}#act">act</a>`;
   const siteField = (id) => `<label for="${id}">Site name</label><input type="text" id="${id}" name="site" value="${esc(site)}" required>`;
   const count = (k, v) => `<div class="meter"><div class="k">${k}</div><div class="v">${v}</div></div>`;
   return layout(ctx, 'Admin', `
 <section class="box"><h2>Admin</h2>${msg(m)}
 <div class="status four">${count('Members', stats.users)}${count('Banned', stats.banned)}${count('Supporters', stats.supporters)}${count('Open reports', stats.open)}</div></section>
+${domains ? `<section class="box"><h2>Custom domains</h2><div class="status">${count('Pending', domains.counts.pending || 0)}${count('Live', domains.counts.live || 0)}${count('Failing', domains.counts.failing || 0)}</div>
+${domains.failing.length ? `<h3>Failing domains</h3><div class="scroll"><table><tr><th>Domain</th><th>Site</th><th>Last error</th><th>Since</th></tr>${domains.failing.map((f) => `<tr><td>${esc(f.host)}</td><td>${esc(f.username)}</td><td>${esc(f.last_error)}</td><td>${ago(f.failing_since)}</td></tr>`).join('')}</table></div>` : ''}</section>` : ''}
 
 <div class="cols"><div>
 <section class="box"><h2>Open reports <small>(${stats.open})</small></h2>
@@ -912,7 +985,7 @@ ${reports.rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(c
 <section class="box"><h2>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h2>
 <form class="stack" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label><div class="row"><input type="search" id="q" name="q" value="${esc(q)}"><button>Search</button></div>${q ? '<p class="note"><a href="/admin">Clear the search</a></p>' : ''}</form>
 <div class="scroll mt"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th><th></th></tr>
-${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.until > Date.now() ? `<br><small>supporter to ${date(u.until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td><td>${act(u.username)}</td></tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>'}</table></div></section>
+${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.domain && u.domain.state !== 'ended' ? `<br><small>${esc(u.domain.host)} (${u.domain.state})</small>` : ''}${u.until > Date.now() ? `<br><small>supporter to ${date(u.until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td><td>${act(u.username)}</td></tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>'}</table></div></section>
 
 <section class="box"><h2>Moderation log <small>(last 100)</small></h2><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
 ${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div></section>
@@ -922,7 +995,7 @@ ${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>$
 ${site ? `<p>Acting on <b>${esc(site)}</b>: <a href="${esc(ctx.cfg.siteUrl(site))}" target="_blank">site</a> | <a href="/site/${esc(site)}">profile</a> | <a href="/admin?q=${encodeURIComponent(site)}">find member</a></p>` : '<p class="note">Type a site name, or press "act" on a report or member to fill it in.</p>'}
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}${siteField('bsite')}
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
-<div class="acts"><button name="action" value="ban" class="danger">Take down</button><button name="action" value="unban">Restore</button></div>
+<div class="acts"><button name="action" value="ban" class="danger">Take down</button><button name="action" value="unban">Restore</button>${domains ? '<button name="action" value="detach">Detach domain</button>' : ''}</div>
 <details><summary>Delete for good</summary><p class="note">Removes the account and every file. This cannot be undone.</p><button name="action" value="delete" class="danger">Delete account and files</button></details></form>
 <details class="mt"><summary>Supporter</summary>
 <form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}${siteField('ssite')}

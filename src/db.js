@@ -134,6 +134,33 @@ CREATE TABLE IF NOT EXISTS card_notes (
   reason TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+-- a Custom domain claim (src/domains.js), one per Site at most. state: pending, verified, live, failing or ended
+-- (end_reason expired, lapsed, abandoned, moved or moderator; kept only so the dashboard can say what happened).
+-- last_error is the latest check's reason, or a moderator's reason; mailed marks the support lapse emails sent;
+-- created_at and failing_since move on while CUSTOM_DOMAINS is off, and grace_shift lengthens a lapse grace, so no clock runs then
+CREATE TABLE IF NOT EXISTS custom_domains (
+  id INTEGER PRIMARY KEY,
+  site_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  host TEXT NOT NULL,
+  token TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending',
+  end_reason TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  verified_at INTEGER NOT NULL DEFAULT 0,
+  live_at INTEGER NOT NULL DEFAULT 0,
+  ended_at INTEGER NOT NULL DEFAULT 0,
+  misses INTEGER NOT NULL DEFAULT 0,
+  failing_since INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  txt_ok INTEGER NOT NULL DEFAULT 0,
+  addrs_ok INTEGER NOT NULL DEFAULT 0,
+  checked_at INTEGER NOT NULL DEFAULT 0,
+  mailed TEXT NOT NULL DEFAULT '',
+  grace_shift INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_domains_host ON custom_domains(host);
+-- one Site at a time holds a host; pending claims on it may be many
+CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_held ON custom_domains(host) WHERE state IN ('verified', 'live', 'failing');
 CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_event ON comments(event_id);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
