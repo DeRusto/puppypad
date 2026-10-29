@@ -783,7 +783,7 @@ function showDashboard(req, res, m, status = 200) {
 const domainView = (user) => cfg.CUSTOM_DOMAINS && {
   claim: domains.of(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), ours: domains.ours(),
   // what deleting this site, or the whole login, stops
-  doomed: (isLogin(user) ? sitesOf(user) : [user]).map((s) => domains.of(s)).filter((c) => c && c.state !== 'ended').map((c) => c.host),
+  doomed: domains.hostsOf(isLogin(user) ? sitesOf(user) : [user]),
 };
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1443,10 +1443,7 @@ const showAdmin = (req, res, m) => {
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
     users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: cfg.CUSTOM_DOMAINS && domains.of(u) })),
     // Custom domains by state, and the failing ones with why; null while the flag is off
-    domains: cfg.CUSTOM_DOMAINS && {
-      counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
-      failing: db.prepare("SELECT c.host, c.last_error, c.failing_since, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.state = 'failing' ORDER BY c.failing_since LIMIT 100").all(),
-    },
+    domains: cfg.CUSTOM_DOMAINS && domains.summary(),
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,

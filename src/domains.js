@@ -225,10 +225,17 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   const ask = (name) => !!hostIn(name, CERTIFIED);
   const siteFor = (host) => hostIn(host, ['live'])?.username; // the Site a request to this host is served as
   const reportTarget = (host) => hostIn(host, HELD);
+  // the hosts of these Sites' claims that are not ended: what deleting them stops
+  const hostsOf = (sites) => sites.map(of).filter((c) => c && c.state !== 'ended').map((c) => c.host);
+  // for /admin: claims by state, and the failing ones with why
+  const summary = () => ({
+    counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
+    failing: db.prepare("SELECT c.host, c.last_error, c.failing_since, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.state = 'failing' ORDER BY c.failing_since LIMIT 100").all(),
+  });
   // the live custom host of the Site with this name
   const liveHost = (name) => (on() ? db.prepare("SELECT c.host FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE u.username = ? AND c.state = 'live'").get(String(name))?.host : undefined);
 
-  return { of, add, remove, check, detach, housekeeping, ask, siteFor, reportTarget, liveHost, graceEnd, ours: () => ours, refreshOurs };
+  return { of, add, remove, check, detach, housekeeping, ask, siteFor, reportTarget, liveHost, graceEnd, hostsOf, summary, ours: () => ours, refreshOurs };
 }
 
 module.exports = { normalise, createDomains, PENDING_DAYS, FAILING_DAYS, GRACE_DAYS, MISSES, day };
