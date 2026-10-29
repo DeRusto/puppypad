@@ -57,8 +57,11 @@ case "$*" in
   *"schema.js down"*) [ ! -f data/down_fails ] ;;
   *"backup('/data/backup.db')"*) touch data/backup.db ;;
   *"rm -f /data/backup.db"*) rm -f data/backup.db ;;
+  *"config --services"*) echo app; echo caddy ;;
+  *"ps --status running --services"*) echo app; [ -f data/caddy_down ] || echo caddy ;;
   *) exit 0 ;;
 esac`);
+  sh(path.join(bin, 'sleep'), 'exit 0'); // the installer's waits between looks at the services
   sh(path.join(bin, 'crontab'), `if [ "$1" = -l ]; then cat ${tmp}/crontab 2>/dev/null; else cat > ${tmp}/crontab; fi`);
   sh(path.join(bin, 'rclone'), `echo "rclone $*" >> ${log}`);
   // a release is the bundle make-bundle.sh would build, with VERSION and docker-compose.yml marking which one it is;
@@ -113,6 +116,7 @@ test('installer: an upgrade that does not come up puts every file and .env value
   const up = s.run('scripts/install.sh', ['v0.0.2']);
   assert.equal(up.status, 1, up.stdout + up.stderr);
   assert.match(up.stdout, /did not come up healthy; going back/);
+  assert.match(up.stdout, /v0\.0\.2 failed its health check; went back to v0\.0\.1\n$/);
   assert.equal(s.read('docker-compose.yml'), '# v0.0.1\n');
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
   assert.match(s.read('.env'), /^PUPPYPAD_VERSION=v0.0.1$/m);
@@ -194,6 +198,20 @@ test('installer: told the lock is inherited, it does not take it again', () => {
   const r = s.run('flock', ['.upgrade/upgrade.lock', 'scripts/install.sh', 'v0.0.1'], { PUPPYPAD_UPGRADE_LOCKED: '1' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.doesNotMatch(r.stdout, /another upgrade is already running/);
+});
+
+test('installer: going back after a failed upgrade says so when a service does not stay up', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.2');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.data();
+  fs.writeFileSync(path.join(s.root, 'data/caddy_down'), '');
+  const up = s.run('scripts/install.sh', ['v0.0.2']);
+  assert.equal(up.status, 1, up.stdout + up.stderr);
+  const last = up.stdout.trim().split('\n').pop();
+  assert.equal(last, 'went back to v0.0.1, but not every service is staying up; check docker compose ps and docker compose logs');
+  assert.match(up.stdout, /not every service stayed up:/);
 });
 
 // the index of the first docker command matching re, after index `from`
