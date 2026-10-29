@@ -162,6 +162,12 @@ test('a pending claim not live after 7 days expires; a failing one ends after 30
   await domains.housekeeping();
   assert.equal(domains.claimOf(f.s).end_reason, 'abandoned');
   assert.match(mail.at(-1).subject, /was removed/);
+
+  // one fixed in time for its last due check recovers instead
+  const r = await live();
+  set(r.c, { state: 'failing', misses: 3, failing_since: Date.now() - 31 * DAY, checked_at: Date.now() - DAY });
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(r.s).state, 'live');
 });
 
 test('a pending claim that proves a failing host takes it over; the old member hears their site moved', async () => {

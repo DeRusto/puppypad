@@ -163,7 +163,7 @@ function createDomains({ cfg, logins, sendMail, net }) {
     return c;
   }
 
-  // the hourly run: lapses, expiries, abandonments, pending and verified claims, then the day's re-checks
+  // the hourly run: lapses, expiries, pending and verified claims, the day's re-checks, then abandonments
   let lastRun = 0;
   async function housekeeping(t = Date.now()) {
     const ran = lastRun;
@@ -196,10 +196,6 @@ function createDomains({ cfg, logins, sendMail, net }) {
       }
     }
     for (const c of active(`AND state IN ('pending', 'verified') AND created_at < ${t - PENDING_DAYS * DAY}`)) end(c, 'expired');
-    for (const c of active(`AND state = 'failing' AND failing_since < ${t - FAILING_DAYS * DAY}`)) {
-      end(c, 'abandoned');
-      mailTo(c, `${c.host} was removed`, `${c.host} failed its checks for ${FAILING_DAYS} days, so we let go of it. Your site is at ${sub(siteOf(c))}. You can add it again.`);
-    }
     const verifiedNow = new Set(); // already had this run's HTTPS request
     for (const c of active("AND state = 'pending'")) { await verify(c); verifiedNow.add(c.id); }
     for (const c of active("AND state = 'verified'")) if (!verifiedNow.has(c.id)) await goLive(c);
@@ -215,6 +211,11 @@ function createDomains({ cfg, logins, sendMail, net }) {
     for (const r of results) if (!(outage && r.httpsFailed)) applyRecheck(r, { mail: !outage }); // an outage run emails no member at all
     if (outage) {
       sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] custom domain HTTPS checks all failed`, `All ${https.length} HTTPS checks of custom domains failed in one run, so none counted against their members. Check that Caddy is up and can reach Let's Encrypt.`);
+    }
+    // after the re-checks, so one fixed by the deadline recovers
+    for (const c of active(`AND state = 'failing' AND failing_since < ${t - FAILING_DAYS * DAY}`)) {
+      end(c, 'abandoned');
+      mailTo(c, `${c.host} was removed`, `${c.host} failed its checks for ${FAILING_DAYS} days, so we let go of it. Your site is at ${sub(siteOf(c))}. You can add it again.`);
     }
   }
 
