@@ -1,4 +1,5 @@
-const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX } = require('./util');
+const { esc, fmtBytes, TEXT_EXT, extOf, SHRINK_PX, DAY } = require('./util');
+const { PENDING_DAYS, FAILING_DAYS, GRACE_DAYS, MISSES, day: ymd } = require('./domains');
 const starters = require('./starters');
 const style = require('./style');
 const { PARTS: CARD_PARTS, MAX_BYTES: CARD_MAX_BYTES, MAX_ART: CARD_MAX_ART, MAX_ART_BYTES: CARD_MAX_ART_BYTES } = require('./cardstyle');
@@ -401,45 +402,45 @@ Other files are left alone.</p>
 };
 
 // ---- the dashboard's Custom domain fold (src/domains.js) ----
-const ymd = (t) => new Date(t).toISOString().slice(0, 10);
-const DAY_MS = 86400000;
 // one line saying where the claim stands: [tone, html]
 function domainStatus(ctx, user, c, d) {
-  const sub = `${esc(user.username)}.${esc(ctx.cfg.BASE_HOST)}`;
+  const sub = esc(ctx.cfg.subdomainHost(user.username));
   if (!c) return ['note', 'Show this site at a domain you own. You keep the domain at your registrar; we only need two DNS records.'];
   const h = `<b>${esc(c.host)}</b>`;
   if (c.state === 'ended') {
     return ['note', {
       expired: `${h} was never verified, so we dropped the claim on ${ymd(c.ended_at)}. Add it again to get a new TXT record.`,
-      lapsed: `${h} was removed on ${ymd(c.ended_at)} because support ended 30 days before. Your site is at ${sub}.`,
-      abandoned: `${h} was removed on ${ymd(c.ended_at)} after 30 days of failing checks. Your site is at ${sub}.`,
+      lapsed: `${h} was removed on ${ymd(c.ended_at)} because support ended ${GRACE_DAYS} days before. Your site is at ${sub}.`,
+      abandoned: `${h} was removed on ${ymd(c.ended_at)} after ${FAILING_DAYS} days of failing checks. Your site is at ${sub}.`,
       moved: `Another site proved it owns ${h} on ${ymd(c.ended_at)}. Your site is back at ${sub}.`,
       moderator: `A moderator removed ${h}: ${esc(c.last_error)}.`,
     }[c.end_reason]];
   }
   if (user.banned) return ['err', `This site was taken down, so ${h} shows the takedown notice too. It comes back if the takedown is lifted.`];
   if (c.state === 'pending') {
-    const lapses = `This claim lapses on ${ymd(c.created_at + 7 * DAY_MS)} if it isn't verified.`;
+    const lapses = `This claim lapses on ${ymd(c.created_at + PENDING_DAYS * DAY)} if it isn't verified.`;
     if (c.txt_ok && !c.addrs_ok) return ['err', `Waiting for ${h}. The TXT record is in place, but ${esc(c.last_error)}, not at us. Fix the record below and check again. ${lapses}`];
     if (c.last_error && c.txt_ok) return ['err', `Waiting for ${h}: ${esc(c.last_error)}. ${lapses}`];
     return ['err', `Waiting for ${h}. We can't find the TXT record yet. DNS changes can take a few hours. We check every hour, or press Check now. ${lapses}`];
   }
   if (c.state === 'verified') return ['note', `${h} is yours and points at us. We're getting its HTTPS certificate now, which usually takes under a minute.${c.last_error ? ` The last try failed: ${esc(c.last_error)}. We try again every hour.` : ''}`];
   if (c.state === 'live' && c.misses) {
-    const left = d.MISSES - c.misses;
+    const left = MISSES - c.misses;
     return ['err', `${h} is still live, but today's check failed: ${esc(c.last_error)}. Leave the records below in place. After ${left} more failed daily check${left === 1 ? '' : 's'}, visitors stop being sent there.`];
   }
   if (c.state === 'live') return ['ok', `${h} is live. Visitors to ${sub} are sent there.`];
-  return ['err', `${h} stopped working on ${ymd(c.failing_since)}: ${esc(c.last_error)}. Your site is back at ${sub}. Put the records back and press Check now. If nothing changes, we let go of ${h} on ${ymd(c.failing_since + 30 * DAY_MS)}, and another site could claim it before then.`];
+  return ['err', `${h} stopped working on ${ymd(c.failing_since)}: ${esc(c.last_error)}. Your site is back at ${sub}. Put the records back and press Check now. If nothing changes, we let go of ${h} on ${ymd(c.failing_since + FAILING_DAYS * DAY)}, and another site could claim it before then.`];
 }
 function domainFold(ctx, user, d) {
   if (!d) return '';
   const c = d.claim && d.claim.state !== 'ended' ? d.claim : null;
   const line = ([tone, html]) => `<p class="${tone}" role="status">${html}</p>`;
   const base = esc(ctx.cfg.BASE_HOST);
-  const grace = c && d.graceEnd ? line(['err', `Your support ended on ${ymd(d.graceEnd - 30 * DAY_MS)}. ${esc(c.host)} keeps working until ${ymd(d.graceEnd)}, then your site goes back to its own address. <a href="/dashboard/support">Renew support</a> to keep it.`]) : '';
+  const grace = c && d.graceEnd ? line(['err', `Your support ended on ${ymd(d.graceEnd - GRACE_DAYS * DAY)}. ${esc(c.host)} keeps working until ${ymd(d.graceEnd)}, then your site goes back to its own address. <a href="/dashboard/support">Renew support</a> to keep it.`]) : '';
   if (!c && !d.supporter) {
-    return ctx.cfg.SUPPORT_ON ? `<p class="note">Supporters can show this site at a domain they own, like <code>www.example.com</code>. <a href="/dashboard/support">Become a supporter</a>.</p>` : '';
+    // an ended claim still says what happened to it
+    return (d.claim ? line(domainStatus(ctx, user, d.claim, d)) : '') +
+      (ctx.cfg.SUPPORT_ON ? `<p class="note">Supporters can show this site at a domain they own, like <code>www.example.com</code>. <a href="/dashboard/support">Become a supporter</a>.</p>` : '');
   }
   if (!c) {
     return `<details${d.claim ? ' open' : ''}><summary>Use your own domain</summary>${line(domainStatus(ctx, user, d.claim, d))}
@@ -451,11 +452,11 @@ function domainFold(ctx, user, d) {
     : { pending: ['note', 'waiting for DNS'], verified: ['note', 'getting HTTPS'], live: c.misses ? ['err', 'check failed'] : ['ok', 'live'], failing: ['err', 'failing'] }[c.state];
   const seen = c.checked_at > 0;
   const tick = (ok) => (!seen ? '' : `<td>${ok ? '<b class="ok">yes</b>' : '<b class="err">no</b>'}</td>`);
-  const v4 = d.ours.filter((a) => !a.includes(':'));
-  const v6 = d.ours.filter((a) => a.includes(':'));
-  const ours = (list, kind) => (list.length ? list : [`the ${kind} address of ${ctx.cfg.BASE_HOST}`]);
-  const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.token}`, c.txt_ok],
-    ...ours(v4, 'IPv4').map((a) => ['A', c.host, a, c.addrs_ok]), ...ours(v6, 'IPv6').map((a) => ['AAAA', c.host, a, c.addrs_ok]),
+  const v4 = d.baseAddrs.filter((a) => !a.includes(':'));
+  const v6 = d.baseAddrs.filter((a) => a.includes(':'));
+  const orPlaceholder = (list, kind) => (list.length ? list : [`the ${kind} address of ${ctx.cfg.BASE_HOST}`]);
+  const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.proof}`, c.txt_ok],
+    ...orPlaceholder(v4, 'IPv4').map((a) => ['A', c.host, a, c.addrs_ok]), ...orPlaceholder(v6, 'IPv6').map((a) => ['AAAA', c.host, a, c.addrs_ok]),
     ['CNAME', c.host, ctx.cfg.BASE_HOST, c.addrs_ok]];
   const open = c.state === 'pending' || c.state === 'failing' || (c.state === 'live' && c.misses) ? ' open' : '';
   return `<p>Your domain: <code>${esc(c.host)}</code> <b class="${chip[0]}">[${esc(chip[1])}]</b></p>

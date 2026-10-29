@@ -29,7 +29,7 @@ app.setDomainNet({
   addrs: async (name) => (name === 'pad.test' ? OURS : world.addrs.get(name) || []),
   https: async (host) => world.https.get(host) ?? true,
 });
-const point = (c) => { world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.token}`]); world.addrs.set(c.host, OURS); };
+const point = (c) => { world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]); world.addrs.set(c.host, OURS); };
 
 let ipN = 0;
 const ip = () => `10.1.${(ipN >> 8) & 255}.${ipN++ & 255}`;
@@ -56,7 +56,9 @@ async function liveAt(name, host) {
 test('tls-check answers 200 for a live claim and 404 for anything else', async () => {
   await liveAt('tlsdog', 'tls.example');
   assert.equal((await req('get', '/internal/tls-check?domain=tls.example', 'app')).status, 200);
-  for (const d of ['other.example', 'pad.test', 'tlsdog.pad.test', '203.0.113.7', '']) {
+  await member('pendog');
+  app.domains.add(row('pendog'), 'pending.example');
+  for (const d of ['pending.example', 'other.example','pad.test', 'tlsdog.pad.test', '203.0.113.7', '']) {
     assert.equal((await req('get', `/internal/tls-check?domain=${encodeURIComponent(d)}`, 'app')).status, 404, d);
   }
 });
@@ -96,7 +98,11 @@ test('a taken-down Site gives 410 on both hosts, and Caddy may still renew its c
 
 test('a failing host is an unknown host, and the subdomain serves again', async () => {
   await liveAt('faildog', 'fail.example');
+  assert.match((await req('get', '/site/faildog')).text, /https:\/\/fail\.example/); // a Site's address is its custom host only while live
   db.prepare("UPDATE custom_domains SET state = 'failing' WHERE host = 'fail.example'").run();
+  const profile = (await req('get', '/site/faildog')).text;
+  assert.doesNotMatch(profile, /fail\.example/);
+  assert.match(profile, /http:\/\/faildog\.pad\.test/);
   const r = await req('get', '/', 'fail.example');
   assert.equal(r.status, 404);
   assert.equal(r.text, 'Unknown host');
@@ -124,8 +130,8 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   let page = await dash(m);
   assert.match(page, /Your domain: <code>www\.dash\.example<\/code> <b class="note">\[waiting for DNS\]<\/b>/);
   assert.match(page, /<details open><summary>Custom domain settings<\/summary>/);
-  const c = app.domains.of(row('dashdog'));
-  assert.ok(page.includes(`puppypad-verify=${c.token}`));
+  const c = app.domains.claimOf(row('dashdog'));
+  assert.ok(page.includes(`puppypad-verify=${c.proof}`));
   assert.ok(page.includes('<code>_puppypad.www.dash.example</code>'));
   for (const a of OURS) assert.ok(page.includes(`<code>${a}</code>`), a);
   assert.match(page, /CNAME<\/td><td><code>www\.dash\.example<\/code><\/td><td><code>pad\.test<\/code>/);
@@ -139,7 +145,7 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   assert.match(page, /\[live\]/);
   assert.match(page, /is live\. Visitors to dashdog\.pad\.test are sent there/);
   assert.equal((await post(m, '/dashboard/domain/remove')).status, 302);
-  assert.equal(app.domains.of(row('dashdog')), undefined);
+  assert.equal(app.domains.claimOf(row('dashdog')), undefined);
   assert.equal((await req('get', '/', 'www.dash.example')).status, 404);
 });
 
@@ -147,7 +153,7 @@ test('a member who does not support gets no domain form, and cannot add one', as
   const m = await member('freedog', { supporter: false });
   assert.doesNotMatch(await dash(m), /Use your own domain/);
   assert.match((await post(m, '/dashboard/domain', { host: 'free.example' })).headers.location, /supporters/);
-  assert.equal(app.domains.of(row('freedog')), undefined);
+  assert.equal(app.domains.claimOf(row('freedog')), undefined);
 });
 
 test('the dashboard says what happened to an ended claim', async () => {
@@ -158,6 +164,15 @@ test('the dashboard says what happened to an ended claim', async () => {
   assert.match(page, /<summary>Use your own domain<\/summary>/); // and a new one can be added
 });
 
+test('a member whose support lapsed still sees why their domain ended', async () => {
+  const m = await liveAt('lapsedog', 'lapse.example');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() - 31 * 86400000, 'lapsedog');
+  await app.domains.housekeeping();
+  const page = await dash(m);
+  assert.match(page, /<b>lapse\.example<\/b> was removed on .* because support ended 30 days before/);
+  assert.doesNotMatch(page, /<form[^>]*action="\/dashboard\/domain"/); // no form to add one while not supporting
+});
+
 test('a report by custom host or URL is filed against that Site', async () => {
   await liveAt('repdog', 'www.rep.example');
   const r = await req('post', '/report').type('form').send({ site: 'https://WWW.rep.example/bad.html', reason: 'Phishing', details: 'fake bank' });
@@ -165,14 +180,19 @@ test('a report by custom host or URL is filed against that Site', async () => {
   const filed = db.prepare('SELECT * FROM reports ORDER BY id DESC').get();
   assert.equal(filed.site, 'repdog');
   assert.equal(filed.details, 'via www.rep.example: fake bank');
+  await req('post', '/report').type('form').send({ site: 'www.rep.example', reason: 'Phishing' });
+  assert.equal(db.prepare('SELECT * FROM reports ORDER BY id DESC').get().details, 'via www.rep.example');
   // a host nobody claims falls back to the first label
   assert.equal((await req('post', '/report').type('form').send({ site: 'nobody.example', details: 'x' })).status, 400);
   assert.equal((await req('post', '/report').type('form').send({ site: 'repdog.pad.test', details: 'y' })).status, 200);
 });
 
+// the one admin, made on first use
+let bossOnce;
+const admin = () => (bossOnce ??= member('boss', { supporter: false }).then((m) => { db.prepare("UPDATE users SET email = 'boss@example.com' WHERE username = 'boss'").run(); return m; }));
+
 test('/admin finds sites by custom host, counts claims, and detaches a domain with a logged, mailed reason', async () => {
-  const boss = await member('boss', { supporter: false });
-  db.prepare("UPDATE users SET email = 'boss@example.com' WHERE username = 'boss'").run();
+  const boss = await admin();
   await liveAt('admdog', 'adm.example');
   await liveAt('sickdog', 'sick.example');
   db.prepare("UPDATE custom_domains SET state = 'failing', last_error = 'TXT record not found' WHERE host = 'sick.example'").run();
@@ -183,7 +203,7 @@ test('/admin finds sites by custom host, counts claims, and detaches a domain wi
   assert.match(page, /sick\.example<\/td><td>sickdog<\/td><td>TXT record not found/);
   const r = await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'admdog', action: 'detach', reason: 'phishing pages' });
   assert.equal(r.status, 200);
-  assert.equal(app.domains.of(row('admdog')).end_reason, 'moderator');
+  assert.equal(app.domains.claimOf(row('admdog')).end_reason, 'moderator');
   const logged = db.prepare('SELECT * FROM admin_log ORDER BY id DESC').get();
   assert.equal(logged.action, 'detach domain');
   assert.equal(logged.site, 'admdog');
@@ -193,4 +213,19 @@ test('/admin finds sites by custom host, counts claims, and detaches a domain wi
   assert.equal((await req('get', '/', 'adm.example')).status, 404);
   // nothing to detach
   assert.match((await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'admdog', action: 'detach', reason: 'again' })).text, /no custom domain/i);
+});
+
+test('revoking a grant starts the 30-day grace now, not from the paid time', async () => {
+  const boss = await admin();
+  const m = await member('granted', { supporter: false });
+  await post(boss, '/admin/supporter', { site: 'granted', days: '10' });
+  const c = app.domains.add(row('granted'), 'grant.example').claim;
+  point(c);
+  assert.equal((await app.domains.check(row('granted'))).state, 'live');
+  await post(boss, '/admin/supporter', { site: 'granted', days: '0' });
+  await app.domains.housekeeping();
+  assert.equal(app.domains.claimOf(row('granted')).state, 'live');
+  const left = app.domains.graceEnd(row('granted')) - Date.now();
+  assert.ok(left > 29 * 86400000 && left <= 30 * 86400000, `grace ends in ${left} ms`);
+  assert.match(await dash(m), /keeps working until/);
 });

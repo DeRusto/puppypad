@@ -64,6 +64,7 @@ const cfg = {
   SHOT_TOKEN: env.SHOT_TOKEN || '',
   TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || '', // signup captcha; off when unset
   subdomainUrl: (name) => `${base.protocol}//${name}.${base.host}`,
+  subdomainHost: (name) => `${name}.${base.hostname}`, // the same without scheme or port, as a hostname to match or show
 };
 // a Site's address: its live Custom domain when it has one (set once src/domains.js is made, below)
 cfg.siteUrl = cfg.subdomainUrl;
@@ -269,7 +270,7 @@ site.use(async (req, res) => {
   let refHost = '';
   try { refHost = new URL(req.get('referer')).hostname; } catch {}
   // the Site's subdomain and its live Custom domain: visits between the two are not referrals
-  const ownHosts = [`${req.owner.username}.${cfg.BASE_HOST}`, domains.liveHost(req.owner.username)];
+  const ownHosts = [cfg.subdomainHost(req.owner.username), domains.liveHost(req.owner.username)];
   let page = false; // set once the request resolves to a page
   // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
   res.on('finish', () => {
@@ -781,9 +782,9 @@ function showDashboard(req, res, m, status = 200) {
 }
 // what the dashboard's Custom domain fold needs; null while the flag is off
 const domainView = (user) => cfg.CUSTOM_DOMAINS && {
-  claim: domains.of(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), ours: domains.ours(), MISSES: domains.MISSES,
+  claim: domains.claimOf(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), baseAddrs: domains.baseAddrs(),
   // what deleting this site, or the whole login, stops
-  doomed: (isLogin(user) ? sitesOf(user) : [user]).map((s) => domains.of(s)).filter((c) => c && c.state !== 'ended').map((c) => c.host),
+  doomed: domains.hostsOf(isLogin(user) ? sitesOf(user) : [user]),
 };
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
@@ -1086,10 +1087,10 @@ main.post('/dashboard/domain/check', auth, async (req, res) => {
   if (!U.limit(`domaincheck:${req.ctx.user.id}`, 20, 3600000)) return domainBack(res, 'err', 'That is a lot of checks. Try again in an hour.');
   const c = await domains.check(req.ctx.user);
   if (!c) return res.redirect('/dashboard');
-  domainBack(res, c.last_error && c.state !== 'live' ? 'err' : 'ok', c.state === 'live' ? `${c.host} is live.` : c.last_error ? `Checked ${c.host}: ${c.last_error}.` : `Checked ${c.host}.`);
+  domainBack(res, c.last_error ? 'err' : 'ok', c.last_error ? `Checked ${c.host}: ${c.last_error}.` : c.state === 'live' ? `${c.host} is live.` : `Checked ${c.host}.`);
 });
 main.post('/dashboard/domain/remove', auth, (req, res) => {
-  const c = domains.of(req.ctx.user);
+  const c = domains.claimOf(req.ctx.user);
   if (domains.remove(req.ctx.user) && c.state !== 'ended') return domainBack(res, 'ok', `Removed ${c.host}. Your site is back at its own address.`);
   res.redirect('/dashboard');
 });
@@ -1410,10 +1411,10 @@ main.get('/report', (req, res) => res.send(V.report(req.ctx, null, { site: Strin
 main.post('/report', async (req, res) => {
   const typed = String(req.body.site || '').trim().toLowerCase().replace(/^https?:\/\//, '');
   // a Custom domain held by a Site (verified, live or failing) is filed against that Site; anything else by its first label
-  const via = domains.reportTarget(typed.split(/[/?#:]/)[0]);
-  const siteName = via ? via.username : typed.split(/[./]/)[0];
-  const said = String(req.body.details || '').trim().slice(0, 2000);
-  const details = via && said ? `via ${via.host}: ${said}`.slice(0, 2000) : said;
+  const claim = domains.reportTarget(typed.split(/[/?#:]/)[0]);
+  const siteName = claim ? claim.username : typed.split(/[./]/)[0];
+  const text = String(req.body.details || '').trim().slice(0, 2000);
+  const details = claim ? `via ${claim.host}${text ? `: ${text}` : ''}`.slice(0, 2000) : text;
   if (req.body.website) return res.send(V.notices.reportSent(req.ctx));
   if (!U.limit(`report:${req.ip}`, 5, 3600000)) return res.status(429).send(V.report(req.ctx, { err: 'Too many reports from your connection. Try again in an hour.' }, { site: siteName }));
   if (!q.userByName.get(siteName)) return res.status(400).send(V.report(req.ctx, { err: 'There is no site with that name.' }, { site: siteName }));
@@ -1432,7 +1433,7 @@ const showAdmin = (req, res, m) => {
   // instr, not LIKE, so % and _ in the search are plain characters
   const users = q
     ? db.prepare(`SELECT * FROM users WHERE instr(lower(username), lower(@q)) OR instr(lower(email), lower(@q)) OR signup_ip = @q
-      OR id IN (SELECT site_id FROM custom_domains WHERE state != 'ended' AND instr(host, lower(@q))) ORDER BY id DESC LIMIT 50`).all({ q })
+      ${cfg.CUSTOM_DOMAINS ? "OR id IN (SELECT site_id FROM custom_domains WHERE state != 'ended' AND instr(host, lower(@q)))" : ''} ORDER BY id DESC LIMIT 50`).all({ q })
     : db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all();
   const open = db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n;
   const { page, pages } = pageOf(req, open, 'rpage');
@@ -1441,12 +1442,9 @@ const showAdmin = (req, res, m) => {
     site: String(req.query.site || '').trim().slice(0, 100), // fills the site boxes after "act" on a report or member
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: domains.of(u) })),
+    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: cfg.CUSTOM_DOMAINS && domains.claimOf(u) })),
     // Custom domains by state, and the failing ones with why; null while the flag is off
-    domains: cfg.CUSTOM_DOMAINS && {
-      counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
-      failing: db.prepare("SELECT c.host, c.last_error, c.failing_since, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.state = 'failing' ORDER BY c.failing_since LIMIT 100").all(),
-    },
+    domains: cfg.CUSTOM_DOMAINS && domains.summary(),
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
@@ -1515,8 +1513,9 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target || !isLogin(target)) return showAdmin(req, res, { err: 'No login with that site name.' });
   const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
-  // granted time only: paid time is Stripe's, so clearing a grant leaves a paying member supporting
-  db.transaction(() => { db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
+  // granted time only: paid time is Stripe's, so clearing a grant leaves a paying member supporting.
+  // Clearing ends a running grant now rather than zeroing it, so a Custom domain's grace runs from now
+  db.transaction(() => { db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(days ? now() + days * DAY : Math.min(target.supporter_granted_until, now()), target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
   const paid = target.supporter_until > now();
   showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : paid ? `${target.username} has no granted time; Stripe support runs until ${new Date(target.supporter_until).toISOString().slice(0, 10)}.` : `${target.username} is no longer a supporter.` });
 });
@@ -1538,10 +1537,9 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
-  // there's no blocklist: a repeat offender gets their site taken down instead
   if (action === 'detach') {
     if (!reason.trim()) return showAdmin(req, res, { err: 'Give a reason; the member sees it.' });
-    const c = domains.of(target);
+    const c = domains.claimOf(target);
     if (!c || c.state === 'ended') return showAdmin(req, res, { err: `${target.username} has no custom domain.` });
     db.transaction(() => { domains.detach(target, reason); adminLog(req, 'detach domain', target.username, `${c.host}: ${reason}`); })();
     return showAdmin(req, res, { ok: `Detached ${c.host} from ${target.username}.` });
@@ -1554,7 +1552,8 @@ main.post('/admin/ban', auth, adminOnly, async (req, res) => {
     return showAdmin(req, res, { ok: `Deleted ${target.username} and all its files.` });
   }
   // the state change and its log entry commit together, so no take-down or restore goes unrecorded;
-  // either take-down ends every session of the login
+  // either take-down ends every session of the login.
+  // A detached domain goes on no blocklist: a repeat offender gets their site taken down instead
   if (action === 'ban') {
     logins.takeDown(target, reason, { inTransaction: () => { adminLog(req, 'take down', target.username, reason); sessions.endSessions(target); } });
     return showAdmin(req, res, { ok: `${target.username} is offline.` });
@@ -1626,5 +1625,5 @@ if (require.main === module) {
   app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
   refreshAll(); // so the first /admin view after a restart reads stored totals
   sweepHistory();
-  if (cfg.CUSTOM_DOMAINS) domains.refreshOurs().catch(() => {}); // the dashboard's records table shows them
+  if (cfg.CUSTOM_DOMAINS) domains.refreshBaseAddrs().catch(() => {}); // the dashboard's records table shows them
 }

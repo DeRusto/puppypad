@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS custom_domains (
   id INTEGER PRIMARY KEY,
   site_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   host TEXT NOT NULL,
-  token TEXT NOT NULL,
+  proof TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending',
   end_reason TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS custom_domains (
   grace_shift INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_domains_host ON custom_domains(host);
--- one Site at a time holds a host; pending claims on it may be many
+-- one Site at a time holds a host (these states are HELD in src/domains.js); pending claims on it may be many
 CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_held ON custom_domains(host) WHERE state IN ('verified', 'live', 'failing');
 CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_event ON comments(event_id);

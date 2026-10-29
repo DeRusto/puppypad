@@ -2897,7 +2897,7 @@ test('an admin grant is granted time: it never touches paid time, and support la
   assert.match((await req('get', '/admin?q=comped').set('Cookie', boss.cookie)).text, new RegExp(`supporter to ${day(granted)} \\(Stripe\\)`));
   // clearing the grant leaves a paying member a supporter until the paid end
   assert.match((await post(boss, '/admin/supporter', { site: 'comped', days: '0' })).text, new RegExp(`comped has no granted time; Stripe support runs until ${day(paid)}\\.`));
-  assert.equal(row().supporter_granted_until, 0);
+  assert.ok(row().supporter_granted_until <= Date.now()); // ended now, so a lapse grace counts from here
   assert.equal(row().supporter_until, paid);
 
   // granted time alone: a supporter with flair and the count, who can still subscribe; clearing it ends support
@@ -2906,6 +2906,10 @@ test('an admin grant is granted time: it never touches paid time, and support la
   makeListed('grantonly');
   assert.match((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
   assert.match((await req('get', '/dashboard/support').set('Cookie', g.cookie)).text, /You are a supporter until/);
+  // and the supporter limits: SUPPORTER_QUOTA_MB 3 and SUPPORTER_MAX_FILE_MB 2 in this file
+  const gdash = (await req('get', '/dashboard').set('Cookie', g.cookie)).text;
+  assert.match(gdash, /of 3 MB in/);
+  assert.match(gdash, /2 MB each at most/);
   assert.equal((await req('post', '/dashboard/support').set('Cookie', g.cookie).type('form').send({ _csrf: g.csrf })).status, 303);
   assert.match((await post(boss, '/admin/supporter', { site: 'grantonly', days: '0' })).text, /grantonly is no longer a supporter\./);
   assert.doesNotMatch((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
@@ -2919,5 +2923,10 @@ test('with CUSTOM_DOMAINS off, custom domains show nowhere and Caddy is refused 
   assert.doesNotMatch((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /own domain/);
   const add = await req('post', '/dashboard/domain').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, host: 'off.example' });
   assert.match(add.headers.location, /err=/);
+  // a claim stored while the flag was on sleeps: /admin neither shows it nor finds the site by it
+  db.prepare("INSERT INTO custom_domains (site_id, host, proof, state, created_at) VALUES (?, 'off.example', 'x', 'live', 0)").run(db.prepare('SELECT id FROM users WHERE username = ?').get('nodomain').id);
+  const boss = await cardBoss();
+  assert.doesNotMatch((await req('get', '/admin?q=nodomain').set('Cookie', boss.cookie)).text, /off\.example/);
+  assert.doesNotMatch((await req('get', '/admin?q=off.example').set('Cookie', boss.cookie)).text, /nodomain/);
   assert.equal((await req('get', '/internal/tls-check?domain=off.example', 'app')).status, 404);
 });
