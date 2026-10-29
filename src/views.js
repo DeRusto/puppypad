@@ -439,7 +439,9 @@ function domainFold(ctx, user, d) {
   const base = esc(ctx.cfg.BASE_HOST);
   const grace = c && d.graceEnd ? line(['err', `Your support ended on ${ymd(d.graceEnd - 30 * DAY_MS)}. ${esc(c.host)} keeps working until ${ymd(d.graceEnd)}, then your site goes back to its own address. <a href="/dashboard/support">Renew support</a> to keep it.`]) : '';
   if (!c && !d.supporter) {
-    return ctx.cfg.SUPPORT_ON ? `<p class="note">Supporters can show this site at a domain they own, like <code>www.example.com</code>. <a href="/dashboard/support">Become a supporter</a>.</p>` : '';
+    // an ended claim still says what happened to it
+    return (d.claim ? line(domainStatus(ctx, user, d.claim, d)) : '') +
+      (ctx.cfg.SUPPORT_ON ? `<p class="note">Supporters can show this site at a domain they own, like <code>www.example.com</code>. <a href="/dashboard/support">Become a supporter</a>.</p>` : '');
   }
   if (!c) {
     return `<details${d.claim ? ' open' : ''}><summary>Use your own domain</summary>${line(domainStatus(ctx, user, d.claim, d))}

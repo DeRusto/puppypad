@@ -158,6 +158,15 @@ test('the dashboard says what happened to an ended claim', async () => {
   assert.match(page, /<summary>Use your own domain<\/summary>/); // and a new one can be added
 });
 
+test('a member whose support lapsed still sees why their domain ended', async () => {
+  const m = await liveAt('lapsedog', 'lapse.example');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() - 31 * 86400000, 'lapsedog');
+  await app.domains.housekeeping();
+  const page = await dash(m);
+  assert.match(page, /<b>lapse\.example<\/b> was removed on .* because support ended 30 days before/);
+  assert.doesNotMatch(page, /<form[^>]*action="\/dashboard\/domain"/); // no form to add one while not supporting
+});
+
 test('a report by custom host or URL is filed against that Site', async () => {
   await liveAt('repdog', 'www.rep.example');
   const r = await req('post', '/report').type('form').send({ site: 'https://WWW.rep.example/bad.html', reason: 'Phishing', details: 'fake bank' });
