@@ -1432,7 +1432,7 @@ const showAdmin = (req, res, m) => {
   // instr, not LIKE, so % and _ in the search are plain characters
   const users = q
     ? db.prepare(`SELECT * FROM users WHERE instr(lower(username), lower(@q)) OR instr(lower(email), lower(@q)) OR signup_ip = @q
-      OR id IN (SELECT site_id FROM custom_domains WHERE state != 'ended' AND instr(host, lower(@q))) ORDER BY id DESC LIMIT 50`).all({ q })
+      ${cfg.CUSTOM_DOMAINS ? "OR id IN (SELECT site_id FROM custom_domains WHERE state != 'ended' AND instr(host, lower(@q)))" : ''} ORDER BY id DESC LIMIT 50`).all({ q })
     : db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all();
   const open = db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n;
   const { page, pages } = pageOf(req, open, 'rpage');
@@ -1441,7 +1441,7 @@ const showAdmin = (req, res, m) => {
     site: String(req.query.site || '').trim().slice(0, 100), // fills the site boxes after "act" on a report or member
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: domains.of(u) })),
+    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: cfg.CUSTOM_DOMAINS && domains.of(u) })),
     // Custom domains by state, and the failing ones with why; null while the flag is off
     domains: cfg.CUSTOM_DOMAINS && {
       counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
