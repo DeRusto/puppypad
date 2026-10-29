@@ -348,3 +348,17 @@ test('a failing claim whose records are right again can get a certificate, so Ch
   assert.equal((await domains.check(s)).state, 'live');
   world.https.delete(c.host);
 });
+
+test('an hourly run that starts while the last is still going is skipped', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let refreshes = 0;
+  const slow = createDomains({ cfg, logins, sendMail, net: { ...net, addrs: async (name) => { if (name === BASE) { refreshes++; await gate; } return net.addrs(name); } } });
+  const first = slow.housekeeping();
+  await slow.housekeeping();
+  assert.equal(refreshes, 1);
+  release();
+  await first;
+  await slow.housekeeping();
+  assert.equal(refreshes, 2);
+});

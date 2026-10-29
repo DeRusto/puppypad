@@ -164,7 +164,13 @@ function createDomains({ cfg, logins, sendMail, net }) {
   }
 
   // the hourly run: lapses, expiries, pending and verified claims, the day's re-checks, then abandonments
+  let running = false; // a run still going when the next hour comes means that one is skipped
   async function housekeeping(t = Date.now()) {
+    if (running) return;
+    running = true;
+    try { await run(t); } finally { running = false; }
+  }
+  async function run(t) {
     const ran = db.prepare("SELECT value FROM kv WHERE key = 'domains_run'").get()?.value || 0;
     db.prepare("INSERT INTO kv (key, value) VALUES ('domains_run', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(t);
     if (!on()) {
