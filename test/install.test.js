@@ -177,6 +177,8 @@ test('installer and watcher take one lock: each blocks the other, and the watche
   assert.ok(!fs.existsSync(path.join(s.root, 'ran')));
   assert.equal(s.read('.upgrade/status'), 'running\n'); // a live install is not marked interrupted
   assert.equal(s.read('data/upgrade/request'), 'upgrade v0.0.3\n'); // still queued
+  assert.match(s.read('data/upgrade/state'), /^status=running$/m); // and it still says it is alive
+  assert.match(s.read('data/upgrade/state'), /^seen_at=\d+$/m);
 
   // nobody holds it: the leftover "running" was a dead run
   fs.renameSync(path.join(s.root, 'data/upgrade/request'), path.join(s.tmp, 'request'));

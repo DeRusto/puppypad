@@ -15,7 +15,9 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p .upgrade
 exec 7>.upgrade/backup.lock
-flock -w "${BACKUP_LOCK_WAIT:-3600}" 7 || { echo "another backup is still running after ${BACKUP_LOCK_WAIT:-3600}s; no backup was taken" >&2; exit 1; }
+lock_wait=${BACKUP_LOCK_WAIT:-3600}
+case "$lock_wait" in *[!0-9]*|'') lock_wait=3600 ;; esac # a typo would make flock fail, which reads as another backup running
+flock -w "$lock_wait" 7 || { echo "another backup is still running after ${lock_wait}s; no backup was taken" >&2; exit 1; }
 # cron doesn't load .env, so read BACKUP_REMOTE from it unless it was set by the caller
 if [ -z "${BACKUP_REMOTE:-}" ] && [ -f .env ]; then
   BACKUP_REMOTE=$(sed -n 's/^BACKUP_REMOTE=//p' .env | tail -n 1 | tr -d "\"'\r")

@@ -26,7 +26,7 @@ _Avoid_: released name, reserved name (reserved names are the ones no Site may e
 
 **Custom domain**:
 A hostname a supporter owns and serves one of their Sites at, proved by a TXT record and pointed at `BASE_DOMAIN`. While it is live, the Site's subdomain sends visitors there. A Site has at most one; a claim on it is pending, verified, live, failing, or ended.
-_Avoid_: vanity domain, own domain
+_Avoid_: vanity domain
 
 **Login**:
 What a member signs in with. It owns one site (up to five for supporters) and holds the email, password, two-factor login, supporter status and admin rights for all of them.
@@ -37,7 +37,7 @@ A request's hold on a site: a browser signed in to its login, or the site's API 
 _Avoid_: auth, credential, token (a token is a one-use emailed link or the second login step)
 
 **Supporter**:
-A login whose support is current. It has two kinds of time: *paid time*, which only Stripe moves, and *granted time*, which only an admin sets. Support lasts until the later of the two. It gets the bigger limits and flair on all its sites; Supporter billing is the module that keeps that in step with Stripe.
+A login whose support is current; an admin's login counts as one too. It has two kinds of time: *paid time*, which only Stripe moves, and *granted time*, which only an admin sets. Support lasts until the later of the two. It gets the bigger limits and flair on all its sites; Supporter billing is the module that keeps that in step with Stripe.
 _Avoid_: donor, subscriber, premium
 
 **Site files**:

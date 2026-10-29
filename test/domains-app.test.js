@@ -75,7 +75,7 @@ test('the custom host serves its Site, and the subdomain 301s GET and HEAD there
     assert.match(r.headers['cache-control'], /max-age=86400/);
   }
   // other methods are served as before
-  assert.notEqual((await req('post', '/_hw/guestbook', 'rexden.pad.test').type('form').send({ name: 'a', message: 'b' })).status, 301);
+  assert.equal((await req('post', '/_hw/guestbook', 'rexden.pad.test').type('form').send({ name: 'a', message: 'b' })).status, 302);
   // links everywhere name the custom host
   assert.match((await req('get', '/site/rexden')).text, /https:\/\/www\.rexden\.example/);
 });
@@ -138,7 +138,11 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   assert.match(page, /Your custom domain www\.dash\.example will stop working\./); // in the delete confirmation
   // Check now, with the records still missing, then in place
   await post(m, '/dashboard/domain/check');
-  assert.match(await dash(m), /can.t find the TXT record yet/);
+  page = await dash(m);
+  assert.match(page, /can.t find the TXT record yet/);
+  // Found? is only the TXT record's; whether it points at us is one answer, whichever way was chosen
+  assert.equal(page.match(/<b class="err">no<\/b>/g).length, 2);
+  assert.match(page, /Points at us: <b class="err">no<\/b>/);
   point(c);
   await post(m, '/dashboard/domain/check');
   page = await dash(m);
@@ -154,6 +158,27 @@ test('a member who does not support gets no domain form, and cannot add one', as
   assert.doesNotMatch(await dash(m), /Use your own domain/);
   assert.match((await post(m, '/dashboard/domain', { host: 'free.example' })).headers.location, /supporters/);
   assert.equal(app.domains.claimOf(row('freedog')), undefined);
+});
+
+test('a taken-down site gets no domain form, and is told why', async () => {
+  const m = await member('bandog');
+  db.prepare('UPDATE users SET banned = 1 WHERE username = ?').run('bandog');
+  const page = await dash(m);
+  assert.doesNotMatch(page, /<form[^>]*action="\/dashboard\/domain"/);
+  assert.match(page, /taken-down site can.t add a domain/);
+});
+
+test('in the grace a claim not working says when it is dropped, and support ended on its real date', async () => {
+  const m = await member('gracedog');
+  app.domains.add(row('gracedog'), 'grace.example');
+  const ended = Date.now() - 2 * 86400000;
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(ended, 'gracedog');
+  db.prepare('UPDATE custom_domains SET grace_shift = ? WHERE host = ?').run(10 * 86400000, 'grace.example'); // paused while the flag was off
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const page = await dash(m);
+  assert.ok(page.includes(`Your support ended on ${day(ended)}.`));
+  assert.doesNotMatch(page, /keeps working until/);
+  assert.ok(page.includes(`is dropped on ${day(ended + 40 * 86400000)}`));
 });
 
 test('the dashboard says what happened to an ended claim', async () => {
@@ -180,8 +205,10 @@ test('a report by custom host or URL is filed against that Site', async () => {
   const filed = db.prepare('SELECT * FROM reports ORDER BY id DESC').get();
   assert.equal(filed.site, 'repdog');
   assert.equal(filed.details, 'via www.rep.example: fake bank');
-  await req('post', '/report').type('form').send({ site: 'www.rep.example', reason: 'Phishing' });
-  assert.equal(db.prepare('SELECT * FROM reports ORDER BY id DESC').get().details, 'via www.rep.example');
+  // a report by custom host still needs the reporter's own words
+  const empty = await req('post', '/report').type('form').send({ site: 'www.rep.example', reason: 'Phishing' });
+  assert.equal(empty.status, 400);
+  assert.match(empty.text, /Tell us what is wrong/);
   // a host nobody claims falls back to the first label
   assert.equal((await req('post', '/report').type('form').send({ site: 'nobody.example', details: 'x' })).status, 400);
   assert.equal((await req('post', '/report').type('form').send({ site: 'repdog.pad.test', details: 'y' })).status, 200);
@@ -227,5 +254,7 @@ test('revoking a grant starts the 30-day grace now, not from the paid time', asy
   assert.equal(app.domains.claimOf(row('granted')).state, 'live');
   const left = app.domains.graceEnd(row('granted')) - Date.now();
   assert.ok(left > 29 * 86400000 && left <= 30 * 86400000, `grace ends in ${left} ms`);
-  assert.match(await dash(m), /keeps working until/);
+  const page = await dash(m);
+  assert.match(page, /keeps working until/);
+  assert.match(page, /<details open><summary>Custom domain settings<\/summary>/); // so the grace end and renew link show
 });

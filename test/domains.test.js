@@ -162,6 +162,12 @@ test('a pending claim not live after 7 days expires; a failing one ends after 30
   await domains.housekeeping();
   assert.equal(domains.claimOf(f.s).end_reason, 'abandoned');
   assert.match(mail.at(-1).subject, /was removed/);
+
+  // one fixed in time for its last due check recovers instead
+  const r = await live();
+  set(r.c, { state: 'failing', misses: 3, failing_since: Date.now() - 31 * DAY, checked_at: Date.now() - DAY });
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(r.s).state, 'live');
 });
 
 test('a pending claim that proves a failing host takes it over; the old member hears their site moved', async () => {
@@ -302,11 +308,16 @@ test('while the flag is off, claims sleep: no checks, and their clocks stand sti
   const c = claim(s);
   point(c);
   const off = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
-  const t = Date.now();
+  const t = Date.now() + 1000;
   await off.housekeeping(t);
+  const before = off.claimOf(s).created_at;
   await off.housekeeping(t + 5 * DAY);
   assert.equal(off.claimOf(s).state, 'pending');
-  assert.equal(off.claimOf(s).created_at, c.created_at + 5 * DAY);
+  assert.equal(off.claimOf(s).created_at, before + 5 * DAY);
+  // the app restarting while dormant: the time it was down stands still too
+  const restarted = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
+  await restarted.housekeeping(t + 7 * DAY);
+  assert.equal(off.claimOf(s).created_at, before + 7 * DAY);
   assert.equal(off.add(site(), newHost()).err, 'Custom domains are for supporters.');
 });
 
@@ -336,4 +347,18 @@ test('a failing claim whose records are right again can get a certificate, so Ch
   world.https.set(c.host, (host) => domains.ask(host)); // the certificate is gone; Caddy asks before getting a new one
   assert.equal((await domains.check(s)).state, 'live');
   world.https.delete(c.host);
+});
+
+test('an hourly run that starts while the last is still going is skipped', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let refreshes = 0;
+  const slow = createDomains({ cfg, logins, sendMail, net: { ...net, addrs: async (name) => { if (name === BASE) { refreshes++; await gate; } return net.addrs(name); } } });
+  const first = slow.housekeeping();
+  await slow.housekeeping();
+  assert.equal(refreshes, 1);
+  release();
+  await first;
+  await slow.housekeeping();
+  assert.equal(refreshes, 2);
 });

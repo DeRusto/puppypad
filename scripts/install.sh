@@ -288,7 +288,12 @@ all_running() {
   done
 }
 
-if docker compose up -d --remove-orphans && healthy && all_running; then
+# why the switch failed, for the last line below
+why=''
+if ! docker compose up -d --remove-orphans; then why='could not be started'
+elif ! healthy; then why='failed its health check'
+elif ! all_running; then why='had a service that did not stay up'; fi
+if [ -z "$why" ]; then
   put_version
   rm -rf "$new" "$prevenv"
   echo "== upgraded to $target"
@@ -315,7 +320,7 @@ up_failed=0; docker compose up -d --remove-orphans || up_failed=1
 # the last line is what /admin shows, so it says which of these happened
 if ! healthy; then echo "went back to ${old:-the git checkout}, but it is not healthy either; check docker compose logs app"
 elif [ "$up_failed" = 1 ] || ! all_running; then echo "went back to ${old:-the git checkout}, but not every service is staying up; check docker compose ps and docker compose logs"
-else echo "$target failed its health check; went back to ${old:-the git checkout}"; fi
+else echo "$target $why; went back to ${old:-the git checkout}"; fi
 exit 1
 }
 

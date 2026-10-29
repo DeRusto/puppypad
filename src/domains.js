@@ -163,16 +163,20 @@ function createDomains({ cfg, logins, sendMail, net }) {
     return c;
   }
 
-  // the hourly run: lapses, expiries, abandonments, pending and verified claims, then the day's re-checks
-  let lastRun = 0;
+  // the hourly run: lapses, expiries, pending and verified claims, the day's re-checks, then abandonments
+  let running = false; // a run still going when the next hour comes means that one is skipped
   async function housekeeping(t = Date.now()) {
-    const ran = lastRun;
-    lastRun = t;
+    if (running) return;
+    running = true;
+    try { await run(t); } finally { running = false; }
+  }
+  async function run(t) {
+    const ran = db.prepare("SELECT value FROM kv WHERE key = 'domains_run'").get()?.value || 0;
+    db.prepare("INSERT INTO kv (key, value) VALUES ('domains_run', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(t);
     if (!on()) {
-      // dormant: every clock stands still, so the time since the last run is added back
-      // shortcut: time while the app itself was down isn't added back; keep the last run in the database if that matters
+      // dormant: every clock stands still, so the time since the last run (the app down included) is added back
       const gap = ran ? t - ran : 0;
-      if (gap) {
+      if (gap > 0) {
         db.prepare("UPDATE custom_domains SET created_at = created_at + @gap, failing_since = CASE WHEN failing_since > 0 THEN failing_since + @gap ELSE 0 END, grace_shift = grace_shift + @gap WHERE state != 'ended'").run({ gap });
       }
       return;
@@ -196,10 +200,6 @@ function createDomains({ cfg, logins, sendMail, net }) {
       }
     }
     for (const c of active(`AND state IN ('pending', 'verified') AND created_at < ${t - PENDING_DAYS * DAY}`)) end(c, 'expired');
-    for (const c of active(`AND state = 'failing' AND failing_since < ${t - FAILING_DAYS * DAY}`)) {
-      end(c, 'abandoned');
-      mailTo(c, `${c.host} was removed`, `${c.host} failed its checks for ${FAILING_DAYS} days, so we let go of it. Your site is at ${sub(siteOf(c))}. You can add it again.`);
-    }
     const verifiedNow = new Set(); // already had this run's HTTPS request
     for (const c of active("AND state = 'pending'")) { await verify(c); verifiedNow.add(c.id); }
     for (const c of active("AND state = 'verified'")) if (!verifiedNow.has(c.id)) await goLive(c);
@@ -215,6 +215,11 @@ function createDomains({ cfg, logins, sendMail, net }) {
     for (const r of results) if (!(outage && r.httpsFailed)) applyRecheck(r, { mail: !outage }); // an outage run emails no member at all
     if (outage) {
       sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] custom domain HTTPS checks all failed`, `All ${https.length} HTTPS checks of custom domains failed in one run, so none counted against their members. Check that Caddy is up and can reach Let's Encrypt.`);
+    }
+    // after the re-checks, so one fixed by the deadline recovers
+    for (const c of active(`AND state = 'failing' AND failing_since < ${t - FAILING_DAYS * DAY}`)) {
+      end(c, 'abandoned');
+      mailTo(c, `${c.host} was removed`, `${c.host} failed its checks for ${FAILING_DAYS} days, so we let go of it. Your site is at ${sub(siteOf(c))}. You can add it again.`);
     }
   }
 

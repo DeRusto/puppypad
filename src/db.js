@@ -159,6 +159,8 @@ CREATE TABLE IF NOT EXISTS custom_domains (
   grace_shift INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_domains_host ON custom_domains(host);
+-- app-wide values that must survive a restart, by key: domains_run is when the last domain housekeeping ran
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 -- one Site at a time holds a host (these states are HELD in src/domains.js); pending claims on it may be many
 CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_held ON custom_domains(host) WHERE state IN ('verified', 'live', 'failing');
 CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id, id);

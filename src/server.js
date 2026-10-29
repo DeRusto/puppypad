@@ -170,8 +170,10 @@ const domainNet = {
   addrs: async (name) => [...await dnsp.resolve4(name).catch(() => []), ...await dnsp.resolve6(name).catch(() => [])],
   https: (host) => new Promise((done) => {
     const r = https.get({ host: 'caddy', port: 443, servername: host, headers: { host }, path: '/', timeout: 60000 }, (res) => { res.resume(); done(true); });
-    r.on('timeout', () => r.destroy());
+    // a promise settles once, so these only count when no answer came: a timeout, an error, or a close with neither
+    r.on('timeout', () => { r.destroy(); done(false); });
     r.on('error', () => done(false));
+    r.on('close', () => done(false));
   }),
 };
 const domains = createDomains({ cfg, logins, sendMail, net: domainNet });
@@ -782,7 +784,7 @@ function showDashboard(req, res, m, status = 200) {
 }
 // what the dashboard's Custom domain fold needs; null while the flag is off
 const domainView = (user) => cfg.CUSTOM_DOMAINS && {
-  claim: domains.claimOf(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), baseAddrs: domains.baseAddrs(),
+  claim: domains.claimOf(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), supportEnded: supporterUntil(loginOf(user)), baseAddrs: domains.baseAddrs(),
   // what deleting this site, or the whole login, stops
   doomed: domains.hostsOf(isLogin(user) ? sitesOf(user) : [user]),
 };
@@ -1414,7 +1416,7 @@ main.post('/report', async (req, res) => {
   const claim = domains.reportTarget(typed.split(/[/?#:]/)[0]);
   const siteName = claim ? claim.username : typed.split(/[./]/)[0];
   const text = String(req.body.details || '').trim().slice(0, 2000);
-  const details = claim ? `via ${claim.host}${text ? `: ${text}` : ''}`.slice(0, 2000) : text;
+  const details = claim && text ? `via ${claim.host}: ${text}`.slice(0, 2000) : text;
   if (req.body.website) return res.send(V.notices.reportSent(req.ctx));
   if (!U.limit(`report:${req.ip}`, 5, 3600000)) return res.status(429).send(V.report(req.ctx, { err: 'Too many reports from your connection. Try again in an hour.' }, { site: siteName }));
   if (!q.userByName.get(siteName)) return res.status(400).send(V.report(req.ctx, { err: 'There is no site with that name.' }, { site: siteName }));

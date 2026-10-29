@@ -138,7 +138,8 @@ async function pull(api, dir) {
     // checked on the deepest folder that exists, since any folder mkdir makes below it is new and can't be a link
     let have = path.dirname(to);
     while (!fs.existsSync(have)) have = path.dirname(have);
-    if (path.relative(root, fs.realpathSync(have)).startsWith('..') || fs.lstatSync(to, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Fail(`Not writing ${f.path}: it leads outside ${dir} through a symlink.`);
+    const rel = path.relative(root, fs.realpathSync(have)); // absolute when it is on another drive (Windows)
+    if (rel.startsWith('..') || path.isAbsolute(rel) || fs.lstatSync(to, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Fail(`Not writing ${f.path}: it leads outside ${dir} through a symlink.`);
     if (fs.existsSync(to) && sha256(to) === f.sha256) continue;
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.writeFileSync(to, await api.call('GET', `/api/file?path=${encodeURIComponent(f.path)}`, undefined, true));
