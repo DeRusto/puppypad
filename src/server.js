@@ -145,7 +145,7 @@ const validEmail = (e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) && e.length <= 20
 const MAX_SITES = 5;
 // what belongs to a site's login, from any of its sites (src/logins.js)
 const logins = createLogins({ cfg, removeSite: (site) => files.removeSite(site), dropShot: (site) => fs.rmSync(shotPath(site.username), { force: true }), holdName: (name) => names.hold(name) });
-const { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor } = logins;
+const { loginOf, isLogin, sitesOf, isAdmin, supporterUntil, supporterUntilSql, isSupporter, limitsFor } = logins;
 // signed-in visits, tokens and two-factor codes, and whether a Session is still good (src/sessions.js)
 const sessions = createSessions({ logins });
 const { makeToken, useToken, peekToken, useCode } = sessions;
@@ -178,7 +178,7 @@ cfg.siteUrl = (name) => { const host = domains.liveHost(name); return host ? `ht
 // how a mail or page names a Site in plain text
 cfg.siteHost = (name) => cfg.siteUrl(name).replace(/^https?:\/\//, '');
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
-const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
+const supporterNames = () => new Set(db.prepare(`SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE ${supporterUntilSql('o.')} > ?`).all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
 // ---------- app ----------
 // Express 5 leaves req.body undefined when no parser ran (a GET, or a POST that is not a form); handlers read fields off it freely
@@ -478,7 +478,7 @@ main.get('/', (req, res) => res.send(V.home(req.ctx, {
   recent: db.prepare(`${WITH_FOLLOWERS} WHERE ${listedWhere()} ORDER BY u.updated_at DESC LIMIT 8`).all().map(hasShot),
   newest: db.prepare(`SELECT * FROM users WHERE ${listedWhere()} ORDER BY id DESC LIMIT 10`).all(),
   total: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${ONLINE}`).get().n,
-  supporters: cfg.SUPPORT_ON ? db.prepare('SELECT COUNT(*) n FROM users WHERE supporter_until > ?').get(now()).n : 0,
+  supporters: cfg.SUPPORT_ON ? db.prepare(`SELECT COUNT(*) n FROM users WHERE ${supporterUntilSql()} > ?`).get(now()).n : 0,
 })));
 const SORTS = { updated: 'u.updated_at DESC', newest: 'u.id DESC', followed: 'followers DESC, u.updated_at DESC', hits: 'u.hits DESC' };
 const hasShot = (r) => ({ ...r, shot: fs.existsSync(shotPath(r.username)) });
@@ -1249,7 +1249,7 @@ main.post('/dashboard/delete-account', auth, async (req, res) => {
 // ----- supporter tier (Stripe) -----
 // supporting is per login: an extra site's page shows and pays for the login that owns it
 const supportPage = (req, res, m, status = 200) => res.status(status).send(V.support(req.ctx, m, {
-  until: req.ctx.login.supporter_until, customer: !!req.ctx.login.stripe_customer_id, limits: limitsFor(req.ctx.user),
+  until: supporterUntil(req.ctx.login), customer: !!req.ctx.login.stripe_customer_id, limits: limitsFor(req.ctx.user),
 }));
 main.get('/dashboard/support', auth, (req, res) => (cfg.SUPPORT_ON || isSupporter(req.ctx.login) ? supportPage(req, res, msgOf(req)) : res.redirect('/dashboard')));
 // Stripe's hosted Checkout takes the card; the webhook above turns the perks on once it is paid
@@ -1441,7 +1441,7 @@ const showAdmin = (req, res, m) => {
     site: String(req.query.site || '').trim().slice(0, 100), // fills the site boxes after "act" on a report or member
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: domains.of(u) })),
+    users: users.map((u) => ({ ...u, until: supporterUntil(u), disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: domains.of(u) })),
     // Custom domains by state, and the failing ones with why; null while the flag is off
     domains: cfg.CUSTOM_DOMAINS && {
       counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
@@ -1451,7 +1451,7 @@ const showAdmin = (req, res, m) => {
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
       banned: db.prepare('SELECT COUNT(*) n FROM users WHERE banned > 0').get().n,
-      supporters: db.prepare('SELECT COUNT(*) n FROM users WHERE supporter_until > ?').get(now()).n,
+      supporters: db.prepare(`SELECT COUNT(*) n FROM users WHERE ${supporterUntilSql()} > ?`).get(now()).n,
       open,
     },
     upgrade: upgrade.readState(DATA_DIR),
@@ -1515,8 +1515,10 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target || !isLogin(target)) return showAdmin(req, res, { err: 'No login with that site name.' });
   const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
-  db.transaction(() => { db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
-  showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : `${target.username} is no longer a supporter.` });
+  // granted time only: paid time is Stripe's, so clearing a grant leaves a paying member supporting
+  db.transaction(() => { db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
+  const paid = target.supporter_until > now();
+  showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : paid ? `${target.username} has no granted time; Stripe support runs until ${new Date(target.supporter_until).toISOString().slice(0, 10)}.` : `${target.username} is no longer a supporter.` });
 });
 // clearing is an empty save done for the member; there's no lock, so a repeat offender gets a takedown instead
 main.post('/admin/card-clear', auth, adminOnly, (req, res) => {

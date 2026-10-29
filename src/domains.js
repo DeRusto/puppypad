@@ -51,7 +51,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   const graceEnd = (site) => {
     if (logins.isSupporter(site)) return 0;
     const c = of(site);
-    return logins.loginOf(site).supporter_until + GRACE_DAYS * DAY + (c ? c.grace_shift : 0);
+    return logins.supporterUntil(logins.loginOf(site)) + GRACE_DAYS * DAY + (c ? c.grace_shift : 0);
   };
 
   // Add a claim: { claim } or { err }. A new token each time, so adding a host again needs a new TXT record
@@ -172,7 +172,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     for (const c of active()) {
       const site = siteOf(c);
       if (logins.isSupporter(site)) { if (c.mailed || c.grace_shift) update(c, { mailed: '', grace_shift: 0 }); continue; }
-      const until = logins.loginOf(site).supporter_until;
+      const until = logins.supporterUntil(logins.loginOf(site));
       const ends = graceEnd(site);
       if (t >= ends) {
         end(c, 'lapsed');

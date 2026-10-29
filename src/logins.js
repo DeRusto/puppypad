@@ -19,7 +19,10 @@ function createLogins({ cfg, removeSite, dropShot, holdName }) {
   // the login and its extra sites, oldest first
   const sitesOf = (site) => db.prepare('SELECT * FROM users WHERE id = ? OR login_id = ? ORDER BY id').all(idOf(site), idOf(site));
   const isAdmin = (site) => { const login = loginOf(site); return !!login.verified && cfg.ADMIN_EMAILS.has(login.email); };
-  const isSupporter = (site) => loginOf(site).supporter_until > Date.now() || isAdmin(site);
+  // support lasts until the later of paid time (supporter_until, from Stripe) and granted time (from an admin); takes a login row
+  const supporterUntil = (login) => Math.max(login.supporter_until, login.supporter_granted_until);
+  const supporterUntilSql = (t = '') => `MAX(${t}supporter_until, ${t}supporter_granted_until)`; // the same, for a query; t is a table alias like 'o.'
+  const isSupporter = (site) => supporterUntil(loginOf(site)) > Date.now() || isAdmin(site);
 
   // Each site keeps the largest QUOTA_MB it has had: raising it in .env grows every site, lowering it only affects new signups
   const quotaMB = (site) => Math.max(site.quota_mb || 0, cfg.QUOTA_MB);
@@ -75,7 +78,7 @@ function createLogins({ cfg, removeSite, dropShot, holdName }) {
     return 'ok';
   }
 
-  return { loginOf, isLogin, sitesOf, isAdmin, isSupporter, limitsFor, remove, takeDown, restore };
+  return { loginOf, isLogin, sitesOf, isAdmin, supporterUntil, supporterUntilSql, isSupporter, limitsFor, remove, takeDown, restore };
 }
 
 module.exports = { createLogins };

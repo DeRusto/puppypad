@@ -15,8 +15,8 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
 
   // a subscription's state sets supporter_until: paid up to the period's end (plus a few days for a late renewal), or over now
   async function apply(sub) {
-    const login = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer)) ||
-      db.prepare('SELECT * FROM users WHERE id = ? AND login_id IS NULL').get(Number(sub.metadata?.user_id) || 0);
+    // by customer only: checkout stores it before payment, and a bare user id can belong to a new login after a deletion
+    const login = db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(String(sub.customer));
     if (!login) return;
     // newer Stripe API versions keep the period on each item
     const item = sub.items?.data?.[0];
@@ -33,7 +33,7 @@ function createBilling({ cfg, logins, stripe, webhookSecret }) {
       }
       until = Math.min(login.supporter_until, Date.now());
     }
-    db.prepare('UPDATE users SET stripe_customer_id = ?, supporter_until = COALESCE(?, supporter_until) WHERE id = ?').run(String(sub.customer), until, login.id);
+    db.prepare('UPDATE users SET supporter_until = COALESCE(?, supporter_until) WHERE id = ?').run(until, login.id);
   }
 
   // { url } to send the member to Stripe Checkout, or { already: true } while they support or a subscription is live.
