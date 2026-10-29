@@ -14,7 +14,10 @@ set -eu
 cd "$(dirname "$0")/.."
 
 mkdir -p .upgrade
-exec 9>.upgrade/lock
+# the same lock scripts/install.sh takes, so a manual install and the watcher exclude each other. It stays
+# held for the whole run and is handed down, open, to the installer started below (PUPPYPAD_UPGRADE_LOCKED),
+# so it is held for as long as either is alive
+exec 9>.upgrade/upgrade.lock
 flock -n 9 || exit 0 # an upgrade is still running
 
 env_val() { sed -n "s/^$1=//p" .env 2>/dev/null | tail -n 1 | tr -d "\"'\r"; }
@@ -104,7 +107,7 @@ case "$request" in
     if is_tag "$tag" && [ "$tag" = "$(get latest)" ]; then
       put status running; put message ""; publish_state
       echo "$(date -u) upgrading to $tag"
-      if scripts/install.sh "$tag" > .upgrade/last.log 2>&1; then
+      if PUPPYPAD_UPGRADE_LOCKED=1 scripts/install.sh "$tag" > .upgrade/last.log 2>&1; then
         put status ok; put message "upgraded to $tag"
       else
         put status failed; put message "$(tail -n 1 .upgrade/last.log)"

@@ -17,6 +17,9 @@
 #
 # Needs docker (with compose), curl, jq, flock, sha256sum, tar, timeout, crontab and rsync. Releases come from
 # UPGRADE_REPO (in .env or the environment), DeRusto/puppypad by default.
+#
+# PUPPYPAD_UPGRADE_LOCKED=1 means "your caller already holds .upgrade/upgrade.lock and you inherited it";
+# only scripts/upgrade-watch.sh sets it. Don't set it by hand: it turns off the one-upgrade-at-a-time check.
 set -eu
 
 # everything is in main(), so when this is piped into sh the shell has read the whole script before
@@ -50,10 +53,13 @@ if [ -f docker-compose.override.yml ]; then
   echo "build from source instead of running the release images. Delete it and run this again."; exit 1
 fi
 
-# one install or upgrade at a time, whether started by hand or by the watcher
+# one install or upgrade at a time, whether started by hand or by the watcher (which takes this same
+# lock and hands it down, open, to the installer it starts)
 mkdir -p .upgrade
-exec 8>.upgrade/upgrade.lock
-flock -n 8 || { echo "another upgrade is already running"; exit 1; }
+if [ "${PUPPYPAD_UPGRADE_LOCKED:-}" != 1 ]; then
+  exec 8>.upgrade/upgrade.lock
+  flock -n 8 || { echo "another upgrade is already running"; exit 1; }
+fi
 
 env_val() { sed -n "s/^$1=//p" .env 2>/dev/null | tail -n 1 | tr -d "\"'\r"; }
 # rewrites one line of .env in place (same file, so its owner and mode stay)

@@ -151,6 +151,51 @@ test('installer: an upgrade that does not come up puts every file and .env value
   assert.equal(s.read('ran'), 'v0.0.3\n');
 });
 
+test('installer and watcher take one lock: each blocks the other, and the watcher hands it to its installer', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  // another process holding the lock, as a manual install (or a watcher-started one whose watcher died) would
+  const held = (cmd, args, extra) => s.run('flock', ['.upgrade/upgrade.lock', cmd, ...args], extra);
+
+  const manual = held('scripts/install.sh', ['v0.0.1']);
+  assert.equal(manual.status, 1, manual.stdout + manual.stderr);
+  assert.match(manual.stdout, /another upgrade is already running/);
+
+  // the installer the watcher starts says whether it got the env var and finds the lock held for it
+  sh(path.join(s.root, 'scripts/install.sh'), '[ "$PUPPYPAD_UPGRADE_LOCKED" = 1 ] && ! flock -n .upgrade/upgrade.lock true && echo "$1" > ran');
+  fs.writeFileSync(path.join(s.root, '.upgrade/latest'), 'v0.0.3\n');
+  fs.writeFileSync(path.join(s.root, '.upgrade/checked_at'), `${Math.floor(Date.now() / 1000)}\n`);
+  fs.writeFileSync(path.join(s.root, '.upgrade/status'), 'running\n');
+  fs.writeFileSync(path.join(s.root, 'data/upgrade/request'), 'upgrade v0.0.3\n');
+  const blocked = held('scripts/upgrade-watch.sh', []);
+  assert.equal(blocked.status, 0, blocked.stdout + blocked.stderr);
+  assert.ok(!fs.existsSync(path.join(s.root, 'ran')));
+  assert.equal(s.read('.upgrade/status'), 'running\n'); // a live install is not marked interrupted
+  assert.equal(s.read('data/upgrade/request'), 'upgrade v0.0.3\n'); // still queued
+
+  // nobody holds it: the leftover "running" was a dead run
+  fs.renameSync(path.join(s.root, 'data/upgrade/request'), path.join(s.tmp, 'request'));
+  assert.equal(s.run('scripts/upgrade-watch.sh', []).status, 0);
+  assert.equal(s.read('.upgrade/status'), 'failed\n');
+  assert.match(s.read('.upgrade/message'), /interrupted/);
+  // and the queued request goes through, the installer running with the lock handed down
+  fs.renameSync(path.join(s.tmp, 'request'), path.join(s.root, 'data/upgrade/request'));
+  const watch = s.run('scripts/upgrade-watch.sh', []);
+  assert.equal(watch.status, 0, watch.stdout + watch.stderr);
+  assert.equal(s.read('ran'), 'v0.0.3\n');
+  assert.equal(s.read('.upgrade/status'), 'ok\n');
+});
+
+test('installer: told the lock is inherited, it does not take it again', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  const r = s.run('flock', ['.upgrade/upgrade.lock', 'scripts/install.sh', 'v0.0.1'], { PUPPYPAD_UPGRADE_LOCKED: '1' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /another upgrade is already running/);
+});
+
 // the index of the first docker command matching re, after index `from`
 const at = (lines, re, from = -1) => lines.findIndex((l, i) => i > from && re.test(l));
 const DOWN = (n, tag) => new RegExp(`^compose run --rm -T --no-deps app node src/schema\\.js down ${n} \\[${tag}\\]$`);
