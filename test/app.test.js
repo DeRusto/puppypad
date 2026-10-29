@@ -2304,9 +2304,25 @@ test('the CLI pushes only changed files, deletes only with --delete, and pulls t
     const trap = path.join(tmp, 'trap');
     fs.mkdirSync(path.join(tmp, 'elsewhere'));
     fs.mkdirSync(trap);
-    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(trap, 'pics'));
+    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(trap, 'pics'), 'junction'); // junction: Windows makes it without admin, elsewhere it's a plain symlink
     await assert.rejects(cli('pull', trap), /symlink/);
     assert.ok(!fs.existsSync(path.join(tmp, 'elsewhere', 'cat.gif')));
+    // nested below the symlink: refused before any folder is made outside
+    const nest = path.join(tmp, 'nest');
+    fs.mkdirSync(path.join(nest, 'pics', 'sub', 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(nest, 'pics', 'sub', 'deep', 'dog.gif'), 'dog');
+    await cli('push', nest);
+    const trap2 = path.join(tmp, 'trap2');
+    fs.mkdirSync(path.join(tmp, 'elsewhere2'));
+    fs.mkdirSync(path.join(trap2, 'pics'), { recursive: true });
+    fs.symlinkSync(path.join(tmp, 'elsewhere2'), path.join(trap2, 'pics', 'sub'), 'junction');
+    await assert.rejects(cli('pull', trap2), /Not writing pics\/sub\/deep\/dog\.gif: it leads outside .* through a symlink/);
+    assert.deepEqual(fs.readdirSync(path.join(tmp, 'elsewhere2')), []);
+    fs.mkdirSync(path.join(tmp, 'elsewhere2', 'deep'));
+    fs.writeFileSync(path.join(tmp, 'elsewhere2', 'deep', 'dog.gif'), 'mine');
+    await assert.rejects(cli('pull', trap2), /symlink/);
+    assert.equal(fs.readFileSync(path.join(tmp, 'elsewhere2', 'deep', 'dog.gif'), 'utf8'), 'mine');
+    await cli('delete', 'pics/sub/deep/dog.gif');
     assert.match(await cli('delete', 'pics/cat.gif', 'nope.gif'), /deleted {2}pics\/cat\.gif\nnot found {2}nope\.gif/);
     assert.match(await cli('info'), /clidog {2}http:\/\/clidog\.pad\.test\//);
     assert.match(await cli('list'), /index\.html/);
