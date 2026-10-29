@@ -340,3 +340,23 @@ test('receive: a thin event of a kind the app ignores is a no-op, even with noth
   await make(stripe).receive(Buffer.from(payload), signer.generateTestHeaderString({ payload, secret: SECRET }));
   assert.equal(row(login).supporter_until, 0);
 });
+
+test('receive: Stripe events only move paid time, so an admin grant outlasts renewal, past_due and cancel', async () => {
+  const stripe = fakeStripe();
+  const login = add({ stripe_customer_id: 'cus_g' });
+  const granted = Date.now() + 365 * DAY;
+  db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(granted, login.id);
+  const end = secs(Date.now() + 30 * DAY);
+  const sub = (status, item) => ({ id: 'sub_g', customer: 'cus_g', status, metadata: {}, items: { data: [item] } });
+  await event(stripe, 'customer.subscription.updated', sub('active', { current_period_end: end }));
+  assert.equal(row(login).supporter_until, end * 1000 + 3 * DAY);
+  const renewed = secs(Date.now() - 5 * DAY);
+  await event(stripe, 'customer.subscription.updated', sub('past_due', { current_period_start: renewed, current_period_end: renewed + 30 * 86400 }));
+  assert.equal(row(login).supporter_until, renewed * 1000 + 3 * DAY);
+  await event(stripe, 'customer.subscription.deleted', sub('canceled', { current_period_end: end }));
+  assert.ok(row(login).supporter_until <= Date.now());
+  assert.equal(row(login).supporter_granted_until, granted);
+  assert.ok(logins.isSupporter(row(login)));
+  assert.equal(logins.supporterUntil(row(login)), granted);
+  assert.equal(logins.limitsFor(row(login)).quotaMB, cfg.SUPPORTER_QUOTA_MB);
+});

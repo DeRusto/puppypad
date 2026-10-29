@@ -33,7 +33,7 @@ A request's hold on a site: a browser signed in to its login, or the site's API 
 _Avoid_: auth, credential, token (a token is a one-use emailed link or the second login step)
 
 **Supporter**:
-A login whose support is current, paid through Stripe or granted by an admin. It gets the bigger limits and flair on all its sites; Supporter billing is the module that keeps that in step with Stripe.
+A login whose support is current. It has two kinds of time: *paid time*, which only Stripe moves, and *granted time*, which only an admin sets. Support lasts until the later of the two. It gets the bigger limits and flair on all its sites; Supporter billing is the module that keeps that in step with Stripe.
 _Avoid_: donor, subscriber, premium
 
 **Site files**:

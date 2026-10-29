@@ -2864,3 +2864,33 @@ test('support checkout and billing portal share a rate limit per login', async (
   assert.equal((await post('/dashboard/support/portal')).status, 429);
   assert.equal(stripeCalls.length, before); // turned away before any Stripe call
 });
+
+test('an admin grant is granted time: it never touches paid time, and support lasts until the later of the two', async () => {
+  const boss = await cardBoss();
+  const m = await member('comped');
+  const row = () => db.prepare('SELECT * FROM users WHERE username = ?').get('comped');
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const paid = Date.now() + 30 * 86400000;
+  db.prepare("UPDATE users SET supporter_until = ?, stripe_customer_id = 'cus_comped' WHERE username = ?").run(paid, 'comped');
+  assert.match((await post(boss, '/admin/supporter', { site: 'comped', days: '365' })).text, /comped is a supporter for 365 days\./);
+  const granted = row().supporter_granted_until;
+  assert.ok(granted > Date.now() + 364 * 86400000);
+  assert.equal(row().supporter_until, paid);
+  // the member and the admin both see the later date
+  assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, new RegExp(`You are a supporter until ${day(granted)}`));
+  assert.match((await req('get', '/admin?q=comped').set('Cookie', boss.cookie)).text, new RegExp(`supporter to ${day(granted)} \\(Stripe\\)`));
+  // clearing the grant leaves a paying member a supporter until the paid end
+  assert.match((await post(boss, '/admin/supporter', { site: 'comped', days: '0' })).text, new RegExp(`comped has no granted time; Stripe support runs until ${day(paid)}\\.`));
+  assert.equal(row().supporter_granted_until, 0);
+  assert.equal(row().supporter_until, paid);
+
+  // granted time alone: a supporter with flair and the count, who can still subscribe; clearing it ends support
+  const g = await member('grantonly');
+  await post(boss, '/admin/supporter', { site: 'grantonly', days: '10' });
+  makeListed('grantonly');
+  assert.match((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
+  assert.match((await req('get', '/dashboard/support').set('Cookie', g.cookie)).text, /You are a supporter until/);
+  assert.equal((await req('post', '/dashboard/support').set('Cookie', g.cookie).type('form').send({ _csrf: g.csrf })).status, 303);
+  assert.match((await post(boss, '/admin/supporter', { site: 'grantonly', days: '0' })).text, /grantonly is no longer a supporter\./);
+  assert.doesNotMatch((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
+});
