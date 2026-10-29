@@ -6,6 +6,8 @@ const Stripe = require('stripe');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
+const dnsp = require('dns').promises;
 const { db, DATA_DIR, SITES_DIR } = require('./db');
 const U = require('./util');
 const V = require('./views');
@@ -24,6 +26,7 @@ const { createNames } = require('./names');
 const { createSocial, WITH_FOLLOWERS, NOTE_KINDS } = require('./social');
 const { createGuestbook } = require('./guestbook');
 const { createBilling, BadSignature } = require('./billing');
+const { createDomains } = require('./domains');
 
 // ---------- config ----------
 const env = process.env;
@@ -157,6 +160,18 @@ const files = createSiteFiles({ cfg, limitsFor, sendMail });
 const names = createNames({ files });
 // follows, comments, likes, Blocks, notifications and the follow feed (src/social.js)
 const social = createSocial({ cfg, logins, listing, sendMail });
+// supporters' own domains (src/domains.js). DNS answers come from the system resolver; the HTTPS request goes straight
+// to the Caddy container with the custom host as SNI, so Caddy issues or renews its certificate. app.setDomainNet swaps them for tests
+const domainNet = {
+  txt: (name) => dnsp.resolveTxt(name).then((r) => r.map((parts) => parts.join('')), () => []),
+  addrs: async (name) => [...await dnsp.resolve4(name).catch(() => []), ...await dnsp.resolve6(name).catch(() => [])],
+  https: (host) => new Promise((done) => {
+    const r = https.get({ host: 'caddy', port: 443, servername: host, headers: { host }, path: '/', timeout: 60000 }, (res) => { res.resume(); done(true); });
+    r.on('timeout', () => r.destroy());
+    r.on('error', () => done(false));
+  }),
+};
+const domains = createDomains({ cfg, logins, sendMail, net: domainNet });
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
 const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
@@ -336,6 +351,9 @@ main.get('/shots/:name.jpg', (req, res) => {
   if (!u || !u.verified || u.banned || !fs.existsSync(shotPath(u.username))) return res.sendStatus(404);
   res.set('Cache-Control', 'public, max-age=300').type('image/jpeg').sendFile(shotPath(u.username));
 });
+
+// Caddy's on-demand TLS asks here before it gets a certificate for a host it has none for: one indexed lookup, no DNS
+main.get('/internal/tls-check', (req, res) => res.sendStatus(domains.ask(req.query.domain) ? 200 : 404));
 
 // uptime monitor: 200 when the database answers and the disk has room, 503 otherwise
 main.get('/healthz', (req, res) => {
@@ -1529,6 +1547,7 @@ const housekeeping = () => {
       try { if (now() - fs.statSync(full).mtimeMs > 3600000) fs.rmSync(full, { force: true }); } catch { /* finished with meanwhile */ }
     }
   } catch (e) { console.error('housekeeping failed:', e.message); }
+  domains.housekeeping().catch((e) => console.error('custom domain checks failed:', e.message));
 };
 setInterval(housekeeping, 3600000).unref();
 const refreshAll = () => files.refreshUsage().catch((e) => console.error('disk totals refresh failed:', e.message));
@@ -1542,10 +1561,13 @@ app.setStripe = (client) => { billing = makeBilling(client); }; // tests bring a
 app.forgetUsage = files.forgetUsage; // for tests that put files on disk behind the app's back
 app.refreshUsage = files.refreshUsage;
 app.historySweep = files.historySweep;
+app.setDomainNet = (stub) => Object.assign(domainNet, stub); // tests stub DNS and HTTPS
+app.domains = domains;
 
 if (require.main === module) {
   const port = Number(env.PORT || 3000);
   app.listen(port, () => console.log(`${cfg.SITE_NAME} listening on :${port} for ${cfg.BASE_URL}`));
   refreshAll(); // so the first /admin view after a restart reads stored totals
   sweepHistory();
+  if (cfg.CUSTOM_DOMAINS) domains.refreshOurs().catch(() => {}); // the dashboard's records table shows them
 }
