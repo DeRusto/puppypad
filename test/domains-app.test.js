@@ -138,7 +138,11 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   assert.match(page, /Your custom domain www\.dash\.example will stop working\./); // in the delete confirmation
   // Check now, with the records still missing, then in place
   await post(m, '/dashboard/domain/check');
-  assert.match(await dash(m), /can.t find the TXT record yet/);
+  page = await dash(m);
+  assert.match(page, /can.t find the TXT record yet/);
+  // Found? is only the TXT record's; whether it points at us is one answer, whichever way was chosen
+  assert.equal(page.match(/<b class="err">no<\/b>/g).length, 2);
+  assert.match(page, /Points at us: <b class="err">no<\/b>/);
   point(c);
   await post(m, '/dashboard/domain/check');
   page = await dash(m);

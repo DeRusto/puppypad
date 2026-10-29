@@ -452,18 +452,21 @@ function domainFold(ctx, user, d) {
   const chip = user.banned ? ['err', 'taken down'] : d.graceEnd ? ['err', `until ${ymd(d.graceEnd)}`]
     : { pending: ['note', 'waiting for DNS'], verified: ['note', 'getting HTTPS'], live: c.misses ? ['err', 'check failed'] : ['ok', 'live'], failing: ['err', 'failing'] }[c.state];
   const seen = c.checked_at > 0;
-  const tick = (ok) => (!seen ? '' : `<td>${ok ? '<b class="ok">yes</b>' : '<b class="err">no</b>'}</td>`);
+  const mark = (ok) => (ok ? '<b class="ok">yes</b>' : '<b class="err">no</b>');
+  // only the TXT row gets a Found? mark: the A/AAAA and the CNAME are two ways to point, so one answer covers both
+  const tick = (ok) => (!seen ? '' : `<td>${ok === undefined ? '' : mark(ok)}</td>`);
   const v4 = d.baseAddrs.filter((a) => !a.includes(':'));
   const v6 = d.baseAddrs.filter((a) => a.includes(':'));
   const orPlaceholder = (list, kind) => (list.length ? list : [`the ${kind} address of ${ctx.cfg.BASE_HOST}`]);
   const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.proof}`, c.txt_ok],
-    ...orPlaceholder(v4, 'IPv4').map((a) => ['A', c.host, a, c.addrs_ok]), ...orPlaceholder(v6, 'IPv6').map((a) => ['AAAA', c.host, a, c.addrs_ok]),
-    ['CNAME', c.host, ctx.cfg.BASE_HOST, c.addrs_ok]];
+    ...orPlaceholder(v4, 'IPv4').map((a) => ['A', c.host, a]), ...orPlaceholder(v6, 'IPv6').map((a) => ['AAAA', c.host, a]),
+    ['CNAME', c.host, ctx.cfg.BASE_HOST]];
   const open = c.state === 'pending' || c.state === 'failing' || (c.state === 'live' && c.misses) ? ' open' : '';
   return `<p>Your domain: <code>${esc(c.host)}</code> <b class="${chip[0]}">[${esc(chip[1])}]</b></p>
 <details${open}><summary>Custom domain settings</summary>${line(domainStatus(ctx, user, c, d))}${grace}
 <div class="scroll"><table><tr><th>Type</th><th>Name</th><th>Value</th>${seen ? '<th>Found?</th>' : ''}</tr>
-${rows.map(([t, n, v, ok]) => `<tr><td>${t}</td><td><code>${esc(n)}</code></td><td><code>${esc(v)}</code></td>${tick(ok)}</tr>`).join('')}</table></div>
+${rows.map(([t, n, v, ok]) => `<tr><td>${t}</td><td><code>${esc(n)}</code></td><td><code>${esc(v)}</code></td>${tick(ok)}</tr>`).join('')}</table></div>${seen ? `
+<p>Points at us: ${mark(c.addrs_ok)}</p>` : ''}
 <p class="note">The TXT record proves the domain is yours. Then point it at us one of two ways: the A and AAAA records, or one CNAME to <code>${base}</code> (a bare domain like <code>example.com</code> usually can't take a CNAME, but ALIAS, ANAME or CNAME flattening to <code>${base}</code> works). Some DNS hosts want the name without your domain on the end. Remove any other A or AAAA records on ${esc(c.host)}: every address must be ours. Leave the records in place for as long as you use the domain; we check them every day.</p>
 <form class="inline" method="post" action="/dashboard/domain/check">${csrfField(ctx)}<button>Check now</button></form>
 <details class="mt"><summary>Remove ${esc(c.host)}</summary><p>Your site goes back to its own address at once, and the domain is free for anyone to claim. Adding it again later needs a new TXT record.</p>
