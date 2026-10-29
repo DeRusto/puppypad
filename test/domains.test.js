@@ -193,11 +193,17 @@ test('of two pending claims on one host, the first to verify wins', async () => 
 
 test('when every HTTPS check of a run fails, none counts: no member email, one to the abuse address', async () => {
   const all = [await live(), await live(), await live()];
-  const sent = mail.length;
   for (const { c } of all) { world.https.set(c.host, false); dueRecheck(c); }
+  // and a DNS miss in that run counts, but its member isn't emailed either
+  const dnsBroken = await live();
+  world.addrs.set(dnsBroken.c.host, ['198.51.100.20']);
+  dueRecheck(dnsBroken.c);
+  const sent = mail.length;
   await domains.housekeeping();
   for (const { s } of all) assert.equal(domains.of(s).misses, 0);
+  assert.equal(domains.of(dnsBroken.s).misses, 1);
   assert.deepEqual(mail.slice(sent).map((m) => m.to), [cfg.ABUSE_EMAIL]);
+  world.addrs.set(dnsBroken.c.host, OURS);
   // one failing on its own is that member's miss
   for (const { c } of all) world.https.set(c.host, true);
   world.https.set(all[0].c.host, false);

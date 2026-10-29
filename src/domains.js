@@ -205,7 +205,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     const https = results.filter((r) => r.httpsFailed !== undefined);
     // every HTTPS request failing at once is us (Caddy down, or Let's Encrypt), not the members
     const outage = https.length >= 3 && https.every((r) => r.httpsFailed);
-    for (const r of results) if (!(outage && r.httpsFailed)) applyRecheck(r);
+    for (const r of results) if (!(outage && r.httpsFailed)) applyRecheck(r, { mail: !outage }); // an outage run emails no member at all
     if (outage) {
       sendMail(cfg.ABUSE_EMAIL, `[${cfg.SITE_NAME}] custom domain HTTPS checks all failed`, `All ${https.length} HTTPS checks of custom domains failed in one run, so none counted against their members. Check that Caddy is up and can reach Let's Encrypt.`);
     }
