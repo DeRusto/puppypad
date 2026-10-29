@@ -1086,7 +1086,7 @@ main.post('/dashboard/domain/check', auth, async (req, res) => {
   if (!U.limit(`domaincheck:${req.ctx.user.id}`, 20, 3600000)) return domainBack(res, 'err', 'That is a lot of checks. Try again in an hour.');
   const c = await domains.check(req.ctx.user);
   if (!c) return res.redirect('/dashboard');
-  domainBack(res, c.last_error && c.state !== 'live' ? 'err' : 'ok', c.state === 'live' ? `${c.host} is live.` : c.last_error ? `Checked ${c.host}: ${c.last_error}.` : `Checked ${c.host}.`);
+  domainBack(res, c.last_error ? 'err' : 'ok', c.last_error ? `Checked ${c.host}: ${c.last_error}.` : c.state === 'live' ? `${c.host} is live.` : `Checked ${c.host}.`);
 });
 main.post('/dashboard/domain/remove', auth, (req, res) => {
   const c = domains.of(req.ctx.user);

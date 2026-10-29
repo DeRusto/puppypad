@@ -14,6 +14,7 @@ const FAILING_DAYS = 30; // a failing claim nobody fixes ends as abandoned
 const GRACE_DAYS = 30; // a lapsed supporter's claims keep working this long
 const MISSES = 3; // daily checks in a row that fail before a live claim is failing
 const HTTPS_ERROR = "the certificate couldn't be issued; check for a CAA record that leaves out Let's Encrypt";
+const RECHECKED = ['live', 'failing']; // the states the daily re-check covers
 const day = (t) => new Date(t).toISOString().slice(0, 10);
 
 // { host } as stored, matched and shown (the A-label), or { err } saying why it's refused
@@ -119,7 +120,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   }
   function applyRecheck({ c, txt, points, error }, { mail = true } = {}) {
     const cur = byId.get(c.id);
-    if (!cur || !['live', 'failing'].includes(cur.state)) return;
+    if (!cur || !RECHECKED.includes(cur.state)) return;
     const t = Date.now();
     if (!error) return update(c, { state: 'live', misses: 0, last_error: '', failing_since: 0, txt_ok: 1, addrs_ok: 1, checked_at: t });
     const misses = cur.misses + 1;
@@ -134,13 +135,18 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     }
   }
 
-  // Check now: { the claim after the check }. A verified claim retries HTTPS at most hourly (Let's Encrypt allows 5 failures an hour)
+  // Check now: { the claim after the check }. A verified claim retries HTTPS at most hourly (Let's Encrypt allows 5 failures an hour).
+  // A live or failing claim that passes is live again; one that fails only shows why, since misses are the daily check's to count
   async function check(site) {
     const c = of(site);
     if (!on() || !c) return c;
     if (c.state === 'pending') await verify(c);
     else if (c.state === 'verified' && c.checked_at < Date.now() - HOUR) await goLive(c);
-    else if (c.state === 'live' || c.state === 'failing') applyRecheck(await recheck(c));
+    else if (c.state === 'live' || c.state === 'failing') {
+      const r = await recheck(c);
+      if (!r.error) applyRecheck(r);
+      else if (RECHECKED.includes(byId.get(c.id)?.state)) update(c, { last_error: r.error, txt_ok: +r.txt, addrs_ok: +r.points });
+    }
     return of(site);
   }
 

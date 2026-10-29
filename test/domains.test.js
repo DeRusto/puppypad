@@ -128,6 +128,22 @@ test('three missed daily checks make a live claim failing, with an email at the 
   assert.equal(domains.of(s).misses, 0);
 });
 
+test('Check now on a live claim shows the result but counts no daily miss; a pass still brings a failing claim back', async () => {
+  const { s, c } = await live();
+  const sent = mail.length;
+  const checked = domains.of(s).checked_at;
+  world.addrs.set(c.host, ['198.51.100.20']);
+  for (let i = 0; i < 3; i++) await domains.check(s);
+  assert.equal(domains.of(s).state, 'live');
+  assert.equal(domains.of(s).misses, 0);
+  assert.match(domains.of(s).last_error, /points at 198\.51\.100\.20/);
+  assert.equal(domains.of(s).checked_at, checked); // the daily check still comes round
+  assert.equal(mail.length, sent);
+  set(c, { state: 'failing', misses: 3, failing_since: Date.now() });
+  world.addrs.set(c.host, OURS);
+  assert.equal((await domains.check(s)).state, 'live');
+});
+
 test('a pending claim not live after 7 days expires; a failing one ends after 30 days', async () => {
   const s = site();
   const c = claim(s);
