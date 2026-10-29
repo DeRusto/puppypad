@@ -112,3 +112,48 @@ test('a renamed Site keeps its domain, and the held old name 301s straight to it
   assert.equal(old.status, 301);
   assert.equal(old.headers.location, 'https://renamed.example/x.html');
 });
+
+const post = (m, url, body = {}) => req('post', url).set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, ...body });
+const dash = async (m) => (await req('get', '/dashboard').set('Cookie', m.cookie)).text;
+
+test('on the dashboard a supporter adds a domain, sees the records, checks it and removes it', async () => {
+  const m = await member('dashdog');
+  assert.match(await dash(m), /<summary>Use your own domain<\/summary>/);
+  assert.match((await post(m, '/dashboard/domain', { host: 'https://nope.example/' })).headers.location, /err=/);
+  assert.equal((await post(m, '/dashboard/domain', { host: 'WWW.Dash.Example' })).status, 302);
+  let page = await dash(m);
+  assert.match(page, /Your domain: <code>www\.dash\.example<\/code> <b class="note">\[waiting for DNS\]<\/b>/);
+  assert.match(page, /<details open><summary>Custom domain settings<\/summary>/);
+  const c = app.domains.of(row('dashdog'));
+  assert.ok(page.includes(`puppypad-verify=${c.token}`));
+  assert.ok(page.includes('<code>_puppypad.www.dash.example</code>'));
+  for (const a of OURS) assert.ok(page.includes(`<code>${a}</code>`), a);
+  assert.match(page, /CNAME<\/td><td><code>www\.dash\.example<\/code><\/td><td><code>pad\.test<\/code>/);
+  assert.match(page, /Your custom domain www\.dash\.example will stop working\./); // in the delete confirmation
+  // Check now, with the records still missing, then in place
+  await post(m, '/dashboard/domain/check');
+  assert.match(await dash(m), /can.t find the TXT record yet/);
+  point(c);
+  await post(m, '/dashboard/domain/check');
+  page = await dash(m);
+  assert.match(page, /\[live\]/);
+  assert.match(page, /is live\. Visitors to dashdog\.pad\.test are sent there/);
+  assert.equal((await post(m, '/dashboard/domain/remove')).status, 302);
+  assert.equal(app.domains.of(row('dashdog')), undefined);
+  assert.equal((await req('get', '/', 'www.dash.example')).status, 404);
+});
+
+test('a member who does not support gets no domain form, and cannot add one', async () => {
+  const m = await member('freedog', { supporter: false });
+  assert.doesNotMatch(await dash(m), /Use your own domain/);
+  assert.match((await post(m, '/dashboard/domain', { host: 'free.example' })).headers.location, /supporters/);
+  assert.equal(app.domains.of(row('freedog')), undefined);
+});
+
+test('the dashboard says what happened to an ended claim', async () => {
+  const m = await liveAt('enddog', 'end.example');
+  app.domains.detach(row('enddog'), 'it hosted phishing');
+  const page = await dash(m);
+  assert.match(page, /A moderator removed <b>end\.example<\/b>: it hosted phishing\./);
+  assert.match(page, /<summary>Use your own domain<\/summary>/); // and a new one can be added
+});

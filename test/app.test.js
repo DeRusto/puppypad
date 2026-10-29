@@ -2864,3 +2864,14 @@ test('support checkout and billing portal share a rate limit per login', async (
   assert.equal((await post('/dashboard/support/portal')).status, 429);
   assert.equal(stripeCalls.length, before); // turned away before any Stripe call
 });
+
+// CUSTOM_DOMAINS is not on in this file; test/domains-app.test.js has it on
+test('with CUSTOM_DOMAINS off, custom domains show nowhere and Caddy is refused every host', async () => {
+  const m = await member('nodomain');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'nodomain');
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /domain settings|your own domain/i);
+  assert.doesNotMatch((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /own domain/);
+  const add = await req('post', '/dashboard/domain').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, host: 'off.example' });
+  assert.match(add.headers.location, /err=/);
+  assert.equal((await req('get', '/internal/tls-check?domain=off.example', 'app')).status, 404);
+});

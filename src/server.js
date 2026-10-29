@@ -777,8 +777,14 @@ function showDashboard(req, res, m, status = 200) {
   const entries = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isDirectory() || e.isFile())
     .map((e) => ({ name: e.name, dir: e.isDirectory(), size: e.isFile() ? fs.statSync(path.join(full, e.name)).size : 0 }))
     .sort((a, b) => b.dir - a.dir || a.name.localeCompare(b.name));
-  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: listing.isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cards.of(user).error, cardCleared: !user.banned && !!cards.of(user).note, sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES }));
+  res.status(status).send(V.dashboard(req.ctx, m, { dir, entries, used: files.usage(user.username), quota: limitsFor(user).quotaMB, fileMB: limitsFor(user).fileMB, support: cfg.SUPPORT_ON || isSupporter(user), bandwidth: bwToday(user), listed: listing.isListed(user), hasIndex: hasIndex(user), cardError: !user.banned && !!cards.of(user).error, cardCleared: !user.banned && !!cards.of(user).note, sites: sitesOf(user), canAdd: isSupporter(user) && !user.banned && sitesOf(user).length < MAX_SITES, domain: domainView(user) }));
 }
+// what the dashboard's Custom domain fold needs; null while the flag is off
+const domainView = (user) => cfg.CUSTOM_DOMAINS && {
+  claim: domains.of(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), ours: domains.ours(), MISSES: domains.MISSES,
+  // what deleting this site, or the whole login, stops
+  doomed: (isLogin(user) ? sitesOf(user) : [user]).map((s) => domains.of(s)).filter((c) => c && c.state !== 'ended').map((c) => c.host),
+};
 const hasIndex = (user) => { try { return fs.statSync(path.join(siteDir(user.username), 'index.html')).isFile(); } catch { return false; } };
 // ?ok= and ?err= carry the result of a redirect (and of the drag-and-drop uploader); the dashboard is only ever shown to its owner
 const msgOf = (req) => (req.query.ok || req.query.err ? { ok: String(req.query.ok || ''), err: String(req.query.err || '') } : null);
@@ -1067,6 +1073,24 @@ main.post('/dashboard/sites/new', auth, canEdit, async (req, res) => {
 main.post('/dashboard/sites/switch', auth, (req, res) => {
   const target = sitesOf(req.ctx.user).find((s) => s.id === Number(req.body.id));
   if (target) sessions.move(req.session, target.id);
+  res.redirect('/dashboard');
+});
+// a Custom domain for the current Site (src/domains.js); the dashboard shows its records and state
+const domainBack = (res, kind, text) => res.redirect(`/dashboard?${kind}=${encodeURIComponent(text)}`);
+main.post('/dashboard/domain', auth, canEdit, (req, res) => {
+  const r = domains.add(req.ctx.user, req.body.host);
+  if (r.err) return domainBack(res, 'err', r.err);
+  domainBack(res, 'ok', `Added ${r.claim.host}. Put the two DNS records below in place, then press Check now.`);
+});
+main.post('/dashboard/domain/check', auth, async (req, res) => {
+  if (!U.limit(`domaincheck:${req.ctx.user.id}`, 20, 3600000)) return domainBack(res, 'err', 'That is a lot of checks. Try again in an hour.');
+  const c = await domains.check(req.ctx.user);
+  if (!c) return res.redirect('/dashboard');
+  domainBack(res, c.last_error && c.state !== 'live' ? 'err' : 'ok', c.state === 'live' ? `${c.host} is live.` : c.last_error ? `Checked ${c.host}: ${c.last_error}.` : `Checked ${c.host}.`);
+});
+main.post('/dashboard/domain/remove', auth, (req, res) => {
+  const c = domains.of(req.ctx.user);
+  if (domains.remove(req.ctx.user) && c.state !== 'ended') return domainBack(res, 'ok', `Removed ${c.host}. Your site is back at its own address.`);
   res.redirect('/dashboard');
 });
 main.post('/dashboard/hidden', auth, canEdit, (req, res) => {
