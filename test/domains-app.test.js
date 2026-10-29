@@ -75,7 +75,7 @@ test('the custom host serves its Site, and the subdomain 301s GET and HEAD there
     assert.match(r.headers['cache-control'], /max-age=86400/);
   }
   // other methods are served as before
-  assert.notEqual((await req('post', '/_hw/guestbook', 'rexden.pad.test').type('form').send({ name: 'a', message: 'b' })).status, 301);
+  assert.equal((await req('post', '/_hw/guestbook', 'rexden.pad.test').type('form').send({ name: 'a', message: 'b' })).status, 302);
   // links everywhere name the custom host
   assert.match((await req('get', '/site/rexden')).text, /https:\/\/www\.rexden\.example/);
 });
