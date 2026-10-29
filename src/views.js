@@ -966,13 +966,15 @@ ${u.log ? `<details><summary>Output of the last run</summary><pre class="scroll"
 
 // moderation first: counts, then reports and members on the left, and the tools on the right.
 // "act" on a report or member row reloads with ?site= so every tool below already holds that name.
-const admin = (ctx, m, { q, site, reports, users, signups, stats, log, upgrade, sotw, picks }) => {
+const admin = (ctx, m, { q, site, reports, users, signups, stats, log, upgrade, sotw, picks, domains }) => {
   const act = (name) => `<a href="/admin?site=${encodeURIComponent(name)}${q ? `&amp;q=${encodeURIComponent(q)}` : ''}#act">act</a>`;
   const siteField = (id) => `<label for="${id}">Site name</label><input type="text" id="${id}" name="site" value="${esc(site)}" required>`;
   const count = (k, v) => `<div class="meter"><div class="k">${k}</div><div class="v">${v}</div></div>`;
   return layout(ctx, 'Admin', `
 <section class="box"><h2>Admin</h2>${msg(m)}
 <div class="status four">${count('Members', stats.users)}${count('Banned', stats.banned)}${count('Supporters', stats.supporters)}${count('Open reports', stats.open)}</div></section>
+${domains ? `<section class="box"><h2>Custom domains</h2><div class="status">${count('Pending', domains.counts.pending || 0)}${count('Live', domains.counts.live || 0)}${count('Failing', domains.counts.failing || 0)}</div>
+${domains.failing.length ? `<h3>Failing domains</h3><div class="scroll"><table><tr><th>Domain</th><th>Site</th><th>Last error</th><th>Since</th></tr>${domains.failing.map((f) => `<tr><td>${esc(f.host)}</td><td>${esc(f.username)}</td><td>${esc(f.last_error)}</td><td>${ago(f.failing_since)}</td></tr>`).join('')}</table></div>` : ''}</section>` : ''}
 
 <div class="cols"><div>
 <section class="box"><h2>Open reports <small>(${stats.open})</small></h2>
@@ -983,7 +985,7 @@ ${reports.rows.map((r) => `<tr><td>${ago(r.created_at)}</td><td><a href="${esc(c
 <section class="box"><h2>${q ? `Members matching “${esc(q)}”` : 'Newest members'}</h2>
 <form class="stack" method="get" action="/admin"><label for="q">Find a member by name, email or signup IP</label><div class="row"><input type="search" id="q" name="q" value="${esc(q)}"><button>Search</button></div>${q ? '<p class="note"><a href="/admin">Clear the search</a></p>' : ''}</form>
 <div class="scroll mt"><table><tr><th>Site</th><th>Email</th><th>Joined</th><th>State</th><th>Signup IP</th><th>Disk</th><th>Bandwidth today</th><th></th></tr>
-${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.supporter_until > Date.now() ? `<br><small>supporter to ${date(u.supporter_until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td><td>${act(u.username)}</td></tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>'}</table></div></section>
+${users.map((u) => `<tr><td><a href="${esc(ctx.cfg.siteUrl(u.username))}" target="_blank">${esc(u.username)}</a></td><td>${esc(u.email)}</td><td>${ago(u.created_at)}</td><td>${u.banned ? 'banned' : u.verified ? 'live' : 'unverified'}${u.domain && u.domain.state !== 'ended' ? `<br><small>${esc(u.domain.host)} (${u.domain.state})</small>` : ''}${u.supporter_until > Date.now() ? `<br><small>supporter to ${date(u.supporter_until).slice(0, 10)}${u.stripe_customer_id ? ' (Stripe)' : ''}</small>` : ''}</td><td>${esc(u.signup_ip)}</td><td class="num">${fmtBytes(u.disk)}</td><td class="num">${fmtBytes(u.bandwidth)}</td><td>${act(u.username)}</td></tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>'}</table></div></section>
 
 <section class="box"><h2>Moderation log <small>(last 100)</small></h2><div class="scroll"><table><tr><th>When</th><th>Moderator</th><th>Action</th><th>Site</th><th>Details</th></tr>
 ${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>${esc(l.action)}</td><td>${esc(l.site)}</td><td>${esc(l.detail)}</td></tr>`).join('') || '<tr><td colspan="5">Nothing yet.</td></tr>'}</table></div></section>
@@ -993,7 +995,7 @@ ${log.map((l) => `<tr><td>${ago(l.created_at)}</td><td>${esc(l.admin)}</td><td>$
 ${site ? `<p>Acting on <b>${esc(site)}</b>: <a href="${esc(ctx.cfg.siteUrl(site))}" target="_blank">site</a> | <a href="/site/${esc(site)}">profile</a> | <a href="/admin?q=${encodeURIComponent(site)}">find member</a></p>` : '<p class="note">Type a site name, or press "act" on a report or member to fill it in.</p>'}
 <form class="stack" method="post" action="/admin/ban">${csrfField(ctx)}${siteField('bsite')}
 <label for="breason">Reason shown to the member</label><input type="text" id="breason" name="reason" maxlength="200">
-<div class="acts"><button name="action" value="ban" class="danger">Take down</button><button name="action" value="unban">Restore</button></div>
+<div class="acts"><button name="action" value="ban" class="danger">Take down</button><button name="action" value="unban">Restore</button>${domains ? '<button name="action" value="detach">Detach domain</button>' : ''}</div>
 <details><summary>Delete for good</summary><p class="note">Removes the account and every file. This cannot be undone.</p><button name="action" value="delete" class="danger">Delete account and files</button></details></form>
 <details class="mt"><summary>Supporter</summary>
 <form class="stack" method="post" action="/admin/supporter">${csrfField(ctx)}${siteField('ssite')}

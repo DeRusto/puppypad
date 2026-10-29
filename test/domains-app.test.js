@@ -157,3 +157,40 @@ test('the dashboard says what happened to an ended claim', async () => {
   assert.match(page, /A moderator removed <b>end\.example<\/b>: it hosted phishing\./);
   assert.match(page, /<summary>Use your own domain<\/summary>/); // and a new one can be added
 });
+
+test('a report by custom host or URL is filed against that Site', async () => {
+  await liveAt('repdog', 'www.rep.example');
+  const r = await req('post', '/report').type('form').send({ site: 'https://WWW.rep.example/bad.html', reason: 'Phishing', details: 'fake bank' });
+  assert.equal(r.status, 200);
+  const filed = db.prepare('SELECT * FROM reports ORDER BY id DESC').get();
+  assert.equal(filed.site, 'repdog');
+  assert.equal(filed.details, 'via www.rep.example: fake bank');
+  // a host nobody claims falls back to the first label
+  assert.equal((await req('post', '/report').type('form').send({ site: 'nobody.example', details: 'x' })).status, 400);
+  assert.equal((await req('post', '/report').type('form').send({ site: 'repdog.pad.test', details: 'y' })).status, 200);
+});
+
+test('/admin finds sites by custom host, counts claims, and detaches a domain with a logged, mailed reason', async () => {
+  const boss = await member('boss', { supporter: false });
+  db.prepare("UPDATE users SET email = 'boss@example.com' WHERE username = 'boss'").run();
+  await liveAt('admdog', 'adm.example');
+  await liveAt('sickdog', 'sick.example');
+  db.prepare("UPDATE custom_domains SET state = 'failing', last_error = 'TXT record not found' WHERE host = 'sick.example'").run();
+  const page = (await req('get', '/admin?q=adm.example').set('Cookie', boss.cookie)).text;
+  assert.match(page, /admdog/);
+  assert.match(page, /adm\.example \(live\)/);
+  assert.match(page, /Failing domains/);
+  assert.match(page, /sick\.example<\/td><td>sickdog<\/td><td>TXT record not found/);
+  const r = await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'admdog', action: 'detach', reason: 'phishing pages' });
+  assert.equal(r.status, 200);
+  assert.equal(app.domains.of(row('admdog')).end_reason, 'moderator');
+  const logged = db.prepare('SELECT * FROM admin_log ORDER BY id DESC').get();
+  assert.equal(logged.action, 'detach domain');
+  assert.equal(logged.site, 'admdog');
+  assert.equal(logged.detail, 'adm.example: phishing pages');
+  assert.match(mail.at(-1), /to=admdog@example\.com/);
+  assert.match(mail.at(-1), /phishing pages/);
+  assert.equal((await req('get', '/', 'adm.example')).status, 404);
+  // nothing to detach
+  assert.match((await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'admdog', action: 'detach', reason: 'again' })).text, /no custom domain/i);
+});

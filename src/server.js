@@ -1408,8 +1408,12 @@ api.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 // ----- reports + admin -----
 main.get('/report', (req, res) => res.send(V.report(req.ctx, null, { site: String(req.query.site || '') })));
 main.post('/report', async (req, res) => {
-  const siteName = String(req.body.site || '').trim().toLowerCase().replace(/^https?:\/\//, '').split(/[./]/)[0];
-  const details = String(req.body.details || '').trim().slice(0, 2000);
+  const typed = String(req.body.site || '').trim().toLowerCase().replace(/^https?:\/\//, '');
+  // a Custom domain held by a Site (verified, live or failing) is filed against that Site; anything else by its first label
+  const via = domains.reportTarget(typed.split(/[/?#:]/)[0]);
+  const siteName = via ? via.username : typed.split(/[./]/)[0];
+  const said = String(req.body.details || '').trim().slice(0, 2000);
+  const details = via && said ? `via ${via.host}: ${said}`.slice(0, 2000) : said;
   if (req.body.website) return res.send(V.notices.reportSent(req.ctx));
   if (!U.limit(`report:${req.ip}`, 5, 3600000)) return res.status(429).send(V.report(req.ctx, { err: 'Too many reports from your connection. Try again in an hour.' }, { site: siteName }));
   if (!q.userByName.get(siteName)) return res.status(400).send(V.report(req.ctx, { err: 'There is no site with that name.' }, { site: siteName }));
@@ -1427,7 +1431,8 @@ const showAdmin = (req, res, m) => {
   const q = String(req.query.q || '').trim().slice(0, 200);
   // instr, not LIKE, so % and _ in the search are plain characters
   const users = q
-    ? db.prepare('SELECT * FROM users WHERE instr(lower(username), lower(@q)) OR instr(lower(email), lower(@q)) OR signup_ip = @q ORDER BY id DESC LIMIT 50').all({ q })
+    ? db.prepare(`SELECT * FROM users WHERE instr(lower(username), lower(@q)) OR instr(lower(email), lower(@q)) OR signup_ip = @q
+      OR id IN (SELECT site_id FROM custom_domains WHERE state != 'ended' AND instr(host, lower(@q))) ORDER BY id DESC LIMIT 50`).all({ q })
     : db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 50').all();
   const open = db.prepare("SELECT COUNT(*) n FROM reports WHERE status = 'open'").get().n;
   const { page, pages } = pageOf(req, open, 'rpage');
@@ -1436,7 +1441,12 @@ const showAdmin = (req, res, m) => {
     site: String(req.query.site || '').trim().slice(0, 100), // fills the site boxes after "act" on a report or member
     reports: { rows: db.prepare(`SELECT * FROM reports WHERE status = 'open' ORDER BY id DESC LIMIT ${PER_PAGE} OFFSET ${(page - 1) * PER_PAGE}`).all(), page, pages },
     log: db.prepare('SELECT * FROM admin_log ORDER BY id DESC LIMIT 100').all(),
-    users: users.map((u) => ({ ...u, disk: files.usage(u.username).total, bandwidth: bwToday(u) })),
+    users: users.map((u) => ({ ...u, disk: files.usage(u.username).total, bandwidth: bwToday(u), domain: domains.of(u) })),
+    // Custom domains by state, and the failing ones with why; null while the flag is off
+    domains: cfg.CUSTOM_DOMAINS && {
+      counts: Object.fromEntries(db.prepare("SELECT state, COUNT(*) n FROM custom_domains WHERE state != 'ended' GROUP BY state").all().map((r) => [r.state, r.n])),
+      failing: db.prepare("SELECT c.host, c.last_error, c.failing_since, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.state = 'failing' ORDER BY c.failing_since LIMIT 100").all(),
+    },
     signups: db.prepare("SELECT date(created_at / 1000, 'unixepoch') day, COUNT(*) n FROM users WHERE created_at >= unixepoch('now', 'start of day', '-13 days') * 1000 GROUP BY day ORDER BY day DESC").all(),
     stats: {
       users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
@@ -1524,9 +1534,17 @@ main.post('/admin/card-clear', auth, adminOnly, (req, res) => {
 main.post('/admin/ban', auth, adminOnly, async (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target) return showAdmin(req, res, { err: 'No site with that name.' });
-  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
   const action = req.body.action;
   const reason = String(req.body.reason || '').slice(0, 200);
+  // there's no blocklist: a repeat offender gets their site taken down instead
+  if (action === 'detach') {
+    if (!reason.trim()) return showAdmin(req, res, { err: 'Give a reason; the member sees it.' });
+    const c = domains.of(target);
+    if (!c || c.state === 'ended') return showAdmin(req, res, { err: `${target.username} has no custom domain.` });
+    db.transaction(() => { domains.detach(target, reason); adminLog(req, 'detach domain', target.username, `${c.host}: ${reason}`); })();
+    return showAdmin(req, res, { ok: `Detached ${c.host} from ${target.username}.` });
+  }
+  if (isAdmin(target)) return showAdmin(req, res, { err: 'That is an admin account.' });
   if (action === 'delete') {
     if (billing && !(await billing.cancel(target))) return showAdmin(req, res, { err: `Stripe could not be reached to cancel ${target.username}'s supporter payments, so nothing was deleted.` });
     // the rows and the log entry commit together; the files go only after both have
