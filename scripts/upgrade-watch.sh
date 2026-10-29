@@ -14,12 +14,6 @@ set -eu
 cd "$(dirname "$0")/.."
 
 mkdir -p .upgrade
-# the same lock scripts/install.sh takes, so a manual install and the watcher exclude each other. It stays
-# held for the whole run and is handed down, open, to the installer started below (PUPPYPAD_UPGRADE_LOCKED),
-# so it is held for as long as either is alive
-exec 9>.upgrade/upgrade.lock
-flock -n 9 || exit 0 # an upgrade is still running
-
 env_val() { sed -n "s/^$1=//p" .env 2>/dev/null | tail -n 1 | tr -d "\"'\r"; }
 [ -n "${UPGRADE_REPO:-}" ] || UPGRADE_REPO=$(env_val UPGRADE_REPO)
 [ -n "${UPGRADE_CHECK_MINUTES:-}" ] || UPGRADE_CHECK_MINUTES=$(env_val UPGRADE_CHECK_MINUTES)
@@ -80,6 +74,13 @@ check() {
   jq -r '.body // ""' "$json" | tr -d '\r' | head -c 8000 > .upgrade/notes
   put checked_at "$(date +%s)"
 }
+
+# the same lock scripts/install.sh takes, so a manual install and the watcher exclude each other. It stays
+# held for the whole run and is handed down, open, to the installer started below (PUPPYPAD_UPGRADE_LOCKED),
+# so it is held for as long as either is alive
+exec 9>.upgrade/upgrade.lock
+# an upgrade is still running: say we're alive, so /admin doesn't report the watcher as stopped, and leave it be
+flock -n 9 || { publish_state; exit 0; }
 
 [ -n "$(get status)" ] || put status idle
 # a run that died without finishing (reboot, kill) leaves "running" behind
