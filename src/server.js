@@ -1416,7 +1416,7 @@ main.post('/report', async (req, res) => {
   const claim = domains.reportTarget(typed.split(/[/?#:]/)[0]);
   const siteName = claim ? claim.username : typed.split(/[./]/)[0];
   const text = String(req.body.details || '').trim().slice(0, 2000);
-  const details = claim ? `via ${claim.host}${text ? `: ${text}` : ''}`.slice(0, 2000) : text;
+  const details = claim && text ? `via ${claim.host}: ${text}`.slice(0, 2000) : text;
   if (req.body.website) return res.send(V.notices.reportSent(req.ctx));
   if (!U.limit(`report:${req.ip}`, 5, 3600000)) return res.status(429).send(V.report(req.ctx, { err: 'Too many reports from your connection. Try again in an hour.' }, { site: siteName }));
   if (!q.userByName.get(siteName)) return res.status(400).send(V.report(req.ctx, { err: 'There is no site with that name.' }, { site: siteName }));
