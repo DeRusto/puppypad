@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS card_notes (
 -- last_error is the latest check's reason, or a moderator's reason; mailed marks the support lapse emails sent;
 -- created_at and failing_since move on while CUSTOM_DOMAINS is off, and grace_shift lengthens a lapse grace, so no clock runs then
 CREATE TABLE IF NOT EXISTS custom_domains (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused, so a check still running for a removed claim can't land on a new one
   site_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   host TEXT NOT NULL,
   proof TEXT NOT NULL,
@@ -174,6 +174,9 @@ const cols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c) => c.n
 for (const [name, def] of [['updates', 'INTEGER NOT NULL DEFAULT 0'], ['shot_dirty', 'INTEGER NOT NULL DEFAULT 0'], ['shot_at', 'INTEGER NOT NULL DEFAULT 0'], ['new_email', 'TEXT'], ['webring', 'INTEGER NOT NULL DEFAULT 0'], ['hidden', 'INTEGER NOT NULL DEFAULT 0'], ['gb_words', "TEXT NOT NULL DEFAULT ''"], ['gb_ips', "TEXT NOT NULL DEFAULT ''"], ['bw_day', "TEXT NOT NULL DEFAULT ''"], ['bw_bytes', 'INTEGER NOT NULL DEFAULT 0'], ['starter', "TEXT NOT NULL DEFAULT ''"], ['quota_mb', 'INTEGER NOT NULL DEFAULT 0'], ['tags', "TEXT NOT NULL DEFAULT ''"], ['gb_notify', "TEXT NOT NULL DEFAULT 'daily'"], ['gb_digest_at', 'INTEGER NOT NULL DEFAULT 0'], ['renamed_at', 'INTEGER NOT NULL DEFAULT 0'], ['staff_pick', 'INTEGER NOT NULL DEFAULT 0'], ['sotw_at', 'INTEGER NOT NULL DEFAULT 0'], ['notes_seen_at', 'INTEGER NOT NULL DEFAULT 0'], ['note_mail', "TEXT NOT NULL DEFAULT ''"], ['digest', 'INTEGER NOT NULL DEFAULT 0'], ['digest_at', 'INTEGER NOT NULL DEFAULT 0'], ['status', "TEXT NOT NULL DEFAULT ''"], ['api_key', "TEXT NOT NULL DEFAULT ''"], ['totp_secret', "TEXT NOT NULL DEFAULT ''"], ['totp_step', 'INTEGER NOT NULL DEFAULT 0'], ['totp_codes', "TEXT NOT NULL DEFAULT ''"], ['supporter_until', 'INTEGER NOT NULL DEFAULT 0'], ['stripe_customer_id', "TEXT NOT NULL DEFAULT ''"], ['supporter_granted_until', 'INTEGER NOT NULL DEFAULT 0']]) {
   if (!cols.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
 }
+// before granted time had its own column, an admin grant went into supporter_until; a login with no Stripe customer can only have had a grant.
+// shortcut: a grant on a login that also has a Stripe customer can't be told apart from paid time, so it stays paid; an admin can grant it again
+if (!cols.has('supporter_granted_until')) db.exec("UPDATE users SET supporter_granted_until = supporter_until, supporter_until = 0 WHERE stripe_customer_id = '' AND supporter_until > 0");
 // two-factor login: totp_secret is '' when it is off; totp_step is the last code's step, so a code works once;
 // totp_codes holds the sha256 of each unused recovery code, one per line
 // login_id: a supporter's extra site is its own row (files, stats and guestbook stay keyed by site) pointing at the login row that owns it;
