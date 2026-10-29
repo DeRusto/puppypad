@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS custom_domains (
   id INTEGER PRIMARY KEY,
   site_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   host TEXT NOT NULL,
-  token TEXT NOT NULL,
+  proof TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending',
   end_reason TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,

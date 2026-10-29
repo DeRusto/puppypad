@@ -2924,7 +2924,7 @@ test('with CUSTOM_DOMAINS off, custom domains show nowhere and Caddy is refused 
   const add = await req('post', '/dashboard/domain').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, host: 'off.example' });
   assert.match(add.headers.location, /err=/);
   // a claim stored while the flag was on sleeps: /admin neither shows it nor finds the site by it
-  db.prepare("INSERT INTO custom_domains (site_id, host, token, state, created_at) VALUES (?, 'off.example', 'x', 'live', 0)").run(db.prepare('SELECT id FROM users WHERE username = ?').get('nodomain').id);
+  db.prepare("INSERT INTO custom_domains (site_id, host, proof, state, created_at) VALUES (?, 'off.example', 'x', 'live', 0)").run(db.prepare('SELECT id FROM users WHERE username = ?').get('nodomain').id);
   const boss = await cardBoss();
   assert.doesNotMatch((await req('get', '/admin?q=nodomain').set('Cookie', boss.cookie)).text, /off\.example/);
   assert.doesNotMatch((await req('get', '/admin?q=off.example').set('Cookie', boss.cookie)).text, /nodomain/);

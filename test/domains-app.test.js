@@ -29,7 +29,7 @@ app.setDomainNet({
   addrs: async (name) => (name === 'pad.test' ? OURS : world.addrs.get(name) || []),
   https: async (host) => world.https.get(host) ?? true,
 });
-const point = (c) => { world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.token}`]); world.addrs.set(c.host, OURS); };
+const point = (c) => { world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]); world.addrs.set(c.host, OURS); };
 
 let ipN = 0;
 const ip = () => `10.1.${(ipN >> 8) & 255}.${ipN++ & 255}`;
@@ -131,7 +131,7 @@ test('on the dashboard a supporter adds a domain, sees the records, checks it an
   assert.match(page, /Your domain: <code>www\.dash\.example<\/code> <b class="note">\[waiting for DNS\]<\/b>/);
   assert.match(page, /<details open><summary>Custom domain settings<\/summary>/);
   const c = app.domains.of(row('dashdog'));
-  assert.ok(page.includes(`puppypad-verify=${c.token}`));
+  assert.ok(page.includes(`puppypad-verify=${c.proof}`));
   assert.ok(page.includes('<code>_puppypad.www.dash.example</code>'));
   for (const a of OURS) assert.ok(page.includes(`<code>${a}</code>`), a);
   assert.match(page, /CNAME<\/td><td><code>www\.dash\.example<\/code><\/td><td><code>pad\.test<\/code>/);

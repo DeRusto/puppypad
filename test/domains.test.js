@@ -55,7 +55,7 @@ let h = 0;
 const newHost = () => `www.dog${++h}.example`;
 // the member put both records in place
 const point = (claim) => {
-  world.txt.set(`_puppypad.${claim.host}`, [...(world.txt.get(`_puppypad.${claim.host}`) || []), `puppypad-verify=${claim.token}`]);
+  world.txt.set(`_puppypad.${claim.host}`, [...(world.txt.get(`_puppypad.${claim.host}`) || []), `puppypad-verify=${claim.proof}`]);
   world.addrs.set(claim.host, OURS);
 };
 const claim = (s, host = newHost()) => { const r = domains.add(s, host); assert.ok(r.claim, r.err); return r.claim; };
@@ -94,7 +94,7 @@ test('a pending claim says which record is missing until both are right', async 
   const s = site();
   const c = claim(s);
   assert.equal((await domains.check(s)).last_error, 'TXT record not found');
-  world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.token}`]);
+  world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]);
   world.addrs.set(c.host, ['198.51.100.20', OURS[0]]);
   const after = await domains.check(s);
   assert.equal(after.state, 'pending');
@@ -152,9 +152,9 @@ test('a pending claim not live after 7 days expires; a failing one ends after 30
   assert.equal(domains.of(s).state, 'ended');
   assert.equal(domains.of(s).end_reason, 'expired');
   assert.equal(domains.ask(c.host), false);
-  // an ended row reserves nothing, and adding again replaces it with a new token
+  // an ended row reserves nothing, and adding again replaces it with a new proof
   const again = claim(s, c.host);
-  assert.notEqual(again.token, c.token);
+  assert.notEqual(again.proof, c.proof);
 
   const f = await live();
   set(f.c, { state: 'failing', misses: 3, failing_since: Date.now() - 31 * DAY, checked_at: Date.now() });
@@ -168,7 +168,7 @@ test('a pending claim that proves a failing host takes it over; the old member h
   set(old.c, { state: 'failing', misses: 3, failing_since: Date.now() });
   const s = site();
   const c = claim(s, old.c.host);
-  world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.token}`]);
+  world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]);
   assert.equal((await domains.check(s)).state, 'live');
   assert.equal(domains.of(old.s).state, 'ended');
   assert.equal(domains.of(old.s).end_reason, 'moved');

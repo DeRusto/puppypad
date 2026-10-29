@@ -456,7 +456,7 @@ function domainFold(ctx, user, d) {
   const v4 = d.ours.filter((a) => !a.includes(':'));
   const v6 = d.ours.filter((a) => a.includes(':'));
   const ours = (list, kind) => (list.length ? list : [`the ${kind} address of ${ctx.cfg.BASE_HOST}`]);
-  const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.token}`, c.txt_ok],
+  const rows = [['TXT', `_puppypad.${c.host}`, `puppypad-verify=${c.proof}`, c.txt_ok],
     ...ours(v4, 'IPv4').map((a) => ['A', c.host, a, c.addrs_ok]), ...ours(v6, 'IPv6').map((a) => ['AAAA', c.host, a, c.addrs_ok]),
     ['CNAME', c.host, ctx.cfg.BASE_HOST, c.addrs_ok]];
   const open = c.state === 'pending' || c.state === 'failing' || (c.state === 'live' && c.misses) ? ' open' : '';

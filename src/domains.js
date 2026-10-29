@@ -56,7 +56,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     return logins.supporterUntil(logins.loginOf(site)) + GRACE_DAYS * DAY + (c ? c.grace_shift : 0);
   };
 
-  // Add a claim: { claim } or { err }. A new token each time, so adding a host again needs a new TXT record
+  // Add a claim: { claim } or { err }. A new proof each time, so adding a host again needs a new TXT record
   function add(site, input) {
     if (!on() || !logins.isSupporter(site)) return { err: 'Custom domains are for supporters.' };
     if (site.banned) return { err: 'A moderator took this site down, so it cannot add a domain.' };
@@ -67,15 +67,15 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
     if (db.prepare("SELECT 1 FROM custom_domains WHERE host = ? AND state IN ('verified', 'live')").get(host)) return { err: `Another site already uses ${host}.` };
     const id = db.transaction(() => {
       db.prepare('DELETE FROM custom_domains WHERE site_id = ?').run(site.id); // an ended claim reserves nothing
-      return db.prepare('INSERT INTO custom_domains (site_id, host, token, created_at) VALUES (?, ?, ?, ?)').run(site.id, host, crypto.randomBytes(16).toString('hex'), Date.now()).lastInsertRowid;
+      return db.prepare('INSERT INTO custom_domains (site_id, host, proof, created_at) VALUES (?, ?, ?, ?)').run(site.id, host, crypto.randomBytes(16).toString('hex'), Date.now()).lastInsertRowid;
     })();
     return { claim: byId.get(id) };
   }
   const remove = (site) => db.prepare('DELETE FROM custom_domains WHERE site_id = ?').run(site.id).changes > 0;
 
-  // the two DNS proofs: the TXT with the claim's token, and every address one of ours (at least one)
-  async function proof(c) {
-    const txt = (await dns.txt(`_puppypad.${c.host}`)).includes(`puppypad-verify=${c.token}`);
+  // the two DNS proofs: the TXT with the claim's proof, and every address one of ours (at least one)
+  async function checkDns(c) {
+    const txt = (await dns.txt(`_puppypad.${c.host}`)).includes(`puppypad-verify=${c.proof}`);
     const addrs = await dns.addrs(c.host);
     const mine = ours.length ? ours : await refreshOurs();
     const elsewhere = addrs.filter((a) => !mine.includes(a));
@@ -94,7 +94,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
 
   // a pending claim: both proofs pass -> verified, taking over a failing holder; the first to verify wins
   async function verify(c) {
-    const p = await proof(c);
+    const p = await checkDns(c);
     if (!byId.get(c.id) || byId.get(c.id).state !== 'pending') return;
     update(c, { txt_ok: +p.txt, addrs_ok: +p.points, last_error: p.error, checked_at: Date.now() });
     if (p.error) return;
@@ -114,7 +114,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
 
   // a daily check of a live or failing claim: { c, error, httpsFailed } (no HTTPS request while DNS is wrong)
   async function recheck(c) {
-    const p = await proof(c);
+    const p = await checkDns(c);
     if (p.error) return { c, txt: p.txt, points: p.points, error: p.error };
     const ok = await dns.https(c.host);
     return { c, txt: true, points: true, error: ok ? '' : HTTPS_ERROR, httpsFailed: !ok };
