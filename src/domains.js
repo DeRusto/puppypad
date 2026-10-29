@@ -40,7 +40,7 @@ function createDomains({ cfg, logins, sendMail, net: dns }) {
   const of = (site) => db.prepare('SELECT * FROM custom_domains WHERE site_id = ?').get(site.id);
   const siteOf = (c) => db.prepare('SELECT * FROM users WHERE id = ?').get(c.site_id);
   const update = (c, fields) => db.prepare(`UPDATE custom_domains SET ${Object.keys(fields).map((k) => `${k} = @${k}`).join(', ')} WHERE id = @id`).run({ ...fields, id: c.id });
-  const sub = (site) => `${site.username}.${cfg.BASE_HOST}`;
+  const sub = (site) => cfg.subdomainHost(site.username);
   const mailTo = (c, subject, text) => {
     const site = siteOf(c);
     return sendMail(logins.loginOf(site).email, `${subject}`, `${text}\n\nYour domain settings: ${cfg.BASE_URL}/dashboard`);

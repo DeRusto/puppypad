@@ -404,7 +404,7 @@ Other files are left alone.</p>
 // ---- the dashboard's Custom domain fold (src/domains.js) ----
 // one line saying where the claim stands: [tone, html]
 function domainStatus(ctx, user, c, d) {
-  const sub = `${esc(user.username)}.${esc(ctx.cfg.BASE_HOST)}`;
+  const sub = esc(ctx.cfg.subdomainHost(user.username));
   if (!c) return ['note', 'Show this site at a domain you own. You keep the domain at your registrar; we only need two DNS records.'];
   const h = `<b>${esc(c.host)}</b>`;
   if (c.state === 'ended') {

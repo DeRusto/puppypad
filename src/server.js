@@ -64,6 +64,7 @@ const cfg = {
   SHOT_TOKEN: env.SHOT_TOKEN || '',
   TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || '', // signup captcha; off when unset
   subdomainUrl: (name) => `${base.protocol}//${name}.${base.host}`,
+  subdomainHost: (name) => `${name}.${base.hostname}`, // the same without scheme or port, as a hostname to match or show
 };
 // a Site's address: its live Custom domain when it has one (set once src/domains.js is made, below)
 cfg.siteUrl = cfg.subdomainUrl;
@@ -269,7 +270,7 @@ site.use(async (req, res) => {
   let refHost = '';
   try { refHost = new URL(req.get('referer')).hostname; } catch {}
   // the Site's subdomain and its live Custom domain: visits between the two are not referrals
-  const ownHosts = [`${req.owner.username}.${cfg.BASE_HOST}`, domains.liveHost(req.owner.username)];
+  const ownHosts = [cfg.subdomainHost(req.owner.username), domains.liveHost(req.owner.username)];
   let page = false; // set once the request resolves to a page
   // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
   res.on('finish', () => {

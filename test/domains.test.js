@@ -31,7 +31,7 @@ test('hostnames with a scheme, port, path or *, under the base domain, IPs, one 
 
 // ---------- claims, with DNS and HTTPS stubbed ----------
 const OURS = ['203.0.113.7', '2001:db8::7'];
-const cfg = { CUSTOM_DOMAINS: true, BASE_HOST: BASE, BASE_URL: `http://${BASE}`, SITE_NAME: 'PuppyPad', ABUSE_EMAIL: `abuse@${BASE}`, ADMIN_EMAILS: new Set() };
+const cfg = { CUSTOM_DOMAINS: true, BASE_HOST: BASE, BASE_URL: `http://${BASE}`, SITE_NAME: 'PuppyPad', ABUSE_EMAIL: `abuse@${BASE}`, ADMIN_EMAILS: new Set(), subdomainHost: (name) => `${name}.${BASE}` };
 const logins = createLogins({ cfg, removeSite: () => {}, holdName: () => {} });
 // what the world's DNS says, and whether an HTTPS request to a host gets through Caddy
 const world = { txt: new Map(), addrs: new Map(), https: new Map() };
