@@ -1,0 +1,364 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// fresh data folder before the db loads
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-domains-'));
+const { db } = require('../src/db');
+const { createLogins } = require('../src/logins');
+const { createDomains, normalise } = require('../src/domains');
+
+const DAY = 86400000;
+const BASE = 'pad.test';
+
+test('hostnames are trimmed, lowercased, lose one trailing dot and are stored as their A-label', () => {
+  assert.equal(normalise(' WWW.Example.COM. ', BASE).host, 'www.example.com');
+  assert.equal(normalise('example.com', BASE).host, 'example.com');
+  assert.equal(normalise('bücher.example', BASE).host, 'xn--bcher-kva.example');
+  assert.equal(normalise('xn--bcher-kva.example', BASE).host, 'xn--bcher-kva.example');
+});
+
+test('hostnames with a scheme, port, path or *, under the base domain, IPs, one label or too long are refused', () => {
+  for (const bad of ['https://example.com', 'example.com:8080', 'example.com/page', '*.example.com', 'pad.test', 'www.pad.test', 'a.b.pad.test', 'PAD.TEST.',
+    '192.0.2.1', '[2001:db8::1]', '2001:db8::1', 'localhost', 'example', '', '   ', 'example..com', `${'a'.repeat(64)}.com`, `${'a.'.repeat(126)}com`, 'example.com..', '.example.com', 'exa mple.com']) {
+    assert.ok(normalise(bad, BASE).err, `${bad} should be refused`);
+  }
+  assert.ok(normalise(`${'a'.repeat(63)}.com`, BASE).host);
+  assert.match(normalise('blog.pad.test', BASE).err, /pad\.test/);
+});
+
+// ---------- claims, with DNS and HTTPS stubbed ----------
+const OURS = ['203.0.113.7', '2001:db8::7'];
+const cfg = { CUSTOM_DOMAINS: true, BASE_HOST: BASE, BASE_URL: `http://${BASE}`, SITE_NAME: 'PuppyPad', ABUSE_EMAIL: `abuse@${BASE}`, ADMIN_EMAILS: new Set(), subdomainHost: (name) => `${name}.${BASE}` };
+const logins = createLogins({ cfg, removeSite: () => {}, holdName: () => {} });
+// what the world's DNS says, and whether an HTTPS request to a host gets through Caddy
+const world = { txt: new Map(), addrs: new Map(), https: new Map() };
+const net = {
+  txt: async (name) => world.txt.get(name) || [],
+  addrs: async (name) => (name === BASE ? OURS : world.addrs.get(name) || []),
+  // a function stands in for Caddy, which only gets a certificate when tls-check approves
+  https: async (host) => { const v = world.https.get(host); return typeof v === 'function' ? v(host) : v ?? true; },
+};
+const mail = [];
+const sendMail = async (to, subject, text) => { mail.push({ to, subject, text }); return true; };
+const domains = createDomains({ cfg, logins, sendMail, net });
+
+let n = 0;
+const site = (fields = {}) => {
+  const name = `pup${++n}`;
+  const f = { username: name, email: `${name}@x.test`, login_id: null, supporter_until: Date.now() + 100 * DAY, banned: 0, ...fields };
+  const { lastInsertRowid } = db.prepare("INSERT INTO users (username, email, pw_hash, verified, banned, login_id, supporter_until, created_at, updated_at) VALUES (@username, @email, 'h', 1, @banned, @login_id, @supporter_until, 0, 0)").run(f);
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(lastInsertRowid);
+};
+let h = 0;
+const newHost = () => `www.dog${++h}.example`;
+// the member put both records in place
+const point = (claim) => {
+  world.txt.set(`_puppypad.${claim.host}`, [...(world.txt.get(`_puppypad.${claim.host}`) || []), `puppypad-verify=${claim.proof}`]);
+  world.addrs.set(claim.host, OURS);
+};
+const claim = (s, host = newHost()) => { const r = domains.add(s, host); assert.ok(r.claim, r.err); return r.claim; };
+const set = (c, fields) => db.prepare(`UPDATE custom_domains SET ${Object.keys(fields).map((k) => `${k} = @${k}`).join(', ')} WHERE id = @id`).run({ ...fields, id: c.id });
+// a live claim, as Check now leaves it with both records right and Caddy answering
+async function live(s = site(), host = newHost()) {
+  const c = claim(s, host);
+  point(c);
+  assert.equal((await domains.check(s)).state, 'live');
+  return { s, c: domains.claimOf(s) };
+}
+// the Site's row as it is now
+const fresh = (s) => db.prepare('SELECT * FROM users WHERE id = ?').get(s.id);
+// past the next daily re-check
+const dueRecheck = (c) => set(c, { checked_at: Date.now() - DAY });
+
+test('tls-check approves a host only while its claim is verified or live', async () => {
+  const s = site();
+  const c = claim(s);
+  assert.equal(domains.ask(c.host), false); // pending
+  point(c);
+  world.https.set(c.host, false);
+  assert.equal((await domains.check(s)).state, 'verified');
+  assert.equal(domains.ask(c.host), true);
+  assert.equal(domains.ask(c.host.toUpperCase()), true);
+  world.https.set(c.host, true);
+  await domains.housekeeping(); // the hourly retry of the HTTPS request
+  assert.equal(domains.claimOf(s).state, 'live');
+  assert.equal(domains.ask(c.host), true);
+  for (const no of ['192.0.2.1', '2001:db8::7', BASE, `pup1.${BASE}`, `a.b.${BASE}`, 'unknown.example', '']) assert.equal(domains.ask(no), false, no);
+  // the flag off: nothing is approved
+  assert.equal(createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net }).ask(c.host), false);
+});
+
+test('a pending claim says which record is missing until both are right', async () => {
+  const s = site();
+  const c = claim(s);
+  assert.equal((await domains.check(s)).last_error, 'TXT record not found');
+  world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]);
+  world.addrs.set(c.host, ['198.51.100.20', OURS[0]]);
+  const after = await domains.check(s);
+  assert.equal(after.state, 'pending');
+  assert.equal(after.txt_ok, 1);
+  assert.match(after.last_error, /points at 198\.51\.100\.20$/);
+  world.addrs.set(c.host, OURS);
+  assert.equal((await domains.housekeeping(), domains.claimOf(s).state), 'live'); // the hourly run checks pending claims too
+});
+
+test('three missed daily checks make a live claim failing, with an email at the first and the third; one pass makes it live', async () => {
+  const { s, c } = await live();
+  const sent = mail.length;
+  world.addrs.set(c.host, ['198.51.100.20']);
+  for (let i = 1; i <= 3; i++) {
+    dueRecheck(c);
+    await domains.housekeeping();
+    assert.equal(domains.claimOf(s).misses, i);
+    assert.equal(domains.claimOf(s).state, i < 3 ? 'live' : 'failing');
+    assert.equal(domains.ask(c.host), i < 3);
+  }
+  assert.match(domains.claimOf(s).last_error, /points at 198\.51\.100\.20/);
+  const mails = mail.slice(sent).filter((m) => m.to === s.email);
+  assert.equal(mails.length, 2);
+  assert.match(mails[0].text, /still live/);
+  assert.match(mails[1].subject, /stopped working/);
+  // checked today already: the next hourly run leaves it alone
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(s).misses, 3);
+  world.addrs.set(c.host, OURS);
+  assert.equal((await domains.check(s)).state, 'live');
+  assert.equal(domains.claimOf(s).misses, 0);
+});
+
+test('Check now on a live claim shows the result but counts no daily miss; a pass still brings a failing claim back', async () => {
+  const { s, c } = await live();
+  const sent = mail.length;
+  const checked = domains.claimOf(s).checked_at;
+  world.addrs.set(c.host, ['198.51.100.20']);
+  for (let i = 0; i < 3; i++) await domains.check(s);
+  assert.equal(domains.claimOf(s).state, 'live');
+  assert.equal(domains.claimOf(s).misses, 0);
+  assert.match(domains.claimOf(s).last_error, /points at 198\.51\.100\.20/);
+  assert.equal(domains.claimOf(s).checked_at, checked); // the daily check still comes round
+  assert.equal(mail.length, sent);
+  set(c, { state: 'failing', misses: 3, failing_since: Date.now() });
+  world.addrs.set(c.host, OURS);
+  assert.equal((await domains.check(s)).state, 'live');
+});
+
+test('a pending claim not live after 7 days expires; a failing one ends after 30 days', async () => {
+  const s = site();
+  const c = claim(s);
+  set(c, { created_at: Date.now() - 8 * DAY });
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(s).state, 'ended');
+  assert.equal(domains.claimOf(s).end_reason, 'expired');
+  assert.equal(domains.ask(c.host), false);
+  // an ended row reserves nothing, and adding again replaces it with a new proof
+  const again = claim(s, c.host);
+  assert.notEqual(again.proof, c.proof);
+
+  const f = await live();
+  set(f.c, { state: 'failing', misses: 3, failing_since: Date.now() - 31 * DAY, checked_at: Date.now() });
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(f.s).end_reason, 'abandoned');
+  assert.match(mail.at(-1).subject, /was removed/);
+
+  // one fixed in time for its last due check recovers instead
+  const r = await live();
+  set(r.c, { state: 'failing', misses: 3, failing_since: Date.now() - 31 * DAY, checked_at: Date.now() - DAY });
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(r.s).state, 'live');
+});
+
+test('a pending claim that proves a failing host takes it over; the old member hears their site moved', async () => {
+  const old = await live();
+  set(old.c, { state: 'failing', misses: 3, failing_since: Date.now() });
+  const s = site();
+  const c = claim(s, old.c.host);
+  world.txt.set(`_puppypad.${c.host}`, [`puppypad-verify=${c.proof}`]);
+  assert.equal((await domains.check(s)).state, 'live');
+  assert.equal(domains.claimOf(old.s).state, 'ended');
+  assert.equal(domains.claimOf(old.s).end_reason, 'moved');
+  assert.ok(mail.some((m) => m.to === old.s.email && /another site/i.test(m.text) && m.text.includes(`${old.s.username}.${BASE}`)));
+  // nobody can add a host that is live on another site
+  assert.match(domains.add(site(), c.host).err, /Another site/);
+});
+
+test('of two pending claims on one host, the first to verify wins', async () => {
+  const host = newHost();
+  const a = site();
+  const b = site();
+  const ca = claim(a, host);
+  const cb = claim(b, host);
+  point(ca);
+  point(cb);
+  assert.equal((await domains.check(b)).state, 'live');
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(a).state, 'pending');
+  assert.match(domains.claimOf(a).last_error, /another site/);
+});
+
+test('when every HTTPS check of a run fails, none counts: no member email, one to the abuse address', async () => {
+  const all = [await live(), await live(), await live()];
+  for (const { c } of all) { world.https.set(c.host, false); dueRecheck(c); }
+  // and a DNS miss in that run counts, but its member isn't emailed either
+  const dnsBroken = await live();
+  world.addrs.set(dnsBroken.c.host, ['198.51.100.20']);
+  dueRecheck(dnsBroken.c);
+  const sent = mail.length;
+  await domains.housekeeping();
+  for (const { s } of all) assert.equal(domains.claimOf(s).misses, 0);
+  assert.equal(domains.claimOf(dnsBroken.s).misses, 1);
+  assert.deepEqual(mail.slice(sent).map((m) => m.to), [cfg.ABUSE_EMAIL]);
+  world.addrs.set(dnsBroken.c.host, OURS);
+  // one failing on its own is that member's miss
+  for (const { c } of all) world.https.set(c.host, true);
+  world.https.set(all[0].c.host, false);
+  for (const { c } of all) dueRecheck(c);
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(all[0].s).misses, 1);
+  assert.match(domains.claimOf(all[0].s).last_error, /CAA/);
+  assert.equal(domains.claimOf(all[1].s).misses, 0);
+  world.https.set(all[0].c.host, true);
+});
+
+test('liveHost gives the custom host only while the claim is live', async () => {
+  const { s, c } = await live();
+  assert.equal(domains.liveHost(s.username), c.host);
+  set(c, { state: 'failing' });
+  assert.equal(domains.liveHost(s.username), undefined);
+  set(c, { state: 'live' });
+  assert.equal(createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net }).liveHost(s.username), undefined);
+});
+
+test('removing a domain frees it at once; a moderator detach ends it with the reason and an email', async () => {
+  const { s, c } = await live();
+  assert.equal(domains.remove(s), true);
+  assert.equal(domains.claimOf(s), undefined);
+  assert.ok(domains.add(site(), c.host).claim);
+  const m = await live();
+  assert.equal(domains.detach(m.s, 'phishing').host, m.c.host);
+  assert.equal(domains.claimOf(m.s).end_reason, 'moderator');
+  assert.equal(domains.claimOf(m.s).last_error, 'phishing');
+  assert.ok(mail.at(-1).text.includes('phishing'));
+  assert.equal(domains.detach(m.s, 'again'), null);
+  // a deleted Site takes its claim with it, and the host is free at once
+  const d = await live();
+  db.prepare('DELETE FROM users WHERE id = ?').run(d.s.id);
+  assert.equal(domains.ask(d.c.host), false);
+  assert.ok(domains.add(site(), d.c.host).claim);
+});
+
+test('a lapsed supporter keeps their domains for 30 days, adds none, and loses them at the end', async () => {
+  const login = site();
+  const extra = site({ login_id: login.id });
+  const { c } = await live(extra);
+  const sent = mail.length;
+  const until = Date.now() - DAY;
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(until, login.id);
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(extra).state, 'live');
+  assert.equal(domains.ask(c.host), true);
+  assert.equal(domains.graceEnd(extra), until + 30 * DAY);
+  assert.match(domains.add(fresh(login), newHost()).err, /supporters/);
+  await domains.housekeeping(); // the lapse email goes once
+  const mails = () => mail.slice(sent).filter((m) => m.to === login.email);
+  assert.equal(mails().length, 1);
+  assert.match(mails()[0].subject, /keeps working until/);
+  // 7 days before the end
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 24 * DAY, login.id);
+  await domains.housekeeping();
+  await domains.housekeeping();
+  assert.match(mails().at(-1).subject, /in a week/);
+  assert.equal(mails().length, 2); // once
+  // day 30
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 30 * DAY - 1000, login.id);
+  await domains.housekeeping();
+  assert.equal(domains.claimOf(extra).end_reason, 'lapsed');
+  assert.match(mails().at(-1).subject, /was removed/);
+});
+
+test('support back within the grace changes nothing', async () => {
+  const { s, c } = await live();
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() - 10 * DAY, s.id);
+  await domains.housekeeping();
+  assert.ok(domains.graceEnd(fresh(s)) > Date.now());
+  db.prepare('UPDATE users SET supporter_until = ? WHERE id = ?').run(Date.now() + 30 * DAY, s.id);
+  await domains.housekeeping();
+  assert.equal(domains.graceEnd(fresh(s)), 0);
+  assert.equal(domains.claimOf(s).state, 'live');
+  assert.equal(domains.claimOf(s).mailed, '');
+  assert.equal(domains.liveHost(s.username), c.host);
+});
+
+test('daily re-checks spread over the hourly runs: each run takes the longest-unchecked ten (with fewer than 240 claims)', async () => {
+  const many = [];
+  for (let i = 0; i < 12; i++) many.push(await live());
+  db.prepare("UPDATE custom_domains SET checked_at = ? WHERE state IN ('live', 'failing')").run(Date.now());
+  many.forEach(({ c }, i) => set(c, { checked_at: Date.now() - (40 - i) * 3600000 })); // all due, the first oldest
+  await domains.housekeeping();
+  const done = () => many.filter(({ s }) => domains.claimOf(s).checked_at > Date.now() - 60000).map((m) => many.indexOf(m));
+  assert.deepEqual(done(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  await domains.housekeeping();
+  assert.equal(done().length, 12);
+});
+
+test('while the flag is off, claims sleep: no checks, and their clocks stand still', async () => {
+  const s = site();
+  const c = claim(s);
+  point(c);
+  const off = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
+  const t = Date.now() + 1000;
+  await off.housekeeping(t);
+  const before = off.claimOf(s).created_at;
+  await off.housekeeping(t + 5 * DAY);
+  assert.equal(off.claimOf(s).state, 'pending');
+  assert.equal(off.claimOf(s).created_at, before + 5 * DAY);
+  // the app restarting while dormant: the time it was down stands still too
+  const restarted = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
+  await restarted.housekeeping(t + 7 * DAY);
+  assert.equal(off.claimOf(s).created_at, before + 7 * DAY);
+  assert.equal(off.add(site(), newHost()).err, 'Custom domains are for supporters.');
+});
+
+test('a check that finishes after its claim was replaced never verifies the new host', async () => {
+  const s = site();
+  const old = claim(s);
+  point(old);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const txt = net.txt;
+  net.txt = async (name) => { await gate; return txt(name); };
+  const checking = domains.check(s);
+  domains.remove(s);
+  const fresh = claim(s); // may get the removed claim's id back
+  net.txt = txt;
+  release();
+  await checking;
+  assert.equal(domains.claimOf(s).id, fresh.id);
+  assert.equal(domains.claimOf(s).state, 'pending');
+  assert.equal(domains.ask(fresh.host), false);
+});
+
+test('a failing claim whose records are right again can get a certificate, so Check now brings it back', async () => {
+  const { s, c } = await live();
+  set(c, { state: 'failing', misses: 3, failing_since: Date.now(), txt_ok: 0, addrs_ok: 0 });
+  assert.equal(domains.ask(c.host), false); // records not shown right yet
+  world.https.set(c.host, (host) => domains.ask(host)); // the certificate is gone; Caddy asks before getting a new one
+  assert.equal((await domains.check(s)).state, 'live');
+  world.https.delete(c.host);
+});
+
+test('an hourly run that starts while the last is still going is skipped', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let refreshes = 0;
+  const slow = createDomains({ cfg, logins, sendMail, net: { ...net, addrs: async (name) => { if (name === BASE) { refreshes++; await gate; } return net.addrs(name); } } });
+  const first = slow.housekeeping();
+  await slow.housekeeping();
+  assert.equal(refreshes, 1);
+  release();
+  await first;
+  await slow.housekeeping();
+  assert.equal(refreshes, 2);
+});

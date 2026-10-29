@@ -57,8 +57,11 @@ case "$*" in
   *"schema.js down"*) [ ! -f data/down_fails ] ;;
   *"backup('/data/backup.db')"*) touch data/backup.db ;;
   *"rm -f /data/backup.db"*) rm -f data/backup.db ;;
+  *"config --services"*) echo app; echo caddy ;;
+  *"ps --status running --services"*) echo app; [ -f data/caddy_down ] || echo caddy ;;
   *) exit 0 ;;
 esac`);
+  sh(path.join(bin, 'sleep'), 'exit 0'); // the installer's waits between looks at the services
   sh(path.join(bin, 'crontab'), `if [ "$1" = -l ]; then cat ${tmp}/crontab 2>/dev/null; else cat > ${tmp}/crontab; fi`);
   sh(path.join(bin, 'rclone'), `echo "rclone $*" >> ${log}`);
   // a release is the bundle make-bundle.sh would build, with VERSION and docker-compose.yml marking which one it is;
@@ -113,6 +116,7 @@ test('installer: an upgrade that does not come up puts every file and .env value
   const up = s.run('scripts/install.sh', ['v0.0.2']);
   assert.equal(up.status, 1, up.stdout + up.stderr);
   assert.match(up.stdout, /did not come up healthy; going back/);
+  assert.match(up.stdout, /v0\.0\.2 could not be started; went back to v0\.0\.1\n$/);
   assert.equal(s.read('docker-compose.yml'), '# v0.0.1\n');
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
   assert.match(s.read('.env'), /^PUPPYPAD_VERSION=v0.0.1$/m);
@@ -149,6 +153,67 @@ test('installer: an upgrade that does not come up puts every file and .env value
   assert.ok(!fs.existsSync(path.join(s.root, 'ran')));
   assert.equal(watch('upgrade v0.0.3').status, 0);
   assert.equal(s.read('ran'), 'v0.0.3\n');
+});
+
+test('installer and watcher take one lock: each blocks the other, and the watcher hands it to its installer', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  // another process holding the lock, as a manual install (or a watcher-started one whose watcher died) would
+  const held = (cmd, args, extra) => s.run('flock', ['.upgrade/upgrade.lock', cmd, ...args], extra);
+
+  const manual = held('scripts/install.sh', ['v0.0.1']);
+  assert.equal(manual.status, 1, manual.stdout + manual.stderr);
+  assert.match(manual.stdout, /another upgrade is already running/);
+
+  // the installer the watcher starts says whether it got the env var and finds the lock held for it
+  sh(path.join(s.root, 'scripts/install.sh'), '[ "$PUPPYPAD_UPGRADE_LOCKED" = 1 ] && ! flock -n .upgrade/upgrade.lock true && echo "$1" > ran');
+  fs.writeFileSync(path.join(s.root, '.upgrade/latest'), 'v0.0.3\n');
+  fs.writeFileSync(path.join(s.root, '.upgrade/checked_at'), `${Math.floor(Date.now() / 1000)}\n`);
+  fs.writeFileSync(path.join(s.root, '.upgrade/status'), 'running\n');
+  fs.writeFileSync(path.join(s.root, 'data/upgrade/request'), 'upgrade v0.0.3\n');
+  const blocked = held('scripts/upgrade-watch.sh', []);
+  assert.equal(blocked.status, 0, blocked.stdout + blocked.stderr);
+  assert.ok(!fs.existsSync(path.join(s.root, 'ran')));
+  assert.equal(s.read('.upgrade/status'), 'running\n'); // a live install is not marked interrupted
+  assert.equal(s.read('data/upgrade/request'), 'upgrade v0.0.3\n'); // still queued
+  assert.match(s.read('data/upgrade/state'), /^status=running$/m); // and it still says it is alive
+  assert.match(s.read('data/upgrade/state'), /^seen_at=\d+$/m);
+
+  // nobody holds it: the leftover "running" was a dead run
+  fs.renameSync(path.join(s.root, 'data/upgrade/request'), path.join(s.tmp, 'request'));
+  assert.equal(s.run('scripts/upgrade-watch.sh', []).status, 0);
+  assert.equal(s.read('.upgrade/status'), 'failed\n');
+  assert.match(s.read('.upgrade/message'), /interrupted/);
+  // and the queued request goes through, the installer running with the lock handed down
+  fs.renameSync(path.join(s.tmp, 'request'), path.join(s.root, 'data/upgrade/request'));
+  const watch = s.run('scripts/upgrade-watch.sh', []);
+  assert.equal(watch.status, 0, watch.stdout + watch.stderr);
+  assert.equal(s.read('ran'), 'v0.0.3\n');
+  assert.equal(s.read('.upgrade/status'), 'ok\n');
+});
+
+test('installer: told the lock is inherited, it does not take it again', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  const r = s.run('flock', ['.upgrade/upgrade.lock', 'scripts/install.sh', 'v0.0.1'], { PUPPYPAD_UPGRADE_LOCKED: '1' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /another upgrade is already running/);
+});
+
+test('installer: going back after a failed upgrade says so when a service does not stay up', () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.2');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.data();
+  fs.writeFileSync(path.join(s.root, 'data/caddy_down'), '');
+  const up = s.run('scripts/install.sh', ['v0.0.2']);
+  assert.equal(up.status, 1, up.stdout + up.stderr);
+  const last = up.stdout.trim().split('\n').pop();
+  assert.equal(last, 'went back to v0.0.1, but not every service is staying up; check docker compose ps and docker compose logs');
+  assert.match(up.stdout, /not every service stayed up:/);
 });
 
 // the index of the first docker command matching re, after index `from`
@@ -241,6 +306,70 @@ test('installer: when the database cannot be put back after a failed upgrade, th
   // left as the failed attempt: the next run of the installer starts from it and tries the step back again
   assert.ok(fs.existsSync(path.join(s.root, '.upgrade/prev.env')));
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
+});
+
+// holds .upgrade/backup.lock the way another backup.sh run would, until release() is called
+const holdBackupLock = async (root) => {
+  fs.mkdirSync(path.join(root, '.upgrade'), { recursive: true });
+  const p = require('child_process').spawn('sh', ['-c', 'exec 7>.upgrade/backup.lock; flock 7; echo held; read x'], { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] });
+  await new Promise((r) => p.stdout.once('data', r));
+  return () => new Promise((r) => { p.once('exit', r); p.stdin.end(); });
+};
+const backupSandbox = () => {
+  const s = sandbox();
+  fs.mkdirSync(path.join(s.root, 'scripts'));
+  fs.copyFileSync(path.join(REPO, 'scripts/backup.sh'), path.join(s.root, 'scripts/backup.sh'));
+  s.data();
+  return s;
+};
+
+test('backup: a run that finds another backup in progress waits for it, then backs up', async () => {
+  const s = backupSandbox();
+  const release = await holdBackupLock(s.root);
+  const p = require('child_process').spawn('scripts/backup.sh', [], { cwd: s.root, env: { ...process.env, PATH: `${s.bin}:${process.env.PATH}` } });
+  let out = '';
+  p.stdout.on('data', (d) => { out += d; });
+  p.stderr.on('data', (d) => { out += d; });
+  const exited = new Promise((r) => p.once('exit', r));
+  await new Promise((r) => setTimeout(r, 500));
+  assert.ok(!fs.existsSync(s.log), 'nothing runs while the other backup holds the lock');
+  await release();
+  assert.equal(await exited, 0, out);
+  assert.ok(fs.existsSync(path.join(s.root, 'backups/latest/backup.db')));
+});
+
+test('backup: a run that waits past the timeout fails without running any step', async () => {
+  const s = backupSandbox();
+  const release = await holdBackupLock(s.root);
+  try {
+    const b = s.run('scripts/backup.sh', [], { BACKUP_LOCK_WAIT: '1', BACKUP_REMOTE: 'r:bucket' });
+    assert.notEqual(b.status, 0, b.stdout + b.stderr);
+    assert.match(b.stderr, /another backup is still running/);
+    assert.ok(!fs.existsSync(s.log), 'no docker or rclone step ran');
+    assert.ok(!fs.existsSync(path.join(s.root, 'backups/latest')));
+  } finally {
+    await release();
+  }
+});
+
+test('installer: an upgrade whose backup times out on another backup stops before switching', async () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.2');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.data();
+  const release = await holdBackupLock(s.root);
+  try {
+    const up = s.run('scripts/install.sh', ['v0.0.2'], { BACKUP_LOCK_WAIT: '1' });
+    assert.notEqual(up.status, 0, up.stdout + up.stderr);
+    assert.match(up.stderr, /another backup is still running/);
+    assert.equal(s.read('VERSION'), 'v0.0.1\n');
+    assert.equal(s.read('docker-compose.yml'), '# v0.0.1\n');
+    assert.ok(!fs.existsSync(path.join(s.root, 'ADDED.txt')));
+    assert.equal(at(s.docker(), /backup\('\/data\/backup\.db'\)/), -1);
+  } finally {
+    await release();
+  }
 });
 
 // Step 2 on its own, through src/schema.js the way the installer runs it: blocked guestbook addresses move to

@@ -157,17 +157,28 @@ test('receive: a stale event applies the subscription as Stripe holds it now', a
   assert.ok(row(login).supporter_until <= Date.now());
 });
 
-test('receive: a subscription finds its login by metadata before checkout links the customer, never an extra site', async () => {
+test('receive: a subscription whose customer matches no login changes nothing, whatever its metadata names', async () => {
   const stripe = fakeStripe();
   const login = add();
   const site = add({ login_id: login.id });
   const end = secs(Date.now() + 30 * DAY);
   await event(stripe, 'customer.subscription.created', { id: 'sub_m', customer: 'cus_m', status: 'active', metadata: { user_id: String(login.id) }, items: { data: [{ current_period_end: end }] } });
-  assert.equal(row(login).stripe_customer_id, 'cus_m');
-  assert.ok(row(login).supporter_until > Date.now());
+  assert.equal(row(login).stripe_customer_id, '');
+  assert.equal(row(login).supporter_until, 0);
   await event(stripe, 'customer.subscription.created', { id: 'sub_e', customer: 'cus_e', status: 'active', metadata: { user_id: String(site.id) }, items: { data: [{ current_period_end: end }] } });
   assert.equal(row(site).stripe_customer_id, '');
   assert.equal(row(site).supporter_until, 0);
+});
+
+test('receive: a late event for a deleted login does not land on a new login that reuses its id', async () => {
+  const stripe = fakeStripe();
+  const old = add({ stripe_customer_id: 'cus_gone' });
+  db.prepare('DELETE FROM users WHERE id = ?').run(old.id);
+  db.prepare("INSERT INTO users (id, username, email, pw_hash, verified, created_at, updated_at) VALUES (?, 'reused', 'reused@x.test', 'h', 1, 0, 0)").run(old.id);
+  const end = secs(Date.now() + 30 * DAY);
+  await event(stripe, 'customer.subscription.updated', { id: 'sub_gone', customer: 'cus_gone', status: 'active', metadata: { user_id: String(old.id) }, items: { data: [{ current_period_end: end }] } });
+  assert.equal(row(old).stripe_customer_id, '');
+  assert.equal(row(old).supporter_until, 0);
 });
 
 test('receive: Stripe failing mid-event throws so Stripe retries it', async () => {
@@ -328,4 +339,24 @@ test('receive: a thin event of a kind the app ignores is a no-op, even with noth
   const payload = JSON.stringify({ id: 'evt_bare', object: 'v2.core.event', type: 'v1.customer.subscription.created' });
   await make(stripe).receive(Buffer.from(payload), signer.generateTestHeaderString({ payload, secret: SECRET }));
   assert.equal(row(login).supporter_until, 0);
+});
+
+test('receive: Stripe events only move paid time, so an admin grant outlasts renewal, past_due and cancel', async () => {
+  const stripe = fakeStripe();
+  const login = add({ stripe_customer_id: 'cus_g' });
+  const granted = Date.now() + 365 * DAY;
+  db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(granted, login.id);
+  const end = secs(Date.now() + 30 * DAY);
+  const sub = (status, item) => ({ id: 'sub_g', customer: 'cus_g', status, metadata: {}, items: { data: [item] } });
+  await event(stripe, 'customer.subscription.updated', sub('active', { current_period_end: end }));
+  assert.equal(row(login).supporter_until, end * 1000 + 3 * DAY);
+  const renewed = secs(Date.now() - 5 * DAY);
+  await event(stripe, 'customer.subscription.updated', sub('past_due', { current_period_start: renewed, current_period_end: renewed + 30 * 86400 }));
+  assert.equal(row(login).supporter_until, renewed * 1000 + 3 * DAY);
+  await event(stripe, 'customer.subscription.deleted', sub('canceled', { current_period_end: end }));
+  assert.ok(row(login).supporter_until <= Date.now());
+  assert.equal(row(login).supporter_granted_until, granted);
+  assert.ok(logins.isSupporter(row(login)));
+  assert.equal(logins.supporterUntil(row(login)), granted);
+  assert.equal(logins.limitsFor(row(login)).quotaMB, cfg.SUPPORTER_QUOTA_MB);
 });

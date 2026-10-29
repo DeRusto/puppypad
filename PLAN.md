@@ -88,6 +88,9 @@ every certificate through a DNS-01 challenge using `CF_API_TOKEN`. On-demand TLS
 `/internal/tls-check` endpoint are removed; custom domains (§3) would bring them back. Keep the
 Cloudflare records **DNS only** (grey cloud). Turning on the proxy makes every visitor appear as a
 Cloudflare IP until the app reads `CF-Connecting-IP`.
+Custom domains (`CUSTOM_DOMAINS=on`) brought on-demand TLS back for supporters' own hosts only: the wildcard
+and apex keep `tls { dns }`, and a catch-all `https://` block asks `/internal/tls-check`. It needs ports 80
+and 443 reachable from the internet and `BASE_DOMAIN` not proxied, since a claim must point at its addresses.
 
 ### 2.4 🟡 Submit `puppypad.org` to the Public Suffix List — your step
 Browsers then treat each `name.puppypad.org` as its own site. This stops cookie-tossing between
@@ -201,8 +204,8 @@ signup. **Your step:** read both pages and make them match how you run things
 **Phase C — growth (later)**
 - ✅ File version history: a git repository per site under `data/history` keeps every save of a text file for
   `HISTORY_DAYS` (`SUPPORTER_HISTORY_DAYS` for supporters); the dashboard views, restores and brings back deleted files.
-- Custom domains: the member adds a CNAME, the app verifies a TXT record, and the existing
-  `/internal/tls-check` + on-demand TLS path issues the certificate.
+- ✅ Custom domains for supporters: a TXT record proves the host, A/AAAA or a CNAME points it at `BASE_DOMAIN`,
+  and on-demand TLS behind `/internal/tls-check` issues the certificate (§3.2, issue #67).
 - ✅ CLI (`npx @puppypad/cli push`, `pull`) and a GitHub deploy Action for members who prefer local editors,
   both over the Phase B HTTP API. WebDAV and Git push were weighed and skipped: the CLI and Action cover
   the same members with far less code and load; WebDAV could come back as a supporter perk.
@@ -266,7 +269,7 @@ with the snippet inserted at the cursor. No auto-editing of member HTML.
 **Code shape.** One `src/widgets.js` with the `/_hw/` handlers and the gallery lists, so
 `server.js` doesn't grow further. Each new `/_hw/` route gets a test alongside the counter's.
 
-### 3.2 Optional supporter tier ✅ (built; custom domains wait on Phase C)
+### 3.2 Optional supporter tier ✅ (built, custom domains too)
 
 PuppyPad stays free. Supporters pay to cover the server and get extras that cost us something,
 never features taken away from free members.
@@ -275,7 +278,9 @@ never features taken away from free members.
 - Bigger quota and file limit than free members: `SUPPORTER_QUOTA_MB` (2000) and `SUPPORTER_MAX_FILE_MB` (25)
   against the free 500 MB and 5 MB.
 - Any file type, past the free allowlist (still served with `nosniff` and checked by the phishing flags).
-- Custom domain (Phase C) is supporter-only, since each one is a certificate and support load.
+- ✅ Custom domain (`CUSTOM_DOMAINS=on`, `src/domains.js`), supporter-only, since each one is a certificate and
+  support load. Needs ports 80/443 reachable from the internet, `BASE_DOMAIN` not proxied (Cloudflare grey
+  cloud), and the supporter tier or admin grants to give it to anyone. Spec: issue #67.
 - Longer file version history (`SUPPORTER_HISTORY_DAYS`, 365 days by default against 30).
 - Cosmetic flair wherever their site is listed:
   - A special border around their screenshot on the dog park (`/browse`), the home page's

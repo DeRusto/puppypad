@@ -134,10 +134,14 @@ async function pull(api, dir) {
   let got = 0;
   for (const f of files) {
     const to = path.join(dir, ...f.path.split('/'));
+    // a symlinked folder inside the destination must not carry a download (or a folder, or a read) somewhere else;
+    // checked on the deepest folder that exists, since any folder mkdir makes below it is new and can't be a link
+    let have = path.dirname(to);
+    while (!fs.existsSync(have)) have = path.dirname(have);
+    const rel = path.relative(root, fs.realpathSync(have)); // absolute when it is on another drive (Windows)
+    if (rel.startsWith('..') || path.isAbsolute(rel) || fs.lstatSync(to, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Fail(`Not writing ${f.path}: it leads outside ${dir} through a symlink.`);
     if (fs.existsSync(to) && sha256(to) === f.sha256) continue;
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    // a symlinked folder inside the destination must not carry a download somewhere else
-    if (path.relative(root, fs.realpathSync(path.dirname(to))).startsWith('..') || fs.lstatSync(to, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Fail(`Not writing ${f.path}: it leads outside ${dir} through a symlink.`);
     fs.writeFileSync(to, await api.call('GET', `/api/file?path=${encodeURIComponent(f.path)}`, undefined, true));
     say(`download  ${f.path}`);
     got++;

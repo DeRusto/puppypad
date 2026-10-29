@@ -208,3 +208,22 @@ test('schema.js refuses anything but down <n> and version', () => {
   assert.throws(() => schemaCli('up', '1'), /usage/);
   assert.equal(schemaCli('version').trim(), '2');
 });
+
+test('admin grants made before granted time had its own column move there; Stripe-paid time stays paid', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'puppypad-grants-'));
+  const start = () => execFileSync(process.execPath, ['-e', "require('./src/db')"], { cwd: path.join(__dirname, '..'), env: { ...process.env, DATA_DIR: dir } });
+  start();
+  // as the release before #115 left it: a grant and a Stripe subscription both in supporter_until
+  const before = new Database(path.join(dir, 'puppypad.db'));
+  const until = Date.now() + 365 * 86400000;
+  before.prepare("INSERT INTO users (username, email, pw_hash, supporter_until, stripe_customer_id, created_at, updated_at) VALUES ('comped', 'c@x.test', 'h', ?, '', 0, 0), ('paying', 'p@x.test', 'h', ?, 'cus_1', 0, 0)").run(until, until);
+  before.exec('ALTER TABLE users DROP COLUMN supporter_granted_until');
+  before.close();
+  start();
+  start(); // and nothing moves twice
+  const after = new Database(path.join(dir, 'puppypad.db'));
+  const row = (name) => after.prepare('SELECT supporter_until, supporter_granted_until FROM users WHERE username = ?').get(name);
+  assert.deepEqual(row('comped'), { supporter_until: 0, supporter_granted_until: until });
+  assert.deepEqual(row('paying'), { supporter_until: until, supporter_granted_until: 0 });
+  after.close();
+});

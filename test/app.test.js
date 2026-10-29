@@ -2304,9 +2304,25 @@ test('the CLI pushes only changed files, deletes only with --delete, and pulls t
     const trap = path.join(tmp, 'trap');
     fs.mkdirSync(path.join(tmp, 'elsewhere'));
     fs.mkdirSync(trap);
-    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(trap, 'pics'));
+    fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(trap, 'pics'), 'junction'); // junction: Windows makes it without admin, elsewhere it's a plain symlink
     await assert.rejects(cli('pull', trap), /symlink/);
     assert.ok(!fs.existsSync(path.join(tmp, 'elsewhere', 'cat.gif')));
+    // nested below the symlink: refused before any folder is made outside
+    const nest = path.join(tmp, 'nest');
+    fs.mkdirSync(path.join(nest, 'pics', 'sub', 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(nest, 'pics', 'sub', 'deep', 'dog.gif'), 'dog');
+    await cli('push', nest);
+    const trap2 = path.join(tmp, 'trap2');
+    fs.mkdirSync(path.join(tmp, 'elsewhere2'));
+    fs.mkdirSync(path.join(trap2, 'pics'), { recursive: true });
+    fs.symlinkSync(path.join(tmp, 'elsewhere2'), path.join(trap2, 'pics', 'sub'), 'junction');
+    await assert.rejects(cli('pull', trap2), /Not writing pics\/sub\/deep\/dog\.gif: it leads outside .* through a symlink/);
+    assert.deepEqual(fs.readdirSync(path.join(tmp, 'elsewhere2')), []);
+    fs.mkdirSync(path.join(tmp, 'elsewhere2', 'deep'));
+    fs.writeFileSync(path.join(tmp, 'elsewhere2', 'deep', 'dog.gif'), 'mine');
+    await assert.rejects(cli('pull', trap2), /symlink/);
+    assert.equal(fs.readFileSync(path.join(tmp, 'elsewhere2', 'deep', 'dog.gif'), 'utf8'), 'mine');
+    await cli('delete', 'pics/sub/deep/dog.gif');
     assert.match(await cli('delete', 'pics/cat.gif', 'nope.gif'), /deleted {2}pics\/cat\.gif\nnot found {2}nope\.gif/);
     assert.match(await cli('info'), /clidog {2}http:\/\/clidog\.pad\.test\//);
     assert.match(await cli('list'), /index\.html/);
@@ -2738,11 +2754,11 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.ok(row().supporter_until <= Date.now());
   assert.doesNotMatch((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
   assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /Your support ended/);
-  // a subscription carries its member in metadata, so it lands even before checkout's event links the customer
+  // a subscription lands only on the login holding its customer; metadata naming a member is not enough
   await member('latepup');
   const pupId = db.prepare('SELECT id FROM users WHERE username = ?').get('latepup').id;
   await subHook('customer.subscription.created', { id: 'sub_2', customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
-  assert.ok(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until > Date.now());
+  assert.equal(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until, 0);
 
   // deleting the login cancels its live subscription first (one the webhooks haven't reported yet too), and keeps the account if Stripe can't be reached
   fake.subs.push({ id: 'sub_3', customer: cus, status: 'active' });
@@ -2863,4 +2879,54 @@ test('support checkout and billing portal share a rate limit per login', async (
   assert.equal((await post('/dashboard/support')).status, 429);
   assert.equal((await post('/dashboard/support/portal')).status, 429);
   assert.equal(stripeCalls.length, before); // turned away before any Stripe call
+});
+
+test('an admin grant is granted time: it never touches paid time, and support lasts until the later of the two', async () => {
+  const boss = await cardBoss();
+  const m = await member('comped');
+  const row = () => db.prepare('SELECT * FROM users WHERE username = ?').get('comped');
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const paid = Date.now() + 30 * 86400000;
+  db.prepare("UPDATE users SET supporter_until = ?, stripe_customer_id = 'cus_comped' WHERE username = ?").run(paid, 'comped');
+  assert.match((await post(boss, '/admin/supporter', { site: 'comped', days: '365' })).text, /comped is a supporter for 365 days\./);
+  const granted = row().supporter_granted_until;
+  assert.ok(granted > Date.now() + 364 * 86400000);
+  assert.equal(row().supporter_until, paid);
+  // the member and the admin both see the later date
+  assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, new RegExp(`You are a supporter until ${day(granted)}`));
+  assert.match((await req('get', '/admin?q=comped').set('Cookie', boss.cookie)).text, new RegExp(`supporter to ${day(granted)} \\(Stripe\\)`));
+  // clearing the grant leaves a paying member a supporter until the paid end
+  assert.match((await post(boss, '/admin/supporter', { site: 'comped', days: '0' })).text, new RegExp(`comped has no granted time; Stripe support runs until ${day(paid)}\\.`));
+  assert.ok(row().supporter_granted_until <= Date.now()); // ended now, so a lapse grace counts from here
+  assert.equal(row().supporter_until, paid);
+
+  // granted time alone: a supporter with flair and the count, who can still subscribe; clearing it ends support
+  const g = await member('grantonly');
+  await post(boss, '/admin/supporter', { site: 'grantonly', days: '10' });
+  makeListed('grantonly');
+  assert.match((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
+  assert.match((await req('get', '/dashboard/support').set('Cookie', g.cookie)).text, /You are a supporter until/);
+  // and the supporter limits: SUPPORTER_QUOTA_MB 3 and SUPPORTER_MAX_FILE_MB 2 in this file
+  const gdash = (await req('get', '/dashboard').set('Cookie', g.cookie)).text;
+  assert.match(gdash, /of 3 MB in/);
+  assert.match(gdash, /2 MB each at most/);
+  assert.equal((await req('post', '/dashboard/support').set('Cookie', g.cookie).type('form').send({ _csrf: g.csrf })).status, 303);
+  assert.match((await post(boss, '/admin/supporter', { site: 'grantonly', days: '0' })).text, /grantonly is no longer a supporter\./);
+  assert.doesNotMatch((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
+});
+
+// CUSTOM_DOMAINS is not on in this file; test/domains-app.test.js has it on
+test('with CUSTOM_DOMAINS off, custom domains show nowhere and Caddy is refused every host', async () => {
+  const m = await member('nodomain');
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(Date.now() + 86400000, 'nodomain');
+  assert.doesNotMatch((await req('get', '/dashboard').set('Cookie', m.cookie)).text, /domain settings|your own domain/i);
+  assert.doesNotMatch((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /own domain/);
+  const add = await req('post', '/dashboard/domain').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, host: 'off.example' });
+  assert.match(add.headers.location, /err=/);
+  // a claim stored while the flag was on sleeps: /admin neither shows it nor finds the site by it
+  db.prepare("INSERT INTO custom_domains (site_id, host, proof, state, created_at) VALUES (?, 'off.example', 'x', 'live', 0)").run(db.prepare('SELECT id FROM users WHERE username = ?').get('nodomain').id);
+  const boss = await cardBoss();
+  assert.doesNotMatch((await req('get', '/admin?q=nodomain').set('Cookie', boss.cookie)).text, /off\.example/);
+  assert.doesNotMatch((await req('get', '/admin?q=off.example').set('Cookie', boss.cookie)).text, /nodomain/);
+  assert.equal((await req('get', '/internal/tls-check?domain=off.example', 'app')).status, 404);
 });

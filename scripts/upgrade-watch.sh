@@ -14,9 +14,6 @@ set -eu
 cd "$(dirname "$0")/.."
 
 mkdir -p .upgrade
-exec 9>.upgrade/lock
-flock -n 9 || exit 0 # an upgrade is still running
-
 env_val() { sed -n "s/^$1=//p" .env 2>/dev/null | tail -n 1 | tr -d "\"'\r"; }
 [ -n "${UPGRADE_REPO:-}" ] || UPGRADE_REPO=$(env_val UPGRADE_REPO)
 [ -n "${UPGRADE_CHECK_MINUTES:-}" ] || UPGRADE_CHECK_MINUTES=$(env_val UPGRADE_CHECK_MINUTES)
@@ -78,6 +75,13 @@ check() {
   put checked_at "$(date +%s)"
 }
 
+# the same lock scripts/install.sh takes, so a manual install and the watcher exclude each other. It stays
+# held for the whole run and is handed down, open, to the installer started below (PUPPYPAD_UPGRADE_LOCKED),
+# so it is held for as long as either is alive
+exec 9>.upgrade/upgrade.lock
+# an upgrade is still running: say we're alive, so /admin doesn't report the watcher as stopped, and leave it be
+flock -n 9 || { publish_state; exit 0; }
+
 [ -n "$(get status)" ] || put status idle
 # a run that died without finishing (reboot, kill) leaves "running" behind
 if [ "$(get status)" = running ]; then
@@ -104,7 +108,7 @@ case "$request" in
     if is_tag "$tag" && [ "$tag" = "$(get latest)" ]; then
       put status running; put message ""; publish_state
       echo "$(date -u) upgrading to $tag"
-      if scripts/install.sh "$tag" > .upgrade/last.log 2>&1; then
+      if PUPPYPAD_UPGRADE_LOCKED=1 scripts/install.sh "$tag" > .upgrade/last.log 2>&1; then
         put status ok; put message "upgraded to $tag"
       else
         put status failed; put message "$(tail -n 1 .upgrade/last.log)"

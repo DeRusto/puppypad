@@ -13,7 +13,7 @@ const DAY = 86400000;
 const sent = [];
 let mailWorks = true;
 const guestbook = createGuestbook({
-  cfg: { BASE_URL: 'http://pad.test', BASE_HOST: 'pad.test' },
+  cfg: { BASE_URL: 'http://pad.test', BASE_HOST: 'pad.test', siteHost: (name) => `${name}.pad.test` },
   logins: { loginOf: (site) => site },
   sendMail: async (to, subject, text) => { sent.push({ to, subject, text }); return mailWorks; },
   listing: createListing({ cfg: { NEW_SITE_HOURS: 24 } }),
