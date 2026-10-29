@@ -1515,8 +1515,9 @@ main.post('/admin/supporter', auth, adminOnly, (req, res) => {
   const target = q.userByName.get(String(req.body.site || '').trim().toLowerCase());
   if (!target || !isLogin(target)) return showAdmin(req, res, { err: 'No login with that site name.' });
   const days = Math.max(0, Math.min(3650, Number(req.body.days) || 0));
-  // granted time only: paid time is Stripe's, so clearing a grant leaves a paying member supporting
-  db.transaction(() => { db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(days ? now() + days * DAY : 0, target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
+  // granted time only: paid time is Stripe's, so clearing a grant leaves a paying member supporting.
+  // Clearing ends a running grant now rather than zeroing it, so a Custom domain's grace runs from now
+  db.transaction(() => { db.prepare('UPDATE users SET supporter_granted_until = ? WHERE id = ?').run(days ? now() + days * DAY : Math.min(target.supporter_granted_until, now()), target.id); adminLog(req, 'supporter', target.username, `${days} days`); })();
   const paid = target.supporter_until > now();
   showAdmin(req, res, { ok: days ? `${target.username} is a supporter for ${days} days.` : paid ? `${target.username} has no granted time; Stripe support runs until ${new Date(target.supporter_until).toISOString().slice(0, 10)}.` : `${target.username} is no longer a supporter.` });
 });

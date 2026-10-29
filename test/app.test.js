@@ -2897,7 +2897,7 @@ test('an admin grant is granted time: it never touches paid time, and support la
   assert.match((await req('get', '/admin?q=comped').set('Cookie', boss.cookie)).text, new RegExp(`supporter to ${day(granted)} \\(Stripe\\)`));
   // clearing the grant leaves a paying member a supporter until the paid end
   assert.match((await post(boss, '/admin/supporter', { site: 'comped', days: '0' })).text, new RegExp(`comped has no granted time; Stripe support runs until ${day(paid)}\\.`));
-  assert.equal(row().supporter_granted_until, 0);
+  assert.ok(row().supporter_granted_until <= Date.now()); // ended now, so a lapse grace counts from here
   assert.equal(row().supporter_until, paid);
 
   // granted time alone: a supporter with flair and the count, who can still subscribe; clearing it ends support

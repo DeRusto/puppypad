@@ -179,9 +179,12 @@ test('a report by custom host or URL is filed against that Site', async () => {
   assert.equal((await req('post', '/report').type('form').send({ site: 'repdog.pad.test', details: 'y' })).status, 200);
 });
 
+// the one admin, made on first use
+let bossOnce;
+const admin = () => (bossOnce ??= member('boss', { supporter: false }).then((m) => { db.prepare("UPDATE users SET email = 'boss@example.com' WHERE username = 'boss'").run(); return m; }));
+
 test('/admin finds sites by custom host, counts claims, and detaches a domain with a logged, mailed reason', async () => {
-  const boss = await member('boss', { supporter: false });
-  db.prepare("UPDATE users SET email = 'boss@example.com' WHERE username = 'boss'").run();
+  const boss = await admin();
   await liveAt('admdog', 'adm.example');
   await liveAt('sickdog', 'sick.example');
   db.prepare("UPDATE custom_domains SET state = 'failing', last_error = 'TXT record not found' WHERE host = 'sick.example'").run();
@@ -202,4 +205,19 @@ test('/admin finds sites by custom host, counts claims, and detaches a domain wi
   assert.equal((await req('get', '/', 'adm.example')).status, 404);
   // nothing to detach
   assert.match((await req('post', '/admin/ban').set('Cookie', boss.cookie).type('form').send({ _csrf: boss.csrf, site: 'admdog', action: 'detach', reason: 'again' })).text, /no custom domain/i);
+});
+
+test('revoking a grant starts the 30-day grace now, not from the paid time', async () => {
+  const boss = await admin();
+  const m = await member('granted', { supporter: false });
+  await post(boss, '/admin/supporter', { site: 'granted', days: '10' });
+  const c = app.domains.add(row('granted'), 'grant.example').claim;
+  point(c);
+  assert.equal((await app.domains.check(row('granted'))).state, 'live');
+  await post(boss, '/admin/supporter', { site: 'granted', days: '0' });
+  await app.domains.housekeeping();
+  assert.equal(app.domains.of(row('granted')).state, 'live');
+  const left = app.domains.graceEnd(row('granted')) - Date.now();
+  assert.ok(left > 29 * 86400000 && left <= 30 * 86400000, `grace ends in ${left} ms`);
+  assert.match(await dash(m), /keeps working until/);
 });
