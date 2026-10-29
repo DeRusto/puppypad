@@ -56,7 +56,9 @@ async function liveAt(name, host) {
 test('tls-check answers 200 for a live claim and 404 for anything else', async () => {
   await liveAt('tlsdog', 'tls.example');
   assert.equal((await req('get', '/internal/tls-check?domain=tls.example', 'app')).status, 200);
-  for (const d of ['other.example', 'pad.test', 'tlsdog.pad.test', '203.0.113.7', '']) {
+  await member('pendog');
+  app.domains.add(row('pendog'), 'pending.example');
+  for (const d of ['pending.example', 'other.example','pad.test', 'tlsdog.pad.test', '203.0.113.7', '']) {
     assert.equal((await req('get', `/internal/tls-check?domain=${encodeURIComponent(d)}`, 'app')).status, 404, d);
   }
 });
@@ -96,7 +98,11 @@ test('a taken-down Site gives 410 on both hosts, and Caddy may still renew its c
 
 test('a failing host is an unknown host, and the subdomain serves again', async () => {
   await liveAt('faildog', 'fail.example');
+  assert.match((await req('get', '/site/faildog')).text, /https:\/\/fail\.example/); // a Site's address is its custom host only while live
   db.prepare("UPDATE custom_domains SET state = 'failing' WHERE host = 'fail.example'").run();
+  const profile = (await req('get', '/site/faildog')).text;
+  assert.doesNotMatch(profile, /fail\.example/);
+  assert.match(profile, /http:\/\/faildog\.pad\.test/);
   const r = await req('get', '/', 'fail.example');
   assert.equal(r.status, 404);
   assert.equal(r.text, 'Unknown host');

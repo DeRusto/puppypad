@@ -2906,6 +2906,10 @@ test('an admin grant is granted time: it never touches paid time, and support la
   makeListed('grantonly');
   assert.match((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
   assert.match((await req('get', '/dashboard/support').set('Cookie', g.cookie)).text, /You are a supporter until/);
+  // and the supporter limits: SUPPORTER_QUOTA_MB 3 and SUPPORTER_MAX_FILE_MB 2 in this file
+  const gdash = (await req('get', '/dashboard').set('Cookie', g.cookie)).text;
+  assert.match(gdash, /of 3 MB in/);
+  assert.match(gdash, /2 MB each at most/);
   assert.equal((await req('post', '/dashboard/support').set('Cookie', g.cookie).type('form').send({ _csrf: g.csrf })).status, 303);
   assert.match((await post(boss, '/admin/supporter', { site: 'grantonly', days: '0' })).text, /grantonly is no longer a supporter\./);
   assert.doesNotMatch((await req('get', '/site/grantonly')).text, /alt="PuppyPad supporter"/);
