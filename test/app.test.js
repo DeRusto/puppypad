@@ -2738,11 +2738,11 @@ test('supporting through Stripe: checkout, webhook, flair, billing portal and la
   assert.ok(row().supporter_until <= Date.now());
   assert.doesNotMatch((await req('get', '/site/goodboy')).text, /alt="PuppyPad supporter"/);
   assert.match((await req('get', '/dashboard/support').set('Cookie', m.cookie)).text, /Your support ended/);
-  // a subscription carries its member in metadata, so it lands even before checkout's event links the customer
+  // a subscription lands only on the login holding its customer; metadata naming a member is not enough
   await member('latepup');
   const pupId = db.prepare('SELECT id FROM users WHERE username = ?').get('latepup').id;
   await subHook('customer.subscription.created', { id: 'sub_2', customer: 'cus_2', status: 'active', metadata: { user_id: String(pupId) }, items: { data: [{ current_period_end: end }] } });
-  assert.ok(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until > Date.now());
+  assert.equal(db.prepare('SELECT supporter_until FROM users WHERE id = ?').get(pupId).supporter_until, 0);
 
   // deleting the login cancels its live subscription first (one the webhooks haven't reported yet too), and keeps the account if Stripe can't be reached
   fake.subs.push({ id: 'sub_3', customer: cus, status: 'active' });
