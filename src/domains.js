@@ -164,15 +164,13 @@ function createDomains({ cfg, logins, sendMail, net }) {
   }
 
   // the hourly run: lapses, expiries, pending and verified claims, the day's re-checks, then abandonments
-  let lastRun = 0;
   async function housekeeping(t = Date.now()) {
-    const ran = lastRun;
-    lastRun = t;
+    const ran = db.prepare("SELECT value FROM kv WHERE key = 'domains_run'").get()?.value || 0;
+    db.prepare("INSERT INTO kv (key, value) VALUES ('domains_run', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(t);
     if (!on()) {
-      // dormant: every clock stands still, so the time since the last run is added back
-      // shortcut: time while the app itself was down isn't added back; keep the last run in the database if that matters
+      // dormant: every clock stands still, so the time since the last run (the app down included) is added back
       const gap = ran ? t - ran : 0;
-      if (gap) {
+      if (gap > 0) {
         db.prepare("UPDATE custom_domains SET created_at = created_at + @gap, failing_since = CASE WHEN failing_since > 0 THEN failing_since + @gap ELSE 0 END, grace_shift = grace_shift + @gap WHERE state != 'ended'").run({ gap });
       }
       return;

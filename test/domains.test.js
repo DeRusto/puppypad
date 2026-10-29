@@ -308,11 +308,16 @@ test('while the flag is off, claims sleep: no checks, and their clocks stand sti
   const c = claim(s);
   point(c);
   const off = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
-  const t = Date.now();
+  const t = Date.now() + 1000;
   await off.housekeeping(t);
+  const before = off.claimOf(s).created_at;
   await off.housekeeping(t + 5 * DAY);
   assert.equal(off.claimOf(s).state, 'pending');
-  assert.equal(off.claimOf(s).created_at, c.created_at + 5 * DAY);
+  assert.equal(off.claimOf(s).created_at, before + 5 * DAY);
+  // the app restarting while dormant: the time it was down stands still too
+  const restarted = createDomains({ cfg: { ...cfg, CUSTOM_DOMAINS: false }, logins, sendMail, net });
+  await restarted.housekeeping(t + 7 * DAY);
+  assert.equal(off.claimOf(s).created_at, before + 7 * DAY);
   assert.equal(off.add(site(), newHost()).err, 'Custom domains are for supporters.');
 });
 
