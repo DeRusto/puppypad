@@ -118,6 +118,7 @@ function createDomains({ cfg, logins, sendMail, net }) {
   async function recheck(c) {
     const p = await checkDns(c);
     if (p.error) return { c, txt: p.txt, points: p.points, error: p.error };
+    if (RECHECKED.includes(byId.get(c.id)?.state)) update(c, { txt_ok: 1, addrs_ok: 1 }); // before the HTTPS request, so ask lets a failing claim get its certificate back
     const ok = await net.https(c.host);
     return { c, txt: true, points: true, error: ok ? '' : HTTPS_ERROR, httpsFailed: !ok };
   }
@@ -218,11 +219,12 @@ function createDomains({ cfg, logins, sendMail, net }) {
   }
 
   // lookups for serving, Caddy's ask and reports; all of them nothing while the flag is off
-  const hostIn = (name, states) => {
+  const hostIn = (name, states, more = '') => {
     const { host } = normalise(name, cfg.BASE_HOST);
-    return on() && host ? db.prepare(`SELECT c.*, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.host = ? AND c.state IN ${inList(states)}`).get(host) : undefined;
+    return on() && host ? db.prepare(`SELECT c.*, u.username FROM custom_domains c JOIN users u ON u.id = c.site_id WHERE c.host = ? AND (c.state IN ${inList(states)}${more})`).get(host) : undefined;
   };
-  const ask = (name) => !!hostIn(name, CERTIFIED);
+  // a failing claim whose last check found both records right still proves ownership, so it may get a certificate to recover
+  const ask = (name) => !!hostIn(name, CERTIFIED, " OR (c.state = 'failing' AND c.txt_ok = 1 AND c.addrs_ok = 1)");
   const siteFor = (host) => hostIn(host, ['live'])?.username; // the Site a request to this host is served as
   const reportTarget = (host) => hostIn(host, HELD);
   // the hosts of these Sites' claims that are not ended: what deleting them stops

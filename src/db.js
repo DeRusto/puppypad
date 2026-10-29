@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS card_notes (
 -- last_error is the latest check's reason, or a moderator's reason; mailed marks the support lapse emails sent;
 -- created_at and failing_since move on while CUSTOM_DOMAINS is off, and grace_shift lengthens a lapse grace, so no clock runs then
 CREATE TABLE IF NOT EXISTS custom_domains (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused, so a check still running for a removed claim can't land on a new one
   site_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   host TEXT NOT NULL,
   proof TEXT NOT NULL,

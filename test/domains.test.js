@@ -38,7 +38,8 @@ const world = { txt: new Map(), addrs: new Map(), https: new Map() };
 const net = {
   txt: async (name) => world.txt.get(name) || [],
   addrs: async (name) => (name === BASE ? OURS : world.addrs.get(name) || []),
-  https: async (host) => world.https.get(host) ?? true,
+  // a function stands in for Caddy, which only gets a certificate when tls-check approves
+  https: async (host) => { const v = world.https.get(host); return typeof v === 'function' ? v(host) : v ?? true; },
 };
 const mail = [];
 const sendMail = async (to, subject, text) => { mail.push({ to, subject, text }); return true; };
@@ -307,4 +308,32 @@ test('while the flag is off, claims sleep: no checks, and their clocks stand sti
   assert.equal(off.claimOf(s).state, 'pending');
   assert.equal(off.claimOf(s).created_at, c.created_at + 5 * DAY);
   assert.equal(off.add(site(), newHost()).err, 'Custom domains are for supporters.');
+});
+
+test('a check that finishes after its claim was replaced never verifies the new host', async () => {
+  const s = site();
+  const old = claim(s);
+  point(old);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const txt = net.txt;
+  net.txt = async (name) => { await gate; return txt(name); };
+  const checking = domains.check(s);
+  domains.remove(s);
+  const fresh = claim(s); // may get the removed claim's id back
+  net.txt = txt;
+  release();
+  await checking;
+  assert.equal(domains.claimOf(s).id, fresh.id);
+  assert.equal(domains.claimOf(s).state, 'pending');
+  assert.equal(domains.ask(fresh.host), false);
+});
+
+test('a failing claim whose records are right again can get a certificate, so Check now brings it back', async () => {
+  const { s, c } = await live();
+  set(c, { state: 'failing', misses: 3, failing_since: Date.now(), txt_ok: 0, addrs_ok: 0 });
+  assert.equal(domains.ask(c.host), false); // records not shown right yet
+  world.https.set(c.host, (host) => domains.ask(host)); // the certificate is gone; Caddy asks before getting a new one
+  assert.equal((await domains.check(s)).state, 'live');
+  world.https.delete(c.host);
 });
