@@ -784,7 +784,7 @@ function showDashboard(req, res, m, status = 200) {
 }
 // what the dashboard's Custom domain fold needs; null while the flag is off
 const domainView = (user) => cfg.CUSTOM_DOMAINS && {
-  claim: domains.claimOf(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), baseAddrs: domains.baseAddrs(),
+  claim: domains.claimOf(user), supporter: isSupporter(user), graceEnd: domains.graceEnd(user), supportEnded: supporterUntil(loginOf(user)), baseAddrs: domains.baseAddrs(),
   // what deleting this site, or the whole login, stops
   doomed: domains.hostsOf(isLogin(user) ? sitesOf(user) : [user]),
 };

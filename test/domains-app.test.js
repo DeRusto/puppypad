@@ -168,6 +168,19 @@ test('a taken-down site gets no domain form, and is told why', async () => {
   assert.match(page, /taken-down site can.t add a domain/);
 });
 
+test('in the grace a claim not working says when it is dropped, and support ended on its real date', async () => {
+  const m = await member('gracedog');
+  app.domains.add(row('gracedog'), 'grace.example');
+  const ended = Date.now() - 2 * 86400000;
+  db.prepare('UPDATE users SET supporter_until = ? WHERE username = ?').run(ended, 'gracedog');
+  db.prepare('UPDATE custom_domains SET grace_shift = ? WHERE host = ?').run(10 * 86400000, 'grace.example'); // paused while the flag was off
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const page = await dash(m);
+  assert.ok(page.includes(`Your support ended on ${day(ended)}.`));
+  assert.doesNotMatch(page, /keeps working until/);
+  assert.ok(page.includes(`is dropped on ${day(ended + 40 * 86400000)}`));
+});
+
 test('the dashboard says what happened to an ended claim', async () => {
   const m = await liveAt('enddog', 'end.example');
   app.domains.detach(row('enddog'), 'it hosted phishing');

@@ -436,7 +436,10 @@ function domainFold(ctx, user, d) {
   const c = d.claim && d.claim.state !== 'ended' ? d.claim : null;
   const line = ([tone, html]) => `<p class="${tone}" role="status">${html}</p>`;
   const base = esc(ctx.cfg.BASE_HOST);
-  const grace = c && d.graceEnd ? line(['err', `Your support ended on ${ymd(d.graceEnd - GRACE_DAYS * DAY)}. ${esc(c.host)} keeps working until ${ymd(d.graceEnd)}, then your site goes back to its own address. <a href="/dashboard/support">Renew support</a> to keep it.`]) : '';
+  // graceEnd also counts the time the flag was off, so the day support ended comes on its own
+  const grace = c && d.graceEnd ? line(['err', `Your support ended on ${ymd(d.supportEnded)}. ${['live', 'verified'].includes(c.state)
+    ? `${esc(c.host)} keeps working until ${ymd(d.graceEnd)}, then your site goes back to its own address. <a href="/dashboard/support">Renew support</a> to keep it.`
+    : `${esc(c.host)} is dropped on ${ymd(d.graceEnd)} unless you <a href="/dashboard/support">renew support</a> before then.`}`]) : '';
   if (!c && !d.supporter) {
     // an ended claim still says what happened to it
     return (d.claim ? line(domainStatus(ctx, user, d.claim, d)) : '') +
