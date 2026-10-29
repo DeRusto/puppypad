@@ -8,8 +8,14 @@
 # To copy it off this server, install rclone, configure a remote (Backblaze B2, Cloudflare R2, S3, ...) and set
 # BACKUP_REMOTE (in .env or the environment), e.g. "b2:my-bucket/puppypad". The remote mirrors latest/ and
 # keeps whatever each night changed or deleted in old/<date> for 14 days.
+# One backup at a time (cron, the installer's pre-upgrade backup, by hand): a run holds .upgrade/backup.lock
+# from the database copy to the end of the remote sync. A run that finds it held waits up to BACKUP_LOCK_WAIT
+# seconds (default 3600, longer than a backup with its sync), then fails rather than skip, so the installer stops.
 set -eu
 cd "$(dirname "$0")/.."
+mkdir -p .upgrade
+exec 7>.upgrade/backup.lock
+flock -w "${BACKUP_LOCK_WAIT:-3600}" 7 || { echo "another backup is still running after ${BACKUP_LOCK_WAIT:-3600}s; no backup was taken" >&2; exit 1; }
 # cron doesn't load .env, so read BACKUP_REMOTE from it unless it was set by the caller
 if [ -z "${BACKUP_REMOTE:-}" ] && [ -f .env ]; then
   BACKUP_REMOTE=$(sed -n 's/^BACKUP_REMOTE=//p' .env | tail -n 1 | tr -d "\"'\r")

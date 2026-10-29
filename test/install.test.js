@@ -306,6 +306,70 @@ test('installer: when the database cannot be put back after a failed upgrade, th
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
 });
 
+// holds .upgrade/backup.lock the way another backup.sh run would, until release() is called
+const holdBackupLock = async (root) => {
+  fs.mkdirSync(path.join(root, '.upgrade'), { recursive: true });
+  const p = require('child_process').spawn('sh', ['-c', 'exec 7>.upgrade/backup.lock; flock 7; echo held; read x'], { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] });
+  await new Promise((r) => p.stdout.once('data', r));
+  return () => new Promise((r) => { p.once('exit', r); p.stdin.end(); });
+};
+const backupSandbox = () => {
+  const s = sandbox();
+  fs.mkdirSync(path.join(s.root, 'scripts'));
+  fs.copyFileSync(path.join(REPO, 'scripts/backup.sh'), path.join(s.root, 'scripts/backup.sh'));
+  s.data();
+  return s;
+};
+
+test('backup: a run that finds another backup in progress waits for it, then backs up', async () => {
+  const s = backupSandbox();
+  const release = await holdBackupLock(s.root);
+  const p = require('child_process').spawn('scripts/backup.sh', [], { cwd: s.root, env: { ...process.env, PATH: `${s.bin}:${process.env.PATH}` } });
+  let out = '';
+  p.stdout.on('data', (d) => { out += d; });
+  p.stderr.on('data', (d) => { out += d; });
+  const exited = new Promise((r) => p.once('exit', r));
+  await new Promise((r) => setTimeout(r, 500));
+  assert.ok(!fs.existsSync(s.log), 'nothing runs while the other backup holds the lock');
+  await release();
+  assert.equal(await exited, 0, out);
+  assert.ok(fs.existsSync(path.join(s.root, 'backups/latest/backup.db')));
+});
+
+test('backup: a run that waits past the timeout fails without running any step', async () => {
+  const s = backupSandbox();
+  const release = await holdBackupLock(s.root);
+  try {
+    const b = s.run('scripts/backup.sh', [], { BACKUP_LOCK_WAIT: '1', BACKUP_REMOTE: 'r:bucket' });
+    assert.notEqual(b.status, 0, b.stdout + b.stderr);
+    assert.match(b.stderr, /another backup is still running/);
+    assert.ok(!fs.existsSync(s.log), 'no docker or rclone step ran');
+    assert.ok(!fs.existsSync(path.join(s.root, 'backups/latest')));
+  } finally {
+    await release();
+  }
+});
+
+test('installer: an upgrade whose backup times out on another backup stops before switching', async () => {
+  const s = sandbox();
+  s.release('v0.0.1');
+  s.release('v0.0.2');
+  assert.equal(s.fresh('v0.0.1').status, 0);
+  s.data();
+  const release = await holdBackupLock(s.root);
+  try {
+    const up = s.run('scripts/install.sh', ['v0.0.2'], { BACKUP_LOCK_WAIT: '1' });
+    assert.notEqual(up.status, 0, up.stdout + up.stderr);
+    assert.match(up.stderr, /another backup is still running/);
+    assert.equal(s.read('VERSION'), 'v0.0.1\n');
+    assert.equal(s.read('docker-compose.yml'), '# v0.0.1\n');
+    assert.ok(!fs.existsSync(path.join(s.root, 'ADDED.txt')));
+    assert.equal(at(s.docker(), /backup\('\/data\/backup\.db'\)/), -1);
+  } finally {
+    await release();
+  }
+});
+
 // Step 2 on its own, through src/schema.js the way the installer runs it: blocked guestbook addresses move to
 // guestbook_blocks on the way up and the newest 200 per Site go back to users.gb_ips on the way down
 test('schema step 2: blocked guestbook addresses survive up and then down', () => {
