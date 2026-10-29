@@ -174,6 +174,8 @@ test('a report by custom host or URL is filed against that Site', async () => {
   const filed = db.prepare('SELECT * FROM reports ORDER BY id DESC').get();
   assert.equal(filed.site, 'repdog');
   assert.equal(filed.details, 'via www.rep.example: fake bank');
+  await req('post', '/report').type('form').send({ site: 'www.rep.example', reason: 'Phishing' });
+  assert.equal(db.prepare('SELECT * FROM reports ORDER BY id DESC').get().details, 'via www.rep.example');
   // a host nobody claims falls back to the first label
   assert.equal((await req('post', '/report').type('form').send({ site: 'nobody.example', details: 'x' })).status, 400);
   assert.equal((await req('post', '/report').type('form').send({ site: 'repdog.pad.test', details: 'y' })).status, 200);
