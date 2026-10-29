@@ -116,7 +116,7 @@ test('installer: an upgrade that does not come up puts every file and .env value
   const up = s.run('scripts/install.sh', ['v0.0.2']);
   assert.equal(up.status, 1, up.stdout + up.stderr);
   assert.match(up.stdout, /did not come up healthy; going back/);
-  assert.match(up.stdout, /v0\.0\.2 failed its health check; went back to v0\.0\.1\n$/);
+  assert.match(up.stdout, /v0\.0\.2 could not be started; went back to v0\.0\.1\n$/);
   assert.equal(s.read('docker-compose.yml'), '# v0.0.1\n');
   assert.equal(s.read('VERSION'), 'v0.0.1\n');
   assert.match(s.read('.env'), /^PUPPYPAD_VERSION=v0.0.1$/m);
