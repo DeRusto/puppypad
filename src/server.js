@@ -51,6 +51,8 @@ const cfg = {
   SUPPORT_ON: !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET && (env.STRIPE_PRICE_ID || env.STRIPE_PRICE_ID_ANNUAL)),
   PRICE_ID: env.STRIPE_PRICE_ID || '', // the monthly supporter price
   PRICE_ID_ANNUAL: env.STRIPE_PRICE_ID_ANNUAL || '', // an optional yearly price, offered next to monthly while set
+  // supporters' own domains (src/domains.js); off by default, apart from the Stripe keys. While off, stored claims sleep
+  CUSTOM_DOMAINS: env.CUSTOM_DOMAINS === 'on',
   // a new site joins the public lists only after its first edit and once it is this old, so throwaway spam gets no audience
   NEW_SITE_HOURS: Number.isFinite(Number(env.NEW_SITE_HOURS)) && env.NEW_SITE_HOURS !== '' ? Number(env.NEW_SITE_HOURS) : 24,
   // matched on confirmed email, not site name, so nobody can grab admin by signing up with the right name first
