@@ -28,7 +28,7 @@ function createGuestbook({ cfg, logins, sendMail, listing }) {
     db.prepare('INSERT INTO guestbook (user_id, name, message, ip, approved, created_at) VALUES (?,?,?,?,?,?)').run(site.id, name, message, ip, approved, Date.now());
     // capped so a spam wave from many addresses can't flood the owner's inbox
     if (site.gb_notify === 'instant' && U.limit(`gbmail:${site.id}`, 10, 3600000)) {
-      sendMail(logins.loginOf(site).email, `New guestbook entry on ${site.username}.${cfg.BASE_HOST}`, `${entryText({ name, message, approved })}\n\n${footer}`);
+      sendMail(logins.loginOf(site).email, `New guestbook entry on ${cfg.siteHost(site.username)}`, `${entryText({ name, message, approved })}\n\n${footer}`);
     }
     return approved ? 'ok' : 'held';
   }
@@ -76,7 +76,7 @@ function createGuestbook({ cfg, logins, sendMail, listing }) {
       const rows = db.prepare('SELECT * FROM guestbook WHERE user_id = ? AND created_at > ? AND created_at <= ? ORDER BY id').all(u.id, u.gb_digest_at, cutoff);
       if (!rows.length) continue;
       const held = rows.filter((e) => !e.approved).length;
-      sends.push(sendMail(logins.loginOf(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${u.username}.${cfg.BASE_HOST}`,
+      sends.push(sendMail(logins.loginOf(u).email, `${rows.length} new guestbook entr${rows.length === 1 ? 'y' : 'ies'} on ${cfg.siteHost(u.username)}`,
         `${held ? `${held} of them wait${held === 1 ? 's' : ''} for your approval.\n\n` : ''}${rows.slice(0, 100).map(entryText).join('\n\n')}${rows.length > 100 ? `\n\n...and ${rows.length - 100} more.` : ''}\n\n${footer}`)
         // only a digest that went out moves the cutoff, so a failed one is retried at the next run
         .then((sent) => { if (sent) db.prepare('UPDATE users SET gb_digest_at = ? WHERE id = ?').run(cutoff, u.id); }));

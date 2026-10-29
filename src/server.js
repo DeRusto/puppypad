@@ -63,8 +63,10 @@ const cfg = {
   SECURE: base.protocol === 'https:',
   SHOT_TOKEN: env.SHOT_TOKEN || '',
   TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || '', // signup captcha; off when unset
-  siteUrl: (name) => `${base.protocol}//${name}.${base.host}`,
+  subdomainUrl: (name) => `${base.protocol}//${name}.${base.host}`,
 };
+// a Site's address: its live Custom domain when it has one (set once src/domains.js is made, below)
+cfg.siteUrl = cfg.subdomainUrl;
 const COOKIE = cfg.SECURE ? '__Host-sid' : 'sid'; // __Host- stops member subdomains from overwriting it
 const { DAY, lines, PER_PAGE } = U;
 const HEALTH_MIN_FREE = 0.05; // /healthz fails once less than 5% of the disk is free
@@ -172,6 +174,9 @@ const domainNet = {
   }),
 };
 const domains = createDomains({ cfg, logins, sendMail, net: domainNet });
+cfg.siteUrl = (name) => { const host = domains.liveHost(name); return host ? `https://${host}` : cfg.subdomainUrl(name); };
+// how a mail or page names a Site in plain text
+cfg.siteHost = (name) => cfg.siteUrl(name).replace(/^https?:\/\//, '');
 // sites whose login supports right now (admins aside), for the flair next to their names; read only when a page shows names
 const supporterNames = () => new Set(db.prepare('SELECT u.username FROM users o JOIN users u ON u.id = o.id OR u.login_id = o.id WHERE o.supporter_until > ?').all(now()).map((r) => r.username));
 const withFlair = (ctx) => { let names; return Object.defineProperty(ctx, 'supporters', { get: () => (names ??= supporterNames()), enumerable: true }); };
@@ -196,6 +201,9 @@ app.use((req, res, next) => {
     const name = host.slice(0, -cfg.BASE_HOST.length - 1);
     if (!name.includes('.')) { req.siteName = name; return site(req, res, next); }
   }
+  // a live Custom domain is served as its Site
+  const custom = domains.siteFor(host);
+  if (custom) { req.siteName = custom; req.customHost = host; return site(req, res, next); }
   // monitors and the installer's upgrade check call /healthz by whatever name reaches the app (localhost, an IP),
   // not the public hostname; member sites keep their own /healthz
   if (req.path === '/healthz') return main(req, res, next);
@@ -221,6 +229,9 @@ site.use((req, res, next) => {
     return res.status(404).send(V.sitePages.empty(cfg, req.siteName));
   }
   if (owner.banned) return res.status(410).send(V.sitePages.banned(cfg, owner.username));
+  // while the Site has a live Custom domain, its subdomain sends visitors there (a day's cache, like a rename's)
+  const live = !req.customHost && (req.method === 'GET' || req.method === 'HEAD') && domains.liveHost(owner.username);
+  if (live) return res.set('Cache-Control', 'public, max-age=86400').redirect(301, `https://${live}${req.originalUrl}`);
   req.owner = owner;
   if (owner.hidden) res.set('X-Robots-Tag', 'noindex');
   next();
@@ -257,6 +268,8 @@ site.use(async (req, res) => {
   }
   let refHost = '';
   try { refHost = new URL(req.get('referer')).hostname; } catch {}
+  // the Site's subdomain and its live Custom domain: visits between the two are not referrals
+  const ownHosts = [`${req.owner.username}.${cfg.BASE_HOST}`, domains.liveHost(req.owner.username)];
   let page = false; // set once the request resolves to a page
   // shortcut: bytes count when a response finishes, so downloads already in flight can overshoot the cap; reserve up front if that shows up in practice
   res.on('finish', () => {
@@ -271,7 +284,7 @@ site.use(async (req, res) => {
       // a throw here would escape every handler and stop the server; the site may have been deleted while this page went out
       try {
         db.prepare('INSERT INTO page_views (user_id, day, path, views) VALUES (@id, @day, @path, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, path: req.path.slice(0, 200) });
-        if (refHost && refHost !== req.hostname) db.prepare('INSERT INTO referrers (user_id, day, host, views) VALUES (@id, @day, @host, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, host: refHost.slice(0, 200) });
+        if (refHost && refHost !== req.hostname && !ownHosts.includes(refHost)) db.prepare('INSERT INTO referrers (user_id, day, host, views) VALUES (@id, @day, @host, 1) ON CONFLICT DO UPDATE SET views = views + 1').run({ ...at, host: refHost.slice(0, 200) });
       } catch (e) { if (q.userById.get(req.owner.id)) console.error('visitor stats failed:', e.message); }
     }
   });
@@ -284,7 +297,7 @@ site.use(async (req, res) => {
   };
   let rel;
   try { rel = decodeURIComponent(req.path); } catch { return notFound(); }
-  const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`);
+  const hotlinked = req.get('referer') && refHost !== cfg.BASE_HOST && !refHost.endsWith(`.${cfg.BASE_HOST}`) && !domains.siteFor(refHost); // a live Custom domain counts as ours
   if (hotlinked && HOTLINK_MEDIA.test(rel) && !U.limit(`hotlink:${req.owner.id}`, HOTLINK_PER_MIN, 60000)) {
     return res.status(429).type('text').send('Too many requests from other websites for this file. Try again in a minute.');
   }
@@ -1123,7 +1136,7 @@ main.post('/account/email', auth, async (req, res) => {
   if (q.userByEmail.get(email)) return fail('That email already has a site.');
   db.prepare('UPDATE users SET new_email = ? WHERE id = ?').run(email, user.id);
   await sendMail(email, `Confirm your new ${cfg.SITE_NAME} email`,
-    `Confirm this address for ${user.username}.${cfg.BASE_HOST}:\n\n${cfg.BASE_URL}/account/email/confirm?token=${makeToken(user.id, 'email', 2 * DAY)}\n\nThe link works for 48 hours. If you did not ask for this, ignore it.`);
+    `Confirm this address for ${cfg.siteHost(user.username)}:\n\n${cfg.BASE_URL}/account/email/confirm?token=${makeToken(user.id, 'email', 2 * DAY)}\n\nThe link works for 48 hours. If you did not ask for this, ignore it.`);
   await sendMail(user.email, `Your ${cfg.SITE_NAME} email is being changed`,
     `Someone logged in as ${user.username} asked to move the account to ${email}. It changes once that address confirms.\n\nIf this was not you, reset your password now: ${cfg.BASE_URL}/forgot`);
   res.redirect(`/site/${user.username}?ok=${encodeURIComponent(`Check ${email} for a confirmation link. Your email changes when you click it.`)}`);

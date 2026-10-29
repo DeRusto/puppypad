@@ -60,3 +60,55 @@ test('tls-check answers 200 for a live claim and 404 for anything else', async (
     assert.equal((await req('get', `/internal/tls-check?domain=${encodeURIComponent(d)}`, 'app')).status, 404, d);
   }
 });
+
+test('the custom host serves its Site, and the subdomain 301s GET and HEAD there', async () => {
+  await liveAt('rexden', 'www.rexden.example');
+  const page = await req('get', '/', 'www.rexden.example');
+  assert.equal(page.status, 200);
+  assert.match(page.text, /rexden/);
+  for (const method of ['get', 'head']) {
+    const r = await req(method, '/pics/a.png?x=1', 'rexden.pad.test');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, 'https://www.rexden.example/pics/a.png?x=1');
+    assert.match(r.headers['cache-control'], /max-age=86400/);
+  }
+  // other methods are served as before
+  assert.notEqual((await req('post', '/_hw/guestbook', 'rexden.pad.test').type('form').send({ name: 'a', message: 'b' })).status, 301);
+  // links everywhere name the custom host
+  assert.match((await req('get', '/site/rexden')).text, /https:\/\/www\.rexden\.example/);
+});
+
+test('visits between a Site\'s two hosts are not referrals', async () => {
+  await liveAt('refdog', 'ref.example');
+  await req('get', '/', 'ref.example').set('Referer', 'http://refdog.pad.test/a.html');
+  await req('get', '/', 'ref.example').set('Referer', 'https://elsewhere.example/');
+  const id = row('refdog').id;
+  assert.deepEqual(db.prepare('SELECT host FROM referrers WHERE user_id = ?').all(id).map((r) => r.host), ['elsewhere.example']);
+});
+
+test('a taken-down Site gives 410 on both hosts, and Caddy may still renew its certificate', async () => {
+  await liveAt('downdog', 'down.example');
+  db.prepare('UPDATE users SET banned = 1 WHERE username = ?').run('downdog');
+  assert.equal((await req('get', '/', 'down.example')).status, 410);
+  assert.equal((await req('get', '/', 'downdog.pad.test')).status, 410);
+  assert.equal((await req('get', '/internal/tls-check?domain=down.example', 'app')).status, 200);
+});
+
+test('a failing host is an unknown host, and the subdomain serves again', async () => {
+  await liveAt('faildog', 'fail.example');
+  db.prepare("UPDATE custom_domains SET state = 'failing' WHERE host = 'fail.example'").run();
+  const r = await req('get', '/', 'fail.example');
+  assert.equal(r.status, 404);
+  assert.equal(r.text, 'Unknown host');
+  assert.equal((await req('get', '/', 'faildog.pad.test')).status, 200);
+});
+
+test('a renamed Site keeps its domain, and the held old name 301s straight to it', async () => {
+  const m = await liveAt('oldname', 'renamed.example');
+  const r = await req('post', '/dashboard/rename').set('Cookie', m.cookie).type('form').send({ _csrf: m.csrf, username: 'newname', password: 'longpassword1' });
+  assert.equal(r.status, 302);
+  assert.equal((await req('get', '/', 'renamed.example')).status, 200);
+  const old = await req('get', '/x.html', 'oldname.pad.test');
+  assert.equal(old.status, 301);
+  assert.equal(old.headers.location, 'https://renamed.example/x.html');
+});
